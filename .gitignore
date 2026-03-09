@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Videos and Output
+temp/
+output/
+*.mp4
+*.mp3
+*.png
+*.jpg
+!assets/
+!assets/bg/
+!assets/intro.mp4
+!assets/outro.mp4
+!assets/break.mp4
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

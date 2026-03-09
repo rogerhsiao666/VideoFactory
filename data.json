@@ -1,0 +1,57 @@
+[
+    {
+        "id": "01",
+        "bg_image": "beach.jpg",
+        "word_en": "out of the blue",
+        "word_ipa": "aʊt əv ðə blu",
+        "word_cn": "突然地；出乎意料地",
+        "tips": "這個片語源自 out of the clear blue sky（晴天霹靂），用來形容事情發生得非常突然。",
+        "sentence_en": "She came to visit me completely out of the blue.",
+        "sentence_ipa": "ʃi keɪm tə ˈvɪzɪt mi kəmˈplitli aʊt əv ðə blu",
+        "sentence_cn": "她非常突然地跑來拜訪我。"
+    },
+    {
+        "id": "02",
+        "bg_image": "coffee.jpg",
+        "word_en": "slip my mind",
+        "word_ipa": "slɪp maɪ maɪnd",
+        "word_cn": "忘記；想不起來",
+        "tips": "slip 是滑落的意思，slip one's mind 就像是從腦袋裡滑走一樣，不小心忘記了某件事。",
+        "sentence_en": "I was going to buy coffee, but it completely slipped my mind.",
+        "sentence_ipa": "aɪ wəz ˈgoʊɪŋ tə baɪ ˈkɔfi, bʌt ɪt kəmˈplitli slɪpt maɪ maɪnd.",
+        "sentence_cn": "我原本打算買咖啡的，但完全忘記了。"
+    },
+    {
+        "id": "03",
+        "bg_image": "office.jpg",
+        "word_en": "on the same page",
+        "word_ipa": "ɑn ðə seɪm peɪʤ",
+        "word_cn": "達成共識；進度一致",
+        "tips": "想像大家都在看同一本書的同一頁，形容雙方理解相同、目標一致，很常用在職場。",
+        "sentence_en": "Before we start the project, I want to make sure everyone is on the same page.",
+        "sentence_ipa": "bɪˈfɔr wi stɑrt ðə ˈprɑʤɛkt, aɪ wɑnt tə meɪk ʃʊr ˈɛvriˌwʌn ɪz ɑn ðə seɪm peɪʤ.",
+        "sentence_cn": "在我們開始專案之前，我想確認大家都達成共識了。"
+    },
+    {
+        "id": "04",
+        "bg_image": "camera.jpg",
+        "word_en": "ring a bell",
+        "word_ipa": "rɪŋ ə bɛl",
+        "word_cn": "聽起來耳熟",
+        "tips": "通常用在別人提到某個人的名字或某件事情時，你覺得好像聽過，但又想不太起來具體細節。",
+        "sentence_en": "His name rings a bell, but I can't remember where we met.",
+        "sentence_ipa": "hɪz neɪm rɪŋz ə bɛl, bʌt aɪ kænt rɪˈmɛmbər wɛr wi mɛt.",
+        "sentence_cn": "他的名字聽起來很耳熟，但我想不起來我們在哪見過面。"
+    },
+    {
+        "id": "05",
+        "bg_image": "lab.jpg",
+        "word_en": "call it a day",
+        "word_ipa": "kɔl ɪt ə deɪ",
+        "word_cn": "今天就到此為止；收工",
+        "tips": "這句話非常口語，用在工作或學習達到一個段落時，提議大家休息、結束今天的工作。",
+        "sentence_en": "We've been working for hours, let's just call it a day.",
+        "sentence_ipa": "wiv bɪn ˈwɜrkɪŋ fɔr ˈaʊərz, lɛts ʤʌst kɔl ɪt ə deɪ.",
+        "sentence_cn": "我們已經工作好幾個小時了，今天就到此為止吧。"
+    }
+]
