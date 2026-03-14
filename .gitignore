@@ -15,6 +15,9 @@ output/
 !assets/outro.mp4
 !assets/break.mp4
 
+# Environment / secrets
+.env
+
 # OS generated files
 .DS_Store
 .DS_Store?
