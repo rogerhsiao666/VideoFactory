@@ -1,32 +1,22 @@
 [
   {
-    "word_en": "oops",
-    "word_ipa": "/uːps/",
-    "word_cn": "哎呀",
-    "tips": "這個詞用來表達輕微的失誤或意外。當你犯了一個小錯誤時，可以使用這個詞。",
-    "sentence_en": "Oops! I spilled my drink on the table.",
-    "sentence_ipa": "/uːps/! aɪ spɪld maɪ drɪŋk ɒn ðə ˈteɪbəl/",
-    "sentence_cn": "哎呀！我把飲料灑在桌子上了。",
+    "word_en": "Multi-modal capabilities",
+    "word_ipa": "/ˈmʌltiˌmoʊdəl kəˈbeɪləˌtiz/",
+    "word_cn": "多模態能力",
+    "tips": "multi(多)+modal(模式)=多種模式",
+    "sentence_en": "Google's AI ecosystem leverages multi-modal capabilities to seamlessly integrate various tools like Gemini and YouTube Studio.",
+    "sentence_ipa": "/ˈɡuːɡlz eɪˈaɪ ˈiːkoʊˌsɪstəm ˈlɛvɪdʒɪz ˈmʌltiˌmoʊdəl kəˈbeɪləˌtiz tu ˈsiːmlɛsli ˈɪntɪɡreɪt ˈvɛriəs tulz laɪk dʒəˈmaɪni ənd ˈjuːˌtoʊb ˈstjuːdioʊ/",
+    "sentence_cn": "谷歌的AI生態系統利用多模態能力，無縫整合各種工具，如Gemini和YouTube Studio。",
     "id": "01"
   },
   {
-    "word_en": "cringe",
-    "word_ipa": "/krɪndʒ/",
-    "word_cn": "感到不自在",
-    "tips": "這個詞通常用來形容某事讓人感到不舒服或尷尬的情況。當你看到令人尷尬的事情時，可以使用這個詞。",
-    "sentence_en": "I always cringe when I see people trip and fall in public.",
-    "sentence_ipa": "/aɪ ˈɔːlweɪz krɪndʒ wɛn aɪ si ˈpiːpəl trɪp ənd fɔːl ɪn ˈpʌblɪk/",
-    "sentence_cn": "當我看到人們在公共場合絆倒摔倒時，我總是感到不自在。",
+    "word_en": "Content repurposing",
+    "word_ipa": "/ˈkɒntɛnt ˌriːˈpɜːrpəsɪŋ/",
+    "word_cn": "內容再利用",
+    "tips": "content(內容)+repurpose(再利用)=內容再利用",
+    "sentence_en": "The integration of Opal allows for efficient content repurposing across various platforms, maximizing the reach of each video.",
+    "sentence_ipa": "/ðə ˌɪntɪˈɡreɪʃən əv ˈoʊpəl əˈlaʊz fɔr ɪˈfɪʃənt ˈkɒntɛnt ˌriːˈpɜːrpəsɪŋ əkrɔs ˈvɛriəs ˈplætfɔrmz, ˈmæksɪmaɪzɪŋ ðə riːtʃ əv iːtʃ ˈvɪdioʊ/",
+    "sentence_cn": "Opal的整合使得在各種平台上高效進行內容再利用，最大化每個視頻的影響力。",
     "id": "02"
-  },
-  {
-    "word_en": "disaster",
-    "word_ipa": "/dɪˈzæstər/",
-    "word_cn": "災難",
-    "tips": "這個詞用來形容一個非常糟糕的情況或事件，通常是不可預測的。當某事變得非常糟糕時，可以使用這個詞。",
-    "sentence_en": "The travel plans turned into a disaster when the flight was canceled.",
-    "sentence_ipa": "/ðə ˈtrævəl plænz tɜrnd ɪntu ə dɪˈzæstər wɛn ðə flaɪt wəz ˈkænsəld/",
-    "sentence_cn": "當航班被取消時，旅行計劃變成了一場災難。",
-    "id": "03"
   }
 ]

@@ -1,13 +1,34 @@
 #!/usr/bin/env python3
+import sys
+print("=== 環境診斷 ===")
+print(f"Python 路徑: {sys.executable}")
+print(f"Python 版本: {sys.version}")
+try:
+    import youtube_transcript_api as _yta
+    print(f"套件路徑: {_yta.__file__}")
+    from importlib.metadata import version as _pkg_version
+    try:
+        print(f"套件版本: {_pkg_version('youtube-transcript-api')}")
+    except Exception:
+        print(f"套件版本: {getattr(_yta, '__version__', '版本未知')}")
+    from youtube_transcript_api import YouTubeTranscriptApi
+    print(f"YouTubeTranscriptApi 方法: {[m for m in dir(YouTubeTranscriptApi) if not m.startswith('_')]}")
+except ImportError as e:
+    print(f"套件未安裝: {e}")
+print("=== 診斷結束 ===")
+
 """
 VideoFactory Enterprise Edition
 Automated YouTube Content Creation Pipeline
 Topic → OpenAI → Pexels → TTS → Pillow → MoviePy → Final MP4 + SRT + Description
 """
 
+import glob
 import json
+import math
 import os
 import re
+import termios
 import textwrap
 import asyncio
 import random
@@ -18,7 +39,8 @@ import requests
 import edge_tts
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from moviepy import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips
+from moviepy import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, CompositeAudioClip
+from moviepy.audio.AudioClip import AudioClip, concatenate_audioclips
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -36,7 +58,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
 FONT_EN     = os.path.join(ASSETS_DIR, "font_en.ttf")
-FONT_CN     = os.path.join(ASSETS_DIR, "font_cn.ttf")
+FONT_CN     = os.path.join(ASSETS_DIR, "font_cn.otf")
 BGM_DIR     = os.path.join(ASSETS_DIR, "bgm")        # 資料夾：多首 BGM 隨機挑選
 BGM_SINGLE  = os.path.join(ASSETS_DIR, "bgm.mp3")    # 備用：單一檔案
 MOCKUP_DIR   = os.path.join(ASSETS_DIR, "mockup")
@@ -62,6 +84,30 @@ BRAND_NAME  = "Rayo: AI Flashcards"
 BATCH_SIZE  = 5
 BUFFER_TIME      = 0.5   # seconds of silence padding after each audio clip
 RECALL_THINK_TIME = 2.0  # 遮中文卡念完後的靜音思考秒數（Phase 2）
+FPS = 24
+
+
+def _load_audio(path: str) -> AudioFileClip:
+    """載入音訊。MP3 先轉 WAV 以確保 duration 精確（WAV header 含精確 sample count）。"""
+    if path.endswith('.mp3'):
+        wav_path = path[:-4] + '.wav'
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', path, wav_path],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        path = wav_path
+    return AudioFileClip(path)
+
+
+def _image_clip(img_path: str, audio: AudioFileClip, extra_dur: float = 0.0) -> ImageClip:
+    """畫面時長 = 音訊時長，聲音是唯一主軸。"""
+    if extra_dur > 0.001:
+        nch = getattr(audio, 'nchannels', 2)
+        fps = getattr(audio, 'fps', 44100)
+        make_frame = (lambda t: [0, 0]) if nch == 2 else (lambda t: 0)
+        silence = AudioClip(make_frame, duration=extra_dur, fps=fps)
+        audio = concatenate_audioclips([audio, silence])
+    return ImageClip(img_path).with_duration(audio.duration).with_audio(audio)
 
 PEXELS_KEY   = os.getenv("PEXELS_API_KEY")
 
@@ -107,11 +153,16 @@ def _call_tavily(query: str, **kwargs):
     if not TAVILY_KEYS:
         raise RuntimeError("未設定任何 TAVILY_API_KEY，請在 .env 補上金鑰")
 
+    max_tokens = kwargs.pop("max_tokens", None)
+
     last_err = None
     for idx, key in enumerate(TAVILY_KEYS):
         try:
-            client  = TavilyClient(api_key=key)
-            result  = client.get_search_context(query=query, **kwargs)
+            client   = TavilyClient(api_key=key)
+            response = client.search(query=query, **kwargs)
+            result   = "\n\n".join(r.get("content", "") for r in response.get("results", []))
+            if max_tokens:
+                result = result[:max_tokens]
             return result, idx + 1
         except Exception as e:
             err_lower = str(e).lower()
@@ -135,7 +186,7 @@ Each object MUST have exactly these keys:
 - "word_en"     : the English word or common phrase
 - "word_ipa"    : IPA pronunciation of the word/phrase
 - "word_cn"     : Traditional Chinese translation
-- "tips"        : 1–2 sentences in Traditional Chinese. State the register/nuance and one key mistake learners commonly make.
+- "tips"        : 提供記憶法、字根拆解或常見搭配詞（嚴格限制 20 字以內，不可換行）。禁止重複中文解釋。範例：'over(超過)+haul(拉)=徹底翻修' 或 '常搭配 undergo（經歷）'
 - "sentence_en" : an English example sentence
 - "sentence_ipa": full IPA pronunciation of the example sentence
 - "sentence_cn" : Traditional Chinese translation of the example sentence"""
@@ -210,6 +261,9 @@ SENTENCE RULE: Each "sentence_en" MUST be a natural, conversational sentence a t
     items   = content.get("items", [])
 
     for i, item in enumerate(items):
+        if item.get("word_en"):
+            w = item["word_en"]
+            item["word_en"] = w[0].upper() + w[1:] if w else w
         item["id"] = f"{i + 1:02d}"
 
     return items[:count]
@@ -248,12 +302,14 @@ def _extract_youtube_id(url: str) -> str | None:
 def _get_youtube_transcript(url: str, max_chars: int = 15000) -> str:
     """
     使用 youtube-transcript-api 抓取字幕。
-    優先英文（en）；若無，嘗試繁中 → 簡中。
+    先用 list() 列出所有可用軌道，再依優先順序挑選：
+      1. 手動建立的英文字幕（en / en-US / en-GB …）
+      2. 自動產生的英文字幕（同上語言變體）
+      3. 任何第一條可用字幕
     回傳前 max_chars 字元的逐字稿。
-    需要: pip install youtube-transcript-api
     """
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
         print("⚠️  youtube-transcript-api 未安裝，請執行: pip install youtube-transcript-api")
         return ""
@@ -264,18 +320,42 @@ def _get_youtube_transcript(url: str, max_chars: int = 15000) -> str:
         return ""
 
     print(f"🎬 正在擷取 YouTube 字幕（video: {video_id}）...")
-    for langs in (["en"], ["zh-TW", "zh-Hant"], ["zh", "zh-Hans"]):
-        try:
-            entries  = YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
-            raw_text = " ".join(e["text"] for e in entries)
-            transcript = raw_text[:max_chars]
-            print(f"   ✅ 字幕語言: {langs[0]}，共 {len(transcript)} 字元")
-            return transcript
-        except (NoTranscriptFound, Exception):
-            continue
+    try:
+        transcripts = list(YouTubeTranscriptApi().list(video_id))
+    except Exception as e:
+        print(f"   ⚠️  無法取得字幕列表: {e}")
+        return ""
 
-    print("   ⚠️  找不到可用字幕（影片可能未開放或無字幕）")
-    return ""
+    en_variants = {"en", "en-US", "en-GB", "en-CA", "en-AU"}
+
+    # 1. 手動英文
+    transcript = next((t for t in transcripts if t.language_code in en_variants and not t.is_generated), None)
+
+    # 2. 自動英文
+    if transcript is None:
+        transcript = next((t for t in transcripts if t.language_code in en_variants and t.is_generated), None)
+
+    # 3. 任何第一條可用字幕
+    if transcript is None:
+        transcript = transcripts[0] if transcripts else None
+
+    if transcript is None:
+        print("   ⚠️  找不到可用字幕（影片可能未開放或無字幕）")
+        return ""
+
+    try:
+        entries  = transcript.fetch()
+        raw_text = " ".join(
+            e.text if hasattr(e, "text") else e.get("text", "")
+            for e in entries
+        )
+        result   = raw_text[:max_chars]
+        kind     = "自動" if transcript.is_generated else "手動"
+        print(f"   ✅ 字幕語言: {transcript.language_code}（{kind}），共 {len(result)} 字元")
+        return result
+    except Exception as e:
+        print(f"   ⚠️  字幕擷取失敗: {e}")
+        return ""
 
 
 def _scrape_url(url: str, max_chars: int = 6000) -> str:
@@ -440,7 +520,7 @@ def check_assets() -> bool:
     """確認必要素材存在（字型 + 至少一個 BGM 來源）"""
     missing = []
     if not os.path.exists(FONT_EN): missing.append("assets/font_en.ttf")
-    if not os.path.exists(FONT_CN): missing.append("assets/font_cn.ttf")
+    if not os.path.exists(FONT_CN): missing.append("assets/font_cn.otf")
 
     has_bgm_dir = os.path.isdir(BGM_DIR) and any(
         f.lower().endswith(".mp3") for f in os.listdir(BGM_DIR)
@@ -470,23 +550,30 @@ def _get_fallback_bg_images() -> list:
     return [fallback] if os.path.exists(fallback) else []
 
 
+_last_bg_path: str | None = None   # 記錄上一張背景，避免前後連續相同
+
+
 def _pick_bg(pexels_images: list) -> str:
-    """從 Pexels 圖庫（優先）或本地備用隨機選一張背景"""
+    """從 Pexels 圖庫（優先）或本地備用隨機選一張背景，且前後不重複。"""
+    global _last_bg_path
     pool = pexels_images if pexels_images else _get_fallback_bg_images()
     if not pool:
         raise FileNotFoundError(
             "找不到任何背景圖片！請確認 assets/bg.jpg 存在，或設定 PEXELS_API_KEY。"
         )
-    return random.choice(pool)
+    candidates = [p for p in pool if p != _last_bg_path] if len(pool) > 1 else pool
+    chosen = random.choice(candidates)
+    _last_bg_path = chosen
+    return chosen
 
 
 # ================= 中文字型自動偵測 =================
 
 def _best_cn_font_path() -> tuple[str, dict]:
     """
-    偵測 font_cn.ttf 的繁體中文字符覆蓋率。
+    偵測 font_cn.otf 的繁體中文字符覆蓋率。
     使用幾個常見缺字（繁體罕用字）做快速測試：
-      · 覆蓋完整 → 繼續使用 assets/font_cn.ttf
+      · 覆蓋完整 → 繼續使用 assets/font_cn.otf
       · 出現缺字 → 自動切換至系統字型（PingFang / MS JhengHei）
 
     系統字型候選（macOS / Windows / Linux）均涵蓋所有常用繁體中文。
@@ -505,7 +592,7 @@ def _best_cn_font_path() -> tuple[str, dict]:
             probe = ImageFont.truetype(FONT_CN, 20)
             if all(probe.getmask(ch).getbbox() is not None for ch in _TEST_CHARS):
                 return FONT_CN, {}          # 覆蓋完整，使用自訂字型
-            print("⚠️  font_cn.ttf 字符集不完整（部分繁體字缺字），自動切換系統字型...")
+            print("⚠️  font_cn.otf 字符集不完整（部分繁體字缺字），自動切換系統字型...")
         except Exception:
             pass
 
@@ -514,7 +601,7 @@ def _best_cn_font_path() -> tuple[str, dict]:
             print(f"   ✅ 使用系統字型: {os.path.basename(path)}")
             return path, kwargs
 
-    print("⚠️  找不到完整中文字型，建議下載 Noto Sans CJK TC 放至 assets/font_cn.ttf")
+    print("⚠️  找不到完整中文字型，建議下載 Noto Sans CJK TC 放至 assets/font_cn.otf")
     return FONT_CN, {}
 
 
@@ -672,8 +759,6 @@ def create_sentence_card_image(data: dict, output_filename: str, pexels_images: 
         default_color="white", highlight_color="#ffdd00", line_spacing=20,
     )
     cy += 40
-    cy = draw_text_wrapped(draw, data["sentence_ipa"], font_ipa, mw, sx, cy, "#cccccc", 15)
-    cy += 80
     draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
 
     base.save(output_filename)
@@ -740,8 +825,6 @@ def create_sent_card_hidden_image(data: dict, output_filename: str, pexels_image
         default_color="white", highlight_color="#ffdd00", line_spacing=20,
     )
     cy += 40
-    cy = draw_text_wrapped(draw, data["sentence_ipa"], font_ipa, mw, sx, cy, "#cccccc", 15)
-    cy += 80
 
     hidden_y = cy  # 中文從此處開始 → 模糊遮罩
     draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
@@ -794,6 +877,66 @@ def _chapter_time(seconds: float) -> str:
     m = int(seconds) // 60
     s = int(seconds) % 60
     return f"{m:02d}:{s:02d}"
+
+
+def _normalize_prebuilt(src: str) -> str:
+    """
+    將 pre-built 影片轉碼為與 chunk 相同規格：1920x1080, 24fps, libx264, aac 48kHz。
+    輸出至 TEMP_DIR，只在規格不符時才轉碼（用 ffprobe 檢查）。
+    回傳正規化後的路徑。
+    """
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_streams", src],
+            capture_output=True, text=True, check=True,
+        )
+        streams = json.loads(result.stdout).get("streams", [])
+    except Exception:
+        streams = []
+
+    needs_transcode = False
+    for s in streams:
+        if s.get("codec_type") == "video":
+            w = int(s.get("width", 0))
+            h = int(s.get("height", 0))
+            # fps 可能是 "24/1" 或 "24000/1001"
+            r_str = s.get("r_frame_rate", "0/1")
+            try:
+                num, den = r_str.split("/")
+                fps_val = float(num) / float(den)
+            except Exception:
+                fps_val = 0.0
+            if w != 1920 or h != 1080 or abs(fps_val - 24) > 0.5:
+                needs_transcode = True
+        if s.get("codec_type") == "audio":
+            if int(s.get("sample_rate", 0)) != 48000:
+                needs_transcode = True
+
+    if not needs_transcode:
+        return src
+
+    basename = os.path.basename(src)
+    dst = os.path.join(TEMP_DIR, f"normalized_{basename}")
+    if os.path.exists(dst):
+        print(f"♻️  已存在正規化版本：{basename}")
+        return dst
+
+    print(f"🔄 正在正規化 pre-built 影片規格：{basename} ...")
+    ret = os.system(
+        f'ffmpeg -y -i "{src}" '
+        f'-vf "scale=1920:1080:force_original_aspect_ratio=decrease,'
+        f'pad=1920:1080:(ow-iw)/2:(oh-ih)/2" '
+        f'-r 24 -c:v libx264 -preset fast '
+        f'-c:a aac -ar 48000 -ac 2 -b:a 192k '
+        f'"{dst}" -loglevel error'
+    )
+    if ret != 0 or not os.path.exists(dst):
+        print(f"⚠️  正規化失敗，改用原始檔案：{basename}")
+        return src
+
+    print(f"✅ 已正規化：{basename}")
+    return dst
 
 
 def _video_duration(path: str) -> float:
@@ -864,20 +1007,23 @@ async def process_group(
                     create_sentence_card_image(item, img_sent, pexels_images)
 
                     # B. 生成音訊
-                    await generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en)
-                    await generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn)
-                    await generate_audio(clean_for_tts(item["tips"]),        "zh-TW-HsiaoChenNeural", aud_tips)
-                    await generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%")
-                    await generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en,      rate="+0%")
-                    await generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn)
+                    await asyncio.gather(
+                        generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en),
+                        generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn),
+                        generate_audio(clean_for_tts(item["tips"]),        "zh-TW-HsiaoChenNeural", aud_tips),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%"),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en,      rate="+0%"),
+                        generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn),
+                    )
 
-                    # C. 讀取 AudioClip
-                    c_w_en      = AudioFileClip(aud_word_en)
-                    c_w_cn      = AudioFileClip(aud_word_cn)
-                    c_tips      = AudioFileClip(aud_tips)
-                    c_s_en_slow = AudioFileClip(aud_sent_en_slow)
-                    c_s_en      = AudioFileClip(aud_sent_en)
-                    c_s_cn      = AudioFileClip(aud_sent_cn)
+                    # C. 讀取 AudioClip（用 _load_audio 取得 ffprobe 精確時長）
+                    c_w_en      = _load_audio(aud_word_en)
+                    c_w_cn      = _load_audio(aud_word_cn)
+                    c_tips      = _load_audio(aud_tips)
+                    c_s_en_slow = _load_audio(aud_sent_en_slow)
+                    c_s_en      = _load_audio(aud_sent_en)
+                    c_s_cn      = _load_audio(aud_sent_cn)
+                    c_s_cn2     = _load_audio(aud_sent_cn)   # 第二輪專用，避免共用 ffmpeg pipe
 
                     dur_w_en      = c_w_en.duration
                     dur_w_cn      = c_w_cn.duration
@@ -886,13 +1032,13 @@ async def process_group(
                     dur_s_en      = c_s_en.duration
                     dur_s_cn      = c_s_cn.duration
 
-                    # D. 記錄 SRT 時間戳
-                    word_section = (dur_w_en + BUFFER_TIME +
-                                    dur_w_cn + BUFFER_TIME +
-                                    dur_tips + BUFFER_TIME)
+                    # D. 記錄 SRT 時間戳（以聲音為主，兩次校準點）
+                    # 校準點 1：單字段結束（word_en + word_cn + tips 音訊精確總和）
+                    word_section = dur_w_en + dur_w_cn + dur_tips
                     sent_start   = cumulative_time + word_section
-                    round1       = dur_s_en_slow + BUFFER_TIME + dur_s_cn + BUFFER_TIME
-                    round2       = dur_s_en      + BUFFER_TIME + dur_s_cn + BUFFER_TIME
+                    # 校準點 2：例句段結束（sent 音訊精確總和）
+                    round1       = dur_s_en_slow + dur_s_cn
+                    round2       = dur_s_en      + dur_s_cn
                     sent_end     = sent_start + round1 + round2
 
                     srt_entries.append((sent_start, sent_end,
@@ -900,17 +1046,18 @@ async def process_group(
                     cumulative_time += word_section + round1 + round2
 
                     # E. 組合影片片段（單字卡 → 慢速EN→CN → 原速EN→CN）
-                    v_w_en      = ImageClip(img_word).with_duration(dur_w_en      + BUFFER_TIME).with_audio(c_w_en)
-                    v_w_cn      = ImageClip(img_word).with_duration(dur_w_cn      + BUFFER_TIME).with_audio(c_w_cn)
-                    v_tips      = ImageClip(img_word).with_duration(dur_tips      + BUFFER_TIME).with_audio(c_tips)
-                    v_s_en_slow = ImageClip(img_sent).with_duration(dur_s_en_slow + BUFFER_TIME).with_audio(c_s_en_slow)
-                    v_s_en      = ImageClip(img_sent).with_duration(dur_s_en      + BUFFER_TIME).with_audio(c_s_en)
-                    v_s_cn      = ImageClip(img_sent).with_duration(dur_s_cn      + BUFFER_TIME).with_audio(c_s_cn)
+                    v_w_en      = _image_clip(img_word, c_w_en)
+                    v_w_cn      = _image_clip(img_word, c_w_cn)
+                    v_tips      = _image_clip(img_word, c_tips)
+                    v_s_en_slow = _image_clip(img_sent, c_s_en_slow)
+                    v_s_en      = _image_clip(img_sent, c_s_en)
+                    v_s_cn      = _image_clip(img_sent, c_s_cn)
+                    v_s_cn2     = _image_clip(img_sent, c_s_cn2)
 
                     item_clip = concatenate_videoclips([
                         v_w_en, v_w_cn, v_tips,
                         v_s_en_slow, v_s_cn,
-                        v_s_en,      v_s_cn,
+                        v_s_en,      v_s_cn2,
                     ])
 
                 else:
@@ -934,19 +1081,21 @@ async def process_group(
                     # 步驟4：sent_cn（揭曉）
                     # 步驟5：1.2x sent_en（已揭曉，加速覆誦）
                     # 步驟6：sent_cn（鞏固收尾）
-                    await generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en_slow, rate="-20%")
-                    await generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn)
-                    await generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%")
-                    await generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_fast, rate="+20%")
-                    await generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn)
+                    await asyncio.gather(
+                        generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en_slow, rate="-20%"),
+                        generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%"),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_fast, rate="+20%"),
+                        generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn),
+                    )
 
-                    # C. 讀取 AudioClip（sent_cn 需兩份：步驟4 & 步驟6）
-                    c_w_en_slow  = AudioFileClip(aud_word_en_slow)
-                    c_w_cn       = AudioFileClip(aud_word_cn)
-                    c_s_en_slow  = AudioFileClip(aud_sent_en_slow)
-                    c_s_en_fast  = AudioFileClip(aud_sent_en_fast)
-                    c_s_cn       = AudioFileClip(aud_sent_cn)
-                    c_s_cn2      = AudioFileClip(aud_sent_cn)
+                    # C. 讀取 AudioClip（sent_cn 需兩份：步驟4 & 步驟6；用 _load_audio 取精確時長）
+                    c_w_en_slow  = _load_audio(aud_word_en_slow)
+                    c_w_cn       = _load_audio(aud_word_cn)
+                    c_s_en_slow  = _load_audio(aud_sent_en_slow)
+                    c_s_en_fast  = _load_audio(aud_sent_en_fast)
+                    c_s_cn       = _load_audio(aud_sent_cn)
+                    c_s_cn2      = _load_audio(aud_sent_cn)
 
                     dur_w_en_slow  = c_w_en_slow.duration
                     dur_w_cn       = c_w_cn.duration
@@ -954,11 +1103,11 @@ async def process_group(
                     dur_s_en_fast  = c_s_en_fast.duration
                     dur_s_cn       = c_s_cn.duration
 
-                    # D. 記錄 SRT 時間戳
-                    word_section = dur_w_en_slow + BUFFER_TIME + RECALL_THINK_TIME + dur_w_cn + BUFFER_TIME
+                    # D. 記錄 SRT 時間戳（以聲音為主，RECALL_THINK_TIME 保留為有意義的思考留白）
+                    word_section = (dur_w_en_slow + RECALL_THINK_TIME) + dur_w_cn
                     sent_start   = cumulative_time + word_section
-                    round_recall = dur_s_en_slow + BUFFER_TIME + RECALL_THINK_TIME + dur_s_cn + BUFFER_TIME
-                    round_fast   = dur_s_en_fast + BUFFER_TIME + c_s_cn2.duration  + BUFFER_TIME
+                    round_recall = (dur_s_en_slow + RECALL_THINK_TIME) + dur_s_cn
+                    round_fast   = dur_s_en_fast + c_s_cn2.duration
                     sent_end     = sent_start + round_recall + round_fast
 
                     srt_entries.append((sent_start, sent_end,
@@ -972,16 +1121,12 @@ async def process_group(
                     # 4. 完整例句卡   + sent_cn           → 揭曉中文
                     # 5. 完整例句卡   + sent_en (1.2x)    → 加速覆誦
                     # 6. 完整例句卡   + sent_cn           → 鞏固收尾
-                    v1 = ImageClip(img_word_hidden).with_duration(
-                             dur_w_en_slow + BUFFER_TIME + RECALL_THINK_TIME
-                         ).with_audio(c_w_en_slow)
-                    v2 = ImageClip(img_word       ).with_duration(dur_w_cn      + BUFFER_TIME).with_audio(c_w_cn)
-                    v3 = ImageClip(img_sent_hidden).with_duration(
-                             dur_s_en_slow + BUFFER_TIME + RECALL_THINK_TIME
-                         ).with_audio(c_s_en_slow)
-                    v4 = ImageClip(img_sent       ).with_duration(dur_s_cn      + BUFFER_TIME).with_audio(c_s_cn)
-                    v5 = ImageClip(img_sent       ).with_duration(dur_s_en_fast + BUFFER_TIME).with_audio(c_s_en_fast)
-                    v6 = ImageClip(img_sent       ).with_duration(c_s_cn2.duration + BUFFER_TIME).with_audio(c_s_cn2)
+                    v1 = _image_clip(img_word_hidden, c_w_en_slow,  extra_dur=RECALL_THINK_TIME)
+                    v2 = _image_clip(img_word,        c_w_cn)
+                    v3 = _image_clip(img_sent_hidden, c_s_en_slow,  extra_dur=RECALL_THINK_TIME)
+                    v4 = _image_clip(img_sent,        c_s_cn)
+                    v5 = _image_clip(img_sent,        c_s_en_fast)
+                    v6 = _image_clip(img_sent,        c_s_cn2)
 
                     item_clip = concatenate_videoclips([v1, v2, v3, v4, v5, v6])
 
@@ -994,13 +1139,15 @@ async def process_group(
         if batch_clips:
             chunk_path = os.path.join(TEMP_DIR, f"chunk_g{group_idx}_b{batch_num}.mp4")
             print(f"   => 匯出 {os.path.basename(chunk_path)} ...")
-            batch_video = concatenate_videoclips(batch_clips, method="compose")
+            batch_video = concatenate_videoclips(batch_clips, method="chain")
             batch_video.write_videofile(
                 chunk_path,
-                fps=24,
+                fps=FPS,
                 codec="libx264",
                 audio_codec="aac",
+                audio_fps=48000,
                 threads=4,
+                preset="ultrafast",
                 logger=None,
             )
             chunk_files.append(chunk_path)
@@ -1009,6 +1156,14 @@ async def process_group(
             for clip in batch_clips:
                 clip.close()
             gc.collect()
+
+    # 清理 MP3 轉換產生的 WAV 暫存檔
+    for ext in ("*.wav", "*.mp3", "*.png"):
+        for f in glob.glob(os.path.join(TEMP_DIR, ext)):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     return chunk_files, cumulative_time
 
@@ -1135,6 +1290,22 @@ def export_to_flashcard_app(data_list: list, topic: str, category: str = "videof
 
 # ================= 主流程 =================
 
+def _flush_stdin() -> None:
+    """排空 stdin 緩衝，避免網路等待期間誤按的 Enter 被後續 input() 消耗。"""
+    if sys.stdin.isatty():
+        try:
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except Exception:
+            pass
+        # termios.tcflush 在部分 macOS 環境不可靠，用 select 二次確認排空
+        try:
+            import select as _select
+            while _select.select([sys.stdin], [], [], 0)[0]:
+                os.read(sys.stdin.fileno(), 4096)
+        except Exception:
+            pass
+
+
 async def main():
     print("=" * 55)
     print("  🚀 VideoFactory Enterprise Edition")
@@ -1148,60 +1319,107 @@ async def main():
     print()
 
     # ════════════════════════════════════════════════════
-    # 第一階段：輸入內容來源（智慧自動分流）
+    # 輸入狀態機（step 0-4，q = 返回上一步）
     # ════════════════════════════════════════════════════
-    print("  【第一階段】輸入內容來源（系統自動判斷模式）：")
-    print("  · 主題文字      e.g.  Airport")
-    print("  · Tavily 搜尋   e.g.  /search Apple Vision Pro  或  /s 川普關稅")
-    print("  · 一般網址      e.g.  https://techcrunch.com/...")
-    print("  · YouTube URL   e.g.  https://www.youtube.com/watch?v=...")
-    print("  · 直接貼長文         貼上 > 100 字元的文章內容")
-    print()
+    step = 0
+    user_input = context = source_type = topic = None
+    count = 10
+    fmt = 2
+    range_str = ""
 
-    user_input = input("📌 請輸入: ").strip() or "Airport"
-    context, source_type = route_input(user_input)
+    while step <= 4:
+        if step == 0:
+            print("  【第一階段】輸入內容來源（系統自動判斷模式）：")
+            print("  · 主題文字      e.g.  Airport")
+            print("  · Tavily 搜尋   e.g.  /search Apple Vision Pro  或  /s 川普關稅")
+            print("  · 一般網址      e.g.  https://techcrunch.com/...")
+            print("  · YouTube URL   e.g.  https://www.youtube.com/watch?v=...")
+            print("  · 貼入長文      輸入  /text  後按 Enter，再貼上多行文字")
+            print()
+            raw = input("📌 請輸入: ").strip()
+            if not raw:
+                raw = "Airport"
+            if raw.lower() == "/text":
+                print("請貼上長文，完成後請在新的一行按下 Ctrl+D (Mac) 或 Ctrl+Z (Win) 結束：")
+                lines = []
+                try:
+                    while True:
+                        lines.append(input())
+                except EOFError:
+                    pass
+                user_input = "\n".join(lines).strip()
+                if not user_input:
+                    print("⚠️  未輸入任何內容，返回主選單。")
+                    continue
+            else:
+                user_input = raw
+            context, source_type = route_input(user_input)
+            _flush_stdin()  # 立即排空網路等待期間的誤按
+            step = 1
 
-    # 決定顯示名稱（topic）
-    if source_type == "normal":
-        # 一般主題：直接使用輸入值
-        topic = user_input
-    elif source_type == "tavily":
-        # /search 或 /s 前綴：取出關鍵字部分
-        lower = user_input.lower()
-        for prefix in _SEARCH_PREFIXES:
-            if lower.startswith(prefix):
-                topic = user_input[len(prefix):].strip()
+        elif step == 1:
+            if source_type in ("normal", "tavily"):
+                # 自動計算 topic，不需詢問
+                if source_type == "normal":
+                    topic = user_input
+                else:
+                    lower = user_input.lower()
+                    for prefix in _SEARCH_PREFIXES:
+                        if lower.startswith(prefix):
+                            topic = user_input[len(prefix):].strip()
+                            break
+                    else:
+                        topic = user_input
+                step = 2
+            else:
+                _flush_stdin()
+                raw = input("📝 主題名稱（用於檔名與卡片包，e.g., AI Trends）(q=返回): ").strip()
+                if raw.lower() == "q":
+                    step = 0
+                    continue
+                topic = raw or "Topic"
+                step = 2
+
+        elif step == 2:
+            _flush_stdin()
+            raw = input("🔢 詞彙數量 (1-20，預設 10，q=返回): ").strip()
+            if raw.lower() == "q":
+                step = 0 if source_type in ("normal", "tavily") else 1
+                continue
+            count = int(raw) if raw.isdigit() else 10
+            count = max(1, min(20, count))
+
+            # Firestore 分類由 source_type 決定（與產出格式無關）
+            fs_category = "videofactory" if source_type == "normal" else "trending"
+            src_label = {"normal": "日常主題", "tavily": "Tavily 搜尋",
+                         "youtube": "YouTube 字幕", "url": "網頁爬取", "text": "長文貼入"}
+            print(f"\n   💡 來源模式：{src_label.get(source_type, source_type)}  |  Firestore → {fs_category}\n")
+            step = 3
+
+        elif step == 3:
+            print("  【第二階段】選擇產出格式：")
+            print("  [1] 純產字卡 (Cards Only)  — LLM → Firestore，不產影片")
+            print("  [2] 純產影片 (Video Only)  — LLM → MP4，不寫入 Firestore")
+            print("  [3] 影卡雙棲 (Both)        — LLM → MP4 + Firestore")
+            _flush_stdin()
+            raw = input("\n  選擇格式 (1/2/3，預設 2，q=返回): ").strip()
+            if raw.lower() == "q":
+                step = 2
+                continue
+            fmt = int(raw) if raw in ("1", "2", "3") else 2
+            print()
+            step = 4
+
+        elif step == 4:
+            if fmt == 1:
                 break
-        else:
-            topic = user_input
-    else:
-        # youtube / url / text：需要人工輸入顯示名稱
-        topic = input("📝 請輸入此內容的主題名稱（用於檔名與卡片包，e.g., AI Trends）: ").strip()
-        if not topic:
-            topic = "Topic"
-
-    count_str = input("🔢 詞彙數量 (1-20，預設 10): ").strip()
-    count     = int(count_str) if count_str.isdigit() else 10
-    count     = max(1, min(20, count))
-
-    # Firestore 分類由 source_type 決定（與產出格式無關）
-    fs_category = "videofactory" if source_type == "normal" else "trending"
-
-    src_label = {"normal": "日常主題", "tavily": "Tavily 搜尋",
-                 "youtube": "YouTube 字幕", "url": "網頁爬取", "text": "長文貼入"}
-    print(f"\n   💡 來源模式：{src_label.get(source_type, source_type)}  |  Firestore → {fs_category}")
-    print()
-
-    # ════════════════════════════════════════════════════
-    # 第二階段：選擇產出格式 (Format)
-    # ════════════════════════════════════════════════════
-    print("  【第二階段】選擇產出格式：")
-    print("  [1] 純產字卡 (Cards Only)  — LLM → Firestore，不產影片")
-    print("  [2] 純產影片 (Video Only)  — LLM → MP4，不寫入 Firestore")
-    print("  [3] 影卡雙棲 (Both)        — LLM → MP4 + Firestore")
-    fmt_str = input("\n  選擇格式 (1/2/3，預設 2): ").strip()
-    fmt     = int(fmt_str) if fmt_str in ("1", "2", "3") else 2
-    print()
+            _flush_stdin()
+            raw = input("📐 處理範圍 (選填，格式 3-40，留空=全部，q=返回): ").strip()
+            if raw.lower() == "q":
+                step = 3
+                continue
+            range_str = raw
+            break
 
     # ════════════════════════════════════════════════════
     # 格式 1：純產字卡（Cards Only）
@@ -1244,8 +1462,7 @@ async def main():
     fmt_label = "純產影片" if fmt == 2 else "影卡雙棲"
     print(f"📋 格式：{fmt_label}\n")
 
-    # 範圍選擇（選填）
-    range_str = input("📐 處理範圍 (選填，格式 3-40，留空 = 全部): ").strip()
+    # 範圍解析（range_str 由狀態機收集）
     range_start, range_end = None, None
     if range_str and "-" in range_str:
         parts = range_str.split("-", 1)
@@ -1293,10 +1510,19 @@ async def main():
     print(f"   實際處理：{len(data_list)} 張\n")
 
     # ── 4. 下載 Pexels 圖片 ─────────────────────────────
+    # <=10 張：下載相同張數；11-20 張：下載 10 張隨機用；>20 張：下載 ceil(count/2) 張
+    vocab_count = len(data_list)
+    if vocab_count <= 10:
+        pexels_count = vocab_count
+    elif vocab_count <= 20:
+        pexels_count = 10
+    else:
+        pexels_count = math.ceil(vocab_count / 2)
+
     pexels_images: list = []
     if PEXELS_KEY:
         try:
-            pexels_images = download_pexels_images(topic, count=10)
+            pexels_images = download_pexels_images(topic, count=pexels_count)
         except Exception as e:
             print(f"⚠️  Pexels 下載失敗 ({e})，將使用本地圖片")
     else:
@@ -1348,25 +1574,25 @@ async def main():
 
     with open(concat_path, "w", encoding="utf-8") as f:
         if os.path.exists(INTRO_VIDEO):
-            f.write(f"file '{INTRO_VIDEO}'\n")
+            f.write(f"file '{_normalize_prebuilt(INTRO_VIDEO)}'\n")
         for chunk in chunks_g0:
             f.write(f"file '{chunk}'\n")
         if os.path.exists(BREAK_VIDEO):
-            f.write(f"file '{BREAK_VIDEO}'\n")
+            f.write(f"file '{_normalize_prebuilt(BREAK_VIDEO)}'\n")
         for chunk in chunks_g1:
             f.write(f"file '{chunk}'\n")
         if os.path.exists(OUTRO_VIDEO):
-            f.write(f"file '{OUTRO_VIDEO}'\n")
+            f.write(f"file '{_normalize_prebuilt(OUTRO_VIDEO)}'\n")
 
     ret = os.system(
         f'ffmpeg -y -f concat -safe 0 -i "{concat_path}" '
         f'-c copy "{merged_path}" -loglevel error'
     )
     if ret != 0 or not os.path.exists(merged_path):
-        print("⚠️  FFmpeg concat 失敗，嘗試重新編碼...")
+        print("⚠️  FFmpeg concat 失敗，嘗試完整重新編碼...")
         os.system(
             f'ffmpeg -y -f concat -safe 0 -i "{concat_path}" '
-            f'-c:v libx264 -c:a aac "{merged_path}" -loglevel error'
+            f'-c:v libx264 -preset fast -c:a aac -ar 48000 -ac 2 "{merged_path}" -loglevel error'
         )
 
     # ── 9. 混合背景音樂 ─────────────────────────────────
