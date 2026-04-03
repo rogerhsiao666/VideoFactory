@@ -339,6 +339,10 @@ STRICT SELECTION RULES:
 ❌ FORBIDDEN: Basic vocabulary (launch, new, use, make, show, say, oops, cringe, bad, sad), generic filler phrases.
 
 SENTENCE RULE: Each "sentence_en" MUST contain a concrete detail and sound like professional journalism.
+
+CONTEXT FIT RULE: Every word/phrase MUST be naturally and logically appropriate for the topic "{topic}". If a word feels forced or unnatural in this context, either adjust the example sentence to a scenario where the word fits naturally, or replace the word with a more contextually fitting alternative. NEVER force an example sentence to justify an out-of-context word.
+
+TRANSLATION RULE: All Chinese content (word_cn, sentence_cn) MUST use natural, colloquial Taiwanese Mandarin (台灣日常口語意譯). NEVER produce word-for-word literal translations from English. Use expressions a Taiwanese person would naturally say.
 """
 
     else:
@@ -360,6 +364,10 @@ STRICT SELECTION RULES:
   3. Any word or phrase you used as an example in previous responses — always pick fresh vocabulary
 
 SENTENCE RULE: Each "sentence_en" MUST be a practical, real-life sentence that a beginner can immediately use in daily conversation — something people actually say at work, at a restaurant, with friends, or while traveling. Prioritize usefulness over formality.
+
+CONTEXT FIT RULE: Every word/phrase MUST be naturally and logically appropriate for the topic "{topic}". If a word feels forced or unnatural in this context, either adjust the example sentence to a scenario where the word fits naturally, or replace the word with a more contextually fitting alternative. NEVER force an example sentence to justify an out-of-context word.
+
+TRANSLATION RULE: All Chinese content (word_cn, sentence_cn) MUST use natural, colloquial Taiwanese Mandarin (台灣日常口語意譯). NEVER produce word-for-word literal translations from English. Use expressions a Taiwanese person would naturally say.
 """
 
     # ── 跨次歷史紀錄 ──────────────────────────────────────
