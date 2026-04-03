@@ -162,15 +162,18 @@ def create_rounded_highlight_video(
 ) -> str | None:
     """
     在靜態卡片圖上疊動態圓角底框，生成 karaoke 影片。
-    - 位置：從 sentence_en 原句計算，與靜態卡片像素對齊（textbbox 同 draw_text_with_highlight）
-    - 視覺：先畫暗色圓角底框，再把當前詞重繪在框上（框在文字下方）
-    - 時序：加 pre-frame 處理 leading silence，最後一幀用實際音訊時長
+    - 位置：從 sentence_en 原句計算，與靜態卡片像素對齊
+    - 視覺 (風格 B)：淡淡微光白框 (透明度 20%)，維持原本字體顏色
+    - 時序：貪婪匹配解決縮寫錯位，加 pre-frame 處理 leading silence
+    - 動畫：同行平滑過渡 (Lerp) 並雙字重繪，換行瞬間切換
     """
     if not whisper_model:
         print("   ❌ 缺少 Whisper 模型，無法生成動態字幕")
         return None
 
-    print(f"   🎙️ Whisper 分析音軌: {os.path.basename(audio_path)}")
+    _ffmpeg_audio = audio_path
+
+    print(f"   🎙️  Whisper 分析音軌: {os.path.basename(audio_path)}")
     segments, _ = whisper_model.transcribe(audio_path, word_timestamps=True)
     words_data = []
     for segment in segments:
@@ -178,25 +181,33 @@ def create_rounded_highlight_video(
             words_data.append({"word": word.word.strip(), "start": word.start, "end": word.end})
 
     if not words_data:
-        print("   ⚠️ Whisper 找不到任何單字，跳過 karaoke")
+        print("   ⚠️  Whisper 找不到任何單字，跳過 karaoke")
         return None
 
-    # 排版參數（對齊靜態卡片 create_sentence_card_image）
-    font_size = 80
-    start_x   = 150
-    start_y   = 300
-    max_width = 1600
-    padding   = 15
+    # MP3 → WAV：避免 ffprobe 估算誤差導致 -shortest 截斷音訊
+    if audio_path.lower().endswith('.mp3'):
+        _wav_path = audio_path[:-4] + '_karwav.wav'
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', audio_path, _wav_path],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _ffmpeg_audio = _wav_path
+
+    # 排版參數（對齊靜態卡片）
+    font_size   = 80
+    start_x     = 150
+    start_y     = 300
+    max_width   = 1600
+    padding     = 15
     try:
         font = ImageFont.truetype(font_path, font_size)
     except Exception:
         font = ImageFont.load_default()
 
-    # 目標詞集合（用於判斷橘黃色）
     clean_target  = re.sub(r'[^\w\s]', '', target_word).lower()
     target_tokens = {_normalize_token(t) for t in clean_target.split() if t}
 
-    # ── 計算單字座標（用 textbbox 對齊靜態卡片）──────────────────────
+    # ── 計算單字座標 ──
     measure_img  = Image.new("RGBA", (1, 1))
     measure_draw = ImageDraw.Draw(measure_img)
     sentence_words = sentence_en.split() if sentence_en else [w["word"] for w in words_data]
@@ -210,7 +221,7 @@ def create_rounded_highlight_video(
         word_h  = bbox_sp[3] - bbox_sp[1]
         if cur_x + adv_w > start_x + max_width:
             cur_x  = start_x
-            cur_y += word_h + 20   # line_spacing=20，同靜態卡
+            cur_y += word_h + 20
         word_layout.append({
             "text":   word,
             "x":      cur_x,   "y":      cur_y,
@@ -219,7 +230,7 @@ def create_rounded_highlight_video(
         })
         cur_x += adv_w
 
-    # ── Whisper 時間戳對應原句詞（貪婪字串匹配，解決縮寫斷詞問題）──────
+    # ── Whisper 時間戳對應原句詞（貪婪匹配，解決縮寫錯位） ──
     w_idx = 0
     for layout_item in word_layout:
         target_clean = re.sub(r'[^a-z0-9]', '', layout_item["text"].lower())
@@ -236,82 +247,133 @@ def create_rounded_highlight_video(
             if target_clean and (target_clean in accumulated_str or accumulated_str in target_clean):
                 break
         layout_item["start"] = start_time if start_time is not None else 0.0
-        layout_item["end"]   = end_time   if end_time   is not None else 0.0
+        layout_item["end"]   = end_time if end_time is not None else 0.0
 
     if not word_layout:
-        print("   ⚠️ 無法對齊詞彙，跳過 karaoke")
         return None
 
-    # ── 取得音訊總時長（ffprobe）────────────────────────────────────
+    # ── 取得音訊總時長 ──
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+         "-of", "default=noprint_wrappers=1:nokey=1", _ffmpeg_audio],
         capture_output=True, text=True,
     )
     audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 10.0
 
-    # ── 逐幀產生 PNG ───────────────────────────────────────────────
-    stem       = os.path.splitext(os.path.basename(output_mp4))[0]
-    frames_dir = os.path.join(TEMP_DIR, f"kframes_{stem}")
-    os.makedirs(frames_dir, exist_ok=True)
-    concat_lines: list[str] = []
-    base_img = Image.open(image_path).convert("RGBA")
+    frames_dir = None
+    try:
+        stem       = os.path.splitext(os.path.basename(output_mp4))[0]
+        frames_dir = os.path.join(TEMP_DIR, f"kframes_{stem}")
+        os.makedirs(frames_dir, exist_ok=True)
+        concat_lines = []
+        base_img = Image.open(image_path).convert("RGBA")
 
-    # pre-frame：leading silence 期間顯示靜態卡片（無框）
-    lead_silence = word_layout[0]["start"]
-    if lead_silence > 0.05:
-        pre_path = os.path.join(frames_dir, "frame_pre.png")
-        base_img.convert("RGB").save(pre_path)
-        concat_lines.append(f"file '{pre_path.replace(chr(92), '/')}'")
-        concat_lines.append(f"duration {lead_silence:.3f}")
+        # pre-frame (Leading Silence)
+        lead_silence = word_layout[0]["start"]
+        if lead_silence > 0.05:
+            pre_path = os.path.join(frames_dir, "frame_pre.png")
+            base_img.convert("RGB").save(pre_path)
+            concat_lines.append(f"file '{pre_path.replace(chr(92), '/')}'")
+            concat_lines.append(f"duration {lead_silence:.3f}")
 
-    for i, focus in enumerate(word_layout):
-        img  = base_img.copy()
-        draw = ImageDraw.Draw(img)
+        for i, focus in enumerate(word_layout):
+            img  = base_img.copy()
+            draw = ImageDraw.Draw(img)
 
-        # 1. 先畫暗色圓角底框（框在文字下方）
-        draw.rounded_rectangle(
-            [focus["box_x1"] - padding, focus["box_y1"] - padding,
-             focus["box_x2"] + padding, focus["box_y2"] + padding],
-            radius=16, fill=(0, 0, 0, 200),
-        )
-        # 2. 把當前詞重繪在框上（確保文字在框上方可見）
-        is_target  = bool(target_tokens and _normalize_token(focus["text"]) in target_tokens)
-        word_color = (255, 210, 0, 255) if is_target else (255, 255, 255, 255)
-        draw.text((focus["x"], focus["y"]), focus["text"], font=font, fill=word_color)
+            # 風格 B：淡淡微光白框 (alpha=50, 約 20% 透明)
+            draw.rounded_rectangle(
+                [focus["box_x1"] - padding, focus["box_y1"] - padding,
+                 focus["box_x2"] + padding, focus["box_y2"] + padding],
+                radius=16, fill=(255, 255, 255, 50),
+            )
 
-        frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
-        img.convert("RGB").save(frame_path)
+            is_target  = bool(target_tokens and _normalize_token(focus["text"]) in target_tokens)
+            word_color = (255, 210, 0, 255) if is_target else (255, 255, 255, 255)
 
-        if i + 1 < len(word_layout):
-            duration = word_layout[i + 1]["start"] - focus["start"]
-        else:
-            duration = max(audio_dur - focus["start"] + 0.8, 0.5)
-        safe_path = frame_path.replace("\\", "/")
-        concat_lines.append(f"file '{safe_path}'")
-        concat_lines.append(f"duration {max(duration, 0.05):.3f}")
+            draw.text((focus["x"] + 2, focus["y"] + 2), focus["text"], font=font, fill=(100, 100, 100, 160))
+            draw.text((focus["x"], focus["y"]), focus["text"], font=font, fill=word_color)
 
-    concat_file = os.path.join(frames_dir, "concat.txt")
-    with open(concat_file, "w", encoding="utf-8") as _cf:
-        _cf.write("\n".join(concat_lines))
+            frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
+            img.convert("RGB").save(frame_path)
+            del img, draw
 
-    print("   🎬 FFmpeg 合成 karaoke 字幕...")
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", audio_path,
-        "-f", "concat", "-safe", "0", "-i", concat_file.replace("\\", "/"),
-        "-map", "1:v", "-map", "0:a",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
-        "-shortest",
-        output_mp4,
-        "-loglevel", "error",
-    ]
-    ret = subprocess.run(cmd)
-    if ret.returncode != 0 or not os.path.exists(output_mp4):
-        print("   ❌ karaoke 合成失敗")
-        return None
-    return output_mp4
+            if i + 1 < len(word_layout):
+                total_dur = word_layout[i + 1]["start"] - focus["start"]
+                nxt = word_layout[i + 1]
+
+                LERP_DUR = 0.08
+                LERP_N   = 3
+
+                # 防換行亂飛：只在同一行且時間足夠時滑動
+                if total_dur > LERP_DUR + 0.05 and focus["y"] == nxt["y"]:
+                    main_dur = total_dur - LERP_DUR
+                    concat_lines.append(f"file '{frame_path.replace(chr(92), '/')}'")
+                    concat_lines.append(f"duration {max(main_dur, 0.05):.3f}")
+
+                    nxt_is_target = bool(target_tokens and _normalize_token(nxt["text"]) in target_tokens)
+                    nxt_color = (255, 210, 0, 255) if nxt_is_target else (255, 255, 255, 255)
+                    for lf in range(1, LERP_N + 1):
+                        t    = lf / LERP_N
+                        lx1  = int(focus["box_x1"] + (nxt["box_x1"] - focus["box_x1"]) * t)
+                        ly1  = int(focus["box_y1"] + (nxt["box_y1"] - focus["box_y1"]) * t)
+                        lx2  = int(focus["box_x2"] + (nxt["box_x2"] - focus["box_x2"]) * t)
+                        ly2  = int(focus["box_y2"] + (nxt["box_y2"] - focus["box_y2"]) * t)
+
+                        limg  = base_img.copy()
+                        ldraw = ImageDraw.Draw(limg)
+
+                        ldraw.rounded_rectangle(
+                            [lx1 - padding, ly1 - padding, lx2 + padding, ly2 + padding],
+                            radius=16, fill=(255, 255, 255, 50),
+                        )
+
+                        # 雙字重繪：避免滑動時文字被白框蓋暗
+                        ldraw.text((focus["x"] + 2, focus["y"] + 2), focus["text"], font=font, fill=(100, 100, 100, 160))
+                        ldraw.text((focus["x"], focus["y"]), focus["text"], font=font, fill=word_color)
+                        ldraw.text((nxt["x"] + 2, nxt["y"] + 2), nxt["text"], font=font, fill=(100, 100, 100, 160))
+                        ldraw.text((nxt["x"], nxt["y"]), nxt["text"], font=font, fill=nxt_color)
+
+                        lpath = os.path.join(frames_dir, f"frame_{i:04d}_l{lf}.png")
+                        limg.convert("RGB").save(lpath)
+                        concat_lines.append(f"file '{lpath.replace(chr(92), '/')}'")
+                        concat_lines.append(f"duration {LERP_DUR / LERP_N:.3f}")
+                        del limg, ldraw
+                else:
+                    # 換行或時間太短，直接瞬間切換
+                    concat_lines.append(f"file '{frame_path.replace(chr(92), '/')}'")
+                    concat_lines.append(f"duration {max(total_dur, 0.05):.3f}")
+            else:
+                duration = max(audio_dur - focus["start"] + 0.8, 0.5)
+                concat_lines.append(f"file '{frame_path.replace(chr(92), '/')}'")
+                concat_lines.append(f"duration {max(duration, 0.05):.3f}")
+
+        concat_file = os.path.join(frames_dir, "concat.txt")
+        with open(concat_file, "w", encoding="utf-8") as _cf:
+            _cf.write("\n".join(concat_lines))
+
+        print("   🎬 FFmpeg 合成 karaoke 字幕...")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", _ffmpeg_audio,
+            "-f", "concat", "-safe", "0", "-i", concat_file.replace("\\", "/"),
+            "-map", "1:v", "-map", "0:a",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-shortest",
+            output_mp4,
+            "-loglevel", "error",
+        ]
+        ret = subprocess.run(cmd)
+        if ret.returncode != 0 or not os.path.exists(output_mp4):
+            print("   ❌ karaoke 合成失敗")
+            return None
+        return output_mp4
+    finally:
+        import shutil
+        if frames_dir and os.path.isdir(frames_dir):
+            shutil.rmtree(frames_dir, ignore_errors=True)
+        if _ffmpeg_audio != audio_path and os.path.exists(_ffmpeg_audio):
+            os.remove(_ffmpeg_audio)
 
 
 BRAND_NAME       = "Rayo: AI Flashcards"
@@ -1392,7 +1454,7 @@ async def process_group(
                         generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn),
                         generate_audio(clean_for_tts(item["tips"]),        "zh-TW-HsiaoChenNeural", aud_tips),
                         generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%"),
-                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en,      rate="-10%"),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en,      rate="-20%"),
                         generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn),
                     )
 
@@ -1478,7 +1540,7 @@ async def process_group(
                         generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en_slow, rate="-20%"),
                         generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn),
                         generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%"),
-                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_norm, rate="-10%"),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_norm, rate="-20%"),
                         generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn),
                     )
 
