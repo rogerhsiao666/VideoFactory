@@ -182,12 +182,12 @@ def create_rounded_highlight_video(
         print("   ⚠️ Whisper 找不到任何單字，跳過 karaoke")
         return None
 
-    # 排版參數（1920×1080 橫式，字幕置於下方）
-    font_size   = 60
-    start_x     = 100
-    start_y     = 820
-    max_width   = 1720
-    line_height = 90
+    # 排版參數（對齊靜態卡片 create_sentence_card_image 的設定）
+    font_size   = 80      # 對齊靜態卡片
+    start_x     = 150     # 對齊靜態卡片
+    start_y     = 300     # 對齊靜態卡片（畫面中央偏上）
+    max_width   = 1600    # 對齊靜態卡片
+    line_height = 100     # 配合大字體加高行距
     padding     = 15
     try:
         font = ImageFont.truetype(font_path, font_size)
@@ -1386,11 +1386,11 @@ async def process_group(
 
                     # B. 生成音訊
                     await asyncio.gather(
-                        generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en),
+                        generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en,      rate="-10%"),
                         generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn),
                         generate_audio(clean_for_tts(item["tips"]),        "zh-TW-HsiaoChenNeural", aud_tips),
                         generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%"),
-                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en,      rate="+0%"),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en,      rate="-10%"),
                         generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn),
                     )
 
@@ -1481,7 +1481,7 @@ async def process_group(
                         generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en_slow, rate="-20%"),
                         generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn),
                         generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%"),
-                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_norm, rate="+0%"),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_norm, rate="-10%"),
                         generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn),
                     )
 
