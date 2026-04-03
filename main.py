@@ -1458,6 +1458,13 @@ async def process_group(
                     create_word_card_hidden_image(item, img_word_hidden, pexels_images)
                     create_sentence_card_image(item, img_sent, pexels_images)
                     create_sent_card_hidden_image(item, img_sent_hidden, pexels_images)
+                    # karaoke 底圖
+                    img_bg_with_cn = os.path.join(TEMP_DIR, f"bg_with_cn_{global_idx}.png")
+                    img_bg_no_cn   = os.path.join(TEMP_DIR, f"bg_no_cn_{global_idx}.png")
+                    create_sentence_card_image(item, img_bg_with_cn, pexels_images,
+                                               draw_en=False, draw_cn=True)
+                    create_sentence_card_image(item, img_bg_no_cn, pexels_images,
+                                               draw_en=False, draw_cn=False)
 
                     # B. 生成音訊
                     # 步驟1：0.8x word_en（遮中文，思考用）
@@ -1502,16 +1509,36 @@ async def process_group(
                     # E. 組合影片片段（6 步 Active Recall）
                     # 1. 遮中文單字卡 + word_en (0.8x) + 2s靜音 → 聽英文，回想中文
                     # 2. 完整單字卡   + word_cn           → 揭曉解答
-                    # 3. 遮中文例句卡 + sent_en (0.8x) + 2s靜音 → 聽例句，回想中文
+                    # 3. karaoke EN（無CN底圖）+ 2s靜態思考留白 → 聽例句，回想中文
                     # 4. 完整例句卡   + sent_cn           → 揭曉中文
-                    # 5. 完整例句卡   + sent_en (原速)    → 覆誦
+                    # 5. karaoke EN（有CN底圖）→ 覆誦
                     # 6. 完整例句卡   + sent_cn           → 鞏固收尾
-                    v1 = _image_clip(img_word_hidden, c_w_en_slow,  extra_dur=RECALL_THINK_TIME)
+                    v1 = _image_clip(img_word_hidden, c_w_en_slow, extra_dur=RECALL_THINK_TIME)
                     v2 = _image_clip(img_word,        c_w_cn)
-                    v3 = _image_clip(img_sent_hidden, c_s_en_slow,  extra_dur=RECALL_THINK_TIME)
-                    v4 = _image_clip(img_sent,        c_s_cn)
-                    v5 = _image_clip(img_sent,        c_s_en_norm)
-                    v6 = _image_clip(img_sent,        c_s_cn2)
+
+                    # v3：karaoke（無CN）+ 2s 靜態思考留白
+                    kar2_slow_path = os.path.join(TEMP_DIR, f"kar2_sent_en_slow_{global_idx}.mp4")
+                    kar2_slow = create_rounded_highlight_video(
+                        img_bg_no_cn, aud_sent_en_slow, kar2_slow_path, FONT_EN, item["word_en"]
+                    )
+                    if kar2_slow:
+                        _fps_a   = 44100
+                        _silence = AudioClip(lambda t: [0, 0], duration=RECALL_THINK_TIME, fps=_fps_a)
+                        _think   = ImageClip(img_bg_no_cn).with_duration(RECALL_THINK_TIME).with_audio(_silence)
+                        v3 = concatenate_videoclips([VideoFileClip(kar2_slow_path), _think])
+                    else:
+                        v3 = _image_clip(img_sent_hidden, c_s_en_slow, extra_dur=RECALL_THINK_TIME)
+
+                    v4 = _image_clip(img_sent, c_s_cn)
+
+                    # v5：karaoke（有CN）→ 覆誦
+                    kar2_norm_path = os.path.join(TEMP_DIR, f"kar2_sent_en_norm_{global_idx}.mp4")
+                    kar2_norm = create_rounded_highlight_video(
+                        img_bg_with_cn, aud_sent_en_norm, kar2_norm_path, FONT_EN, item["word_en"]
+                    )
+                    v5 = VideoFileClip(kar2_norm_path) if kar2_norm else _image_clip(img_sent, c_s_en_norm)
+
+                    v6 = _image_clip(img_sent, c_s_cn2)
 
                     item_clip = concatenate_videoclips([v1, v2, v3, v4, v5, v6])
 
