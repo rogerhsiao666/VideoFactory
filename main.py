@@ -158,8 +158,8 @@ def create_rounded_highlight_video(
     target_word: str = "",
 ) -> str | None:
     """
-    生成帶有「動態黑色圓角底框」的 karaoke 字幕影片（1920×1080 橫式）。
-    目標單字 (target_word) 全程以亮橘黃色顯示，其他字白色。
+    在靜態卡片圖上疊動態圓角底框，生成 karaoke 影片。
+    文字已在靜態卡片上（目標單字已是黃色），只逐幀標示當前朗讀的詞。
     回傳 output_mp4 路徑；失敗則回傳 None。
     """
     if not whisper_model:
@@ -167,33 +167,27 @@ def create_rounded_highlight_video(
         return None
 
     print(f"   🎙️ Whisper 分析音軌: {os.path.basename(audio_path)}")
-
     segments, _ = whisper_model.transcribe(audio_path, word_timestamps=True)
     words_data = []
     for segment in segments:
         for word in segment.words:
-            words_data.append({
-                "word":  word.word.strip(),
-                "start": word.start,
-                "end":   word.end,
-            })
+            words_data.append({"word": word.word.strip(), "start": word.start, "end": word.end})
 
     if not words_data:
         print("   ⚠️ Whisper 找不到任何單字，跳過 karaoke")
         return None
 
-    # 排版參數（對齊靜態卡片 create_sentence_card_image 的設定）
-    font_size   = 80      # 對齊靜態卡片
-    start_x     = 150     # 對齊靜態卡片
-    start_y     = 300     # 對齊靜態卡片（畫面中央偏上）
-    max_width   = 1600    # 對齊靜態卡片
-    line_height = 100     # 配合大字體加高行距
+    # 排版參數（對齊靜態卡片 create_sentence_card_image）
+    font_size   = 80
+    start_x     = 150
+    start_y     = 300
+    max_width   = 1600
+    line_height = 100
     padding     = 15
     try:
         font = ImageFont.truetype(font_path, font_size)
     except Exception:
         font = ImageFont.load_default()
-
     try:
         space_width = font.getlength(" ")
     except AttributeError:
@@ -211,47 +205,38 @@ def create_rounded_highlight_video(
         if current_x + w_width > start_x + max_width:
             current_x  = start_x
             current_y += line_height
-        layout.append({
-            "text":  text,
-            "x":     current_x,
-            "y":     current_y,
-            "w":     w_width,
-            "h":     font_size,
-            "start": w_info["start"],
-            "end":   w_info["end"],
-        })
+        layout.append({"text": text, "x": current_x, "y": current_y,
+                        "w": w_width, "h": font_size,
+                        "start": w_info["start"], "end": w_info["end"]})
         current_x += w_width + space_width
 
-    # 逐幀產生透明 PNG
-    frames_dir = os.path.join(TEMP_DIR, "karaoke_frames")
+    # frames_dir 以 output_mp4 stem 命名，避免多次呼叫互相覆蓋
+    stem = os.path.splitext(os.path.basename(output_mp4))[0]
+    frames_dir = os.path.join(TEMP_DIR, f"kframes_{stem}")
     os.makedirs(frames_dir, exist_ok=True)
-    clean_target = re.sub(r'[^\w\s]', '', target_word).lower() if target_word else ""
     concat_lines: list[str] = []
 
+    base_img = Image.open(image_path).convert("RGBA")
+
     for i, focus in enumerate(layout):
-        img  = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
+        img  = base_img.copy()
         draw = ImageDraw.Draw(img)
 
-        # 目前焦點單字底框
+        # 只畫目前焦點單字的半透明黑色圓角底框（文字已在靜態卡片上）
         tx, ty, tw, th = focus["x"], focus["y"], focus["w"], focus["h"]
         draw.rounded_rectangle(
             [tx - padding, ty - padding, tx + tw + padding, ty + th + padding],
-            radius=20, fill=(0, 0, 0, 200),
+            radius=20, fill=(0, 0, 0, 180),
         )
 
-        # 所有單字文字
-        for w in layout:
-            clean_w = re.sub(r'[^\w\s]', '', w["text"]).lower()
-            color = (255, 180, 0, 255) if clean_target and clean_target == clean_w else (255, 255, 255, 255)
-            draw.text((w["x"], w["y"]), w["text"], font=font, fill=color)
+        frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
+        img.convert("RGB").save(frame_path)
 
-        frame_path = os.path.join(frames_dir, f"frame_{i}.png")
-        img.save(frame_path)
-
+        # 最後一幀用超長 duration，靠 -shortest 截在音訊結束
         duration = (
             layout[i + 1]["start"] - focus["start"]
             if i + 1 < len(layout)
-            else focus["end"] - focus["start"] + 0.5
+            else 9999
         )
         safe_path = frame_path.replace("\\", "/")
         concat_lines.append(f"file '{safe_path}'")
@@ -264,10 +249,9 @@ def create_rounded_highlight_video(
     print("   🎬 FFmpeg 合成 karaoke 字幕...")
     cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", image_path,
         "-i", audio_path,
         "-f", "concat", "-safe", "0", "-i", concat_file.replace("\\", "/"),
-        "-filter_complex", "[0:v][2:v]overlay=0:0:shortest=1",
+        "-map", "1:v", "-map", "0:a",
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-shortest",
@@ -1068,18 +1052,8 @@ def create_word_card_image(data: dict, output_filename: str, pexels_images: list
     base.save(output_filename)
 
 
-def create_sentence_card_image(
-    data: dict,
-    output_filename: str,
-    pexels_images: list,
-    draw_en: bool = True,
-    draw_cn: bool = True,
-):
-    """生成例句教學卡片（例句高亮 + 中文翻譯）。
-    draw_en=False：略過英文例句（karaoke 底圖用）。
-    draw_cn=False：略過中文翻譯（Active Recall karaoke 底圖用）。
-    CN 的 Y 座標永遠由英文渲染結果決定，確保與靜態卡片像素級對齊。
-    """
+def create_sentence_card_image(data: dict, output_filename: str, pexels_images: list):
+    """生成例句教學卡片（例句高亮 + 中文翻譯）"""
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
@@ -1087,13 +1061,8 @@ def create_sentence_card_image(
     font_en     = ImageFont.truetype(FONT_EN, 80)
     font_cn     = _load_cn_font(70)
 
-    # 1. Header
     draw.text((100, 80), f"{data['id']}  |  {BRAND_NAME} - Example", font=font_header, fill="white")
 
-    # 2. 備份「沒有英文」的乾淨畫布（用於 draw_en=False 情境）
-    clean_base = base.copy()
-
-    # 3. 永遠在 base 上畫英文，藉此計算出精準的 cy（確保 CN 位置一致）
     sx, mw, cy = 150, 1600, 300
     cy = draw_text_with_highlight(
         draw, data["sentence_en"], data["word_en"],
@@ -1101,16 +1070,8 @@ def create_sentence_card_image(
         default_color="white", highlight_color="#ffdd00", line_spacing=20,
     )
     cy += 40
-
-    # 4. 決定最終輸出畫布（draw_en=False → 用備份的乾淨畫布）
-    target_base = base if draw_en else clean_base
-    target_draw = ImageDraw.Draw(target_base)
-
-    # 5. 畫中文（cy 與靜態卡片完全相同，不會跳動）
-    if draw_cn:
-        draw_text_wrapped(target_draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
-
-    target_base.save(output_filename)
+    draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
+    base.save(output_filename)
 
 
 def _apply_frosted_glass(img: Image.Image, hidden_y: int):
@@ -1379,10 +1340,6 @@ async def process_group(
                     # A. 生成圖片
                     create_word_card_image(item, img_word, pexels_images)
                     create_sentence_card_image(item, img_sent, pexels_images)
-                    # karaoke 底圖：有中文、無英文（karaoke 會在 y=820 疊上英文）
-                    img_bg_with_cn = os.path.join(TEMP_DIR, f"bg_with_cn_{global_idx}.png")
-                    create_sentence_card_image(item, img_bg_with_cn, pexels_images,
-                                               draw_en=False, draw_cn=True)
 
                     # B. 生成音訊
                     await asyncio.gather(
@@ -1432,10 +1389,10 @@ async def process_group(
                     kar_slow_path = os.path.join(TEMP_DIR, f"kar_sent_en_slow_{global_idx}.mp4")
                     kar_norm_path = os.path.join(TEMP_DIR, f"kar_sent_en_{global_idx}.mp4")
                     kar_slow = create_rounded_highlight_video(
-                        img_bg_with_cn, aud_sent_en_slow, kar_slow_path, FONT_EN, item["word_en"]
+                        img_sent, aud_sent_en_slow, kar_slow_path, FONT_EN, item["word_en"]
                     )
                     kar_norm = create_rounded_highlight_video(
-                        img_bg_with_cn, aud_sent_en, kar_norm_path, FONT_EN, item["word_en"]
+                        img_sent, aud_sent_en, kar_norm_path, FONT_EN, item["word_en"]
                     )
                     # karaoke 成功 → 用 VideoFileClip；失敗 → 降級回靜態卡片
                     v_s_en_slow = VideoFileClip(kar_slow_path) if kar_slow else _image_clip(img_sent, c_s_en_slow)
@@ -1462,13 +1419,6 @@ async def process_group(
                     create_word_card_hidden_image(item, img_word_hidden, pexels_images)
                     create_sentence_card_image(item, img_sent, pexels_images)
                     create_sent_card_hidden_image(item, img_sent_hidden, pexels_images)
-                    # karaoke 底圖
-                    img_bg_with_cn = os.path.join(TEMP_DIR, f"bg_with_cn_{global_idx}.png")
-                    img_bg_no_cn   = os.path.join(TEMP_DIR, f"bg_no_cn_{global_idx}.png")
-                    create_sentence_card_image(item, img_bg_with_cn, pexels_images,
-                                               draw_en=False, draw_cn=True)
-                    create_sentence_card_image(item, img_bg_no_cn, pexels_images,
-                                               draw_en=False, draw_cn=False)
 
                     # B. 生成音訊
                     # 步驟1：0.8x word_en（遮中文，思考用）
@@ -1523,12 +1473,12 @@ async def process_group(
                     # v3：karaoke（無CN）+ 2s 靜態思考留白
                     kar2_slow_path = os.path.join(TEMP_DIR, f"kar2_sent_en_slow_{global_idx}.mp4")
                     kar2_slow = create_rounded_highlight_video(
-                        img_bg_no_cn, aud_sent_en_slow, kar2_slow_path, FONT_EN, item["word_en"]
+                        img_sent_hidden, aud_sent_en_slow, kar2_slow_path, FONT_EN, item["word_en"]
                     )
                     if kar2_slow:
                         _fps_a   = 44100
                         _silence = AudioClip(lambda t: [0, 0], duration=RECALL_THINK_TIME, fps=_fps_a)
-                        _think   = ImageClip(img_bg_no_cn).with_duration(RECALL_THINK_TIME).with_audio(_silence)
+                        _think   = ImageClip(img_sent_hidden).with_duration(RECALL_THINK_TIME).with_audio(_silence)
                         v3 = concatenate_videoclips([VideoFileClip(kar2_slow_path), _think])
                     else:
                         v3 = _image_clip(img_sent_hidden, c_s_en_slow, extra_dur=RECALL_THINK_TIME)
@@ -1538,7 +1488,7 @@ async def process_group(
                     # v5：karaoke（有CN）→ 覆誦
                     kar2_norm_path = os.path.join(TEMP_DIR, f"kar2_sent_en_norm_{global_idx}.mp4")
                     kar2_norm = create_rounded_highlight_video(
-                        img_bg_with_cn, aud_sent_en_norm, kar2_norm_path, FONT_EN, item["word_en"]
+                        img_sent, aud_sent_en_norm, kar2_norm_path, FONT_EN, item["word_en"]
                     )
                     v5 = VideoFileClip(kar2_norm_path) if kar2_norm else _image_clip(img_sent, c_s_en_norm)
 
