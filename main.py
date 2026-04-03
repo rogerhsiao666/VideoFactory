@@ -1375,6 +1375,10 @@ async def process_group(
                     # A. 生成圖片
                     create_word_card_image(item, img_word, pexels_images)
                     create_sentence_card_image(item, img_sent, pexels_images)
+                    # karaoke 底圖：有中文、無英文（karaoke 會在 y=820 疊上英文）
+                    img_bg_with_cn = os.path.join(TEMP_DIR, f"bg_with_cn_{global_idx}.png")
+                    create_sentence_card_image(item, img_bg_with_cn, pexels_images,
+                                               draw_en=False, draw_cn=True)
 
                     # B. 生成音訊
                     await asyncio.gather(
@@ -1416,11 +1420,22 @@ async def process_group(
                     cumulative_time += word_section + round1 + round2
 
                     # E. 組合影片片段（單字卡 → 慢速EN→CN → 原速EN→CN）
-                    v_w_en      = _image_clip(img_word, c_w_en)
-                    v_w_cn      = _image_clip(img_word, c_w_cn)
-                    v_tips      = _image_clip(img_word, c_tips)
-                    v_s_en_slow = _image_clip(img_sent, c_s_en_slow)
-                    v_s_en      = _image_clip(img_sent, c_s_en)
+                    v_w_en  = _image_clip(img_word, c_w_en)
+                    v_w_cn  = _image_clip(img_word, c_w_cn)
+                    v_tips  = _image_clip(img_word, c_tips)
+
+                    # ── karaoke：英文例句用「有CN無EN底圖」，karaoke 在 y=820 疊上英文 ──
+                    kar_slow_path = os.path.join(TEMP_DIR, f"kar_sent_en_slow_{global_idx}.mp4")
+                    kar_norm_path = os.path.join(TEMP_DIR, f"kar_sent_en_{global_idx}.mp4")
+                    kar_slow = create_rounded_highlight_video(
+                        img_bg_with_cn, aud_sent_en_slow, kar_slow_path, FONT_EN, item["word_en"]
+                    )
+                    kar_norm = create_rounded_highlight_video(
+                        img_bg_with_cn, aud_sent_en, kar_norm_path, FONT_EN, item["word_en"]
+                    )
+                    # karaoke 成功 → 用 VideoFileClip；失敗 → 降級回靜態卡片
+                    v_s_en_slow = VideoFileClip(kar_slow_path) if kar_slow else _image_clip(img_sent, c_s_en_slow)
+                    v_s_en      = VideoFileClip(kar_norm_path) if kar_norm else _image_clip(img_sent, c_s_en)
                     v_s_cn      = _image_clip(img_sent, c_s_cn)
                     v_s_cn2     = _image_clip(img_sent, c_s_cn2)
 
