@@ -156,11 +156,13 @@ def create_rounded_highlight_video(
     output_mp4: str,
     font_path: str,
     target_word: str = "",
+    sentence_en: str = "",
 ) -> str | None:
     """
     在靜態卡片圖上疊動態圓角底框，生成 karaoke 影片。
-    文字已在靜態卡片上（目標單字已是黃色），只逐幀標示當前朗讀的詞。
-    回傳 output_mp4 路徑；失敗則回傳 None。
+    - 位置：從 sentence_en 原句計算，與靜態卡片像素對齊（textbbox 同 draw_text_with_highlight）
+    - 視覺：先畫暗色圓角底框，再把當前詞重繪在框上（框在文字下方）
+    - 時序：加 pre-frame 處理 leading silence，最後一幀用實際音訊時長
     """
     if not whisper_model:
         print("   ❌ 缺少 Whisper 模型，無法生成動態字幕")
@@ -178,69 +180,114 @@ def create_rounded_highlight_video(
         return None
 
     # 排版參數（對齊靜態卡片 create_sentence_card_image）
-    font_size   = 80
-    start_x     = 150
-    start_y     = 300
-    max_width   = 1600
-    line_height = 100
-    padding     = 15
+    font_size = 80
+    start_x   = 150
+    start_y   = 300
+    max_width = 1600
+    padding   = 15
     try:
         font = ImageFont.truetype(font_path, font_size)
     except Exception:
         font = ImageFont.load_default()
-    try:
-        space_width = font.getlength(" ")
-    except AttributeError:
-        space_width = font.getsize(" ")[0]
 
-    # 計算每個單字的座標（自動換行）
-    layout = []
-    current_x, current_y = start_x, start_y
-    for w_info in words_data:
-        text = w_info["word"]
-        try:
-            w_width = font.getlength(text)
-        except AttributeError:
-            w_width = font.getsize(text)[0]
-        if current_x + w_width > start_x + max_width:
-            current_x  = start_x
-            current_y += line_height
-        layout.append({"text": text, "x": current_x, "y": current_y,
-                        "w": w_width, "h": font_size,
-                        "start": w_info["start"], "end": w_info["end"]})
-        current_x += w_width + space_width
+    # 目標詞集合（用於判斷橘黃色）
+    clean_target  = re.sub(r'[^\w\s]', '', target_word).lower()
+    target_tokens = {_normalize_token(t) for t in clean_target.split() if t}
 
-    # frames_dir 以 output_mp4 stem 命名，避免多次呼叫互相覆蓋
-    stem = os.path.splitext(os.path.basename(output_mp4))[0]
+    # ── 計算單字座標（用 textbbox 對齊靜態卡片）──────────────────────
+    measure_img  = Image.new("RGBA", (1, 1))
+    measure_draw = ImageDraw.Draw(measure_img)
+    sentence_words = sentence_en.split() if sentence_en else [w["word"] for w in words_data]
+
+    word_layout = []
+    cur_x, cur_y = start_x, start_y
+    for word in sentence_words:
+        bbox_sp = measure_draw.textbbox((0, 0), word + " ", font=font)
+        bbox_w  = measure_draw.textbbox((0, 0), word,       font=font)
+        adv_w   = bbox_sp[2] - bbox_sp[0]
+        word_h  = bbox_sp[3] - bbox_sp[1]
+        if cur_x + adv_w > start_x + max_width:
+            cur_x  = start_x
+            cur_y += word_h + 20   # line_spacing=20，同靜態卡
+        word_layout.append({
+            "text":   word,
+            "x":      cur_x,   "y":      cur_y,
+            "box_x1": cur_x + bbox_w[0], "box_y1": cur_y + bbox_w[1],
+            "box_x2": cur_x + bbox_w[2], "box_y2": cur_y + bbox_w[3],
+        })
+        cur_x += adv_w
+
+    # ── Whisper 時間戳對應原句詞（貪婪字串匹配，解決縮寫斷詞問題）──────
+    w_idx = 0
+    for layout_item in word_layout:
+        target_clean = re.sub(r'[^a-z0-9]', '', layout_item["text"].lower())
+        start_time, end_time = None, None
+        accumulated_str = ""
+        while w_idx < len(words_data):
+            w_item = words_data[w_idx]
+            if start_time is None:
+                start_time = w_item["start"]
+            end_time = w_item["end"]
+            w_clean = re.sub(r'[^a-z0-9]', '', w_item["word"].lower())
+            accumulated_str += w_clean
+            w_idx += 1
+            if target_clean and (target_clean in accumulated_str or accumulated_str in target_clean):
+                break
+        layout_item["start"] = start_time if start_time is not None else 0.0
+        layout_item["end"]   = end_time   if end_time   is not None else 0.0
+
+    if not word_layout:
+        print("   ⚠️ 無法對齊詞彙，跳過 karaoke")
+        return None
+
+    # ── 取得音訊總時長（ffprobe）────────────────────────────────────
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+        capture_output=True, text=True,
+    )
+    audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 10.0
+
+    # ── 逐幀產生 PNG ───────────────────────────────────────────────
+    stem       = os.path.splitext(os.path.basename(output_mp4))[0]
     frames_dir = os.path.join(TEMP_DIR, f"kframes_{stem}")
     os.makedirs(frames_dir, exist_ok=True)
     concat_lines: list[str] = []
-
     base_img = Image.open(image_path).convert("RGBA")
 
-    for i, focus in enumerate(layout):
+    # pre-frame：leading silence 期間顯示靜態卡片（無框）
+    lead_silence = word_layout[0]["start"]
+    if lead_silence > 0.05:
+        pre_path = os.path.join(frames_dir, "frame_pre.png")
+        base_img.convert("RGB").save(pre_path)
+        concat_lines.append(f"file '{pre_path.replace(chr(92), '/')}'")
+        concat_lines.append(f"duration {lead_silence:.3f}")
+
+    for i, focus in enumerate(word_layout):
         img  = base_img.copy()
         draw = ImageDraw.Draw(img)
 
-        # 只畫目前焦點單字的半透明黑色圓角底框（文字已在靜態卡片上）
-        tx, ty, tw, th = focus["x"], focus["y"], focus["w"], focus["h"]
+        # 1. 先畫暗色圓角底框（框在文字下方）
         draw.rounded_rectangle(
-            [tx - padding, ty - padding, tx + tw + padding, ty + th + padding],
-            radius=20, fill=(0, 0, 0, 180),
+            [focus["box_x1"] - padding, focus["box_y1"] - padding,
+             focus["box_x2"] + padding, focus["box_y2"] + padding],
+            radius=16, fill=(0, 0, 0, 200),
         )
+        # 2. 把當前詞重繪在框上（確保文字在框上方可見）
+        is_target  = bool(target_tokens and _normalize_token(focus["text"]) in target_tokens)
+        word_color = (255, 210, 0, 255) if is_target else (255, 255, 255, 255)
+        draw.text((focus["x"], focus["y"]), focus["text"], font=font, fill=word_color)
 
         frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
         img.convert("RGB").save(frame_path)
 
-        # 最後一幀用超長 duration，靠 -shortest 截在音訊結束
-        duration = (
-            layout[i + 1]["start"] - focus["start"]
-            if i + 1 < len(layout)
-            else 9999
-        )
+        if i + 1 < len(word_layout):
+            duration = word_layout[i + 1]["start"] - focus["start"]
+        else:
+            duration = max(audio_dur - focus["start"] + 0.8, 0.5)
         safe_path = frame_path.replace("\\", "/")
         concat_lines.append(f"file '{safe_path}'")
-        concat_lines.append(f"duration {duration:.3f}")
+        concat_lines.append(f"duration {max(duration, 0.05):.3f}")
 
     concat_file = os.path.join(frames_dir, "concat.txt")
     with open(concat_file, "w", encoding="utf-8") as _cf:
