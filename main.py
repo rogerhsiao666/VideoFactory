@@ -241,6 +241,57 @@ def _call_tavily(query: str, **kwargs):
     raise last_err
 
 
+def export_review_excel(data_list: list, topic: str) -> str:
+    """將 data_list 匯出為審核用 Excel，欄位對應卡片所有欄位。回傳檔案路徑。"""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Review"
+
+    headers = ["id", "word_en", "word_ipa", "word_cn", "tips",
+               "sentence_en", "sentence_ipa", "sentence_cn"]
+
+    # 標題列格式
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    # 資料列
+    for item in data_list:
+        ws.append([item.get(h, "") for h in headers])
+
+    # 自動欄寬（最大 60）
+    for col in ws.columns:
+        max_len = max((len(str(c.value or "")) for c in col), default=0)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 60)
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    safe_topic = re.sub(r'[^\w\u4e00-\u9fff-]', '_', topic)
+    path = os.path.join(OUTPUT_DIR, f"review_{safe_topic}.xlsx")
+    wb.save(path)
+    return path
+
+
+def import_review_excel(path: str) -> list:
+    """從審核 Excel 讀回 data_list，保留使用者在 Excel 中做的任何修改。"""
+    import openpyxl
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    result = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        item = {headers[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row)}
+        if item.get("word_en"):   # 空列跳過
+            result.append(item)
+    return result
+
+
 def generate_content(topic: str, count: int, context: str = "") -> list:
     """透過 OpenAI GPT-4o-mini 生成英語詞彙卡片。
     雙引擎邏輯：
@@ -1670,6 +1721,31 @@ async def main():
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(data_list, f, ensure_ascii=False, indent=2)
             print(f"✅ 已生成 {len(data_list)} 個詞彙並儲存至 data.json")
+
+            # ── 內容審核關卡 ──────────────────────────────────
+            review_path = export_review_excel(data_list, topic)
+            print(f"\n📊 內容審核 Excel：{review_path}")
+            try:
+                if sys.platform == "win32":
+                    os.startfile(review_path)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", review_path], check=True)
+                else:
+                    subprocess.run(["xdg-open", review_path], check=True)
+            except Exception:
+                pass  # 無法自動開啟也繼續
+
+            _confirm = input("\n✅ 請在 Excel 確認（或修改）內容後按 Enter 繼續，輸入 q 中止：").strip().lower()
+            if _confirm == "q":
+                print("⛔ 已中止。")
+                return
+
+            # 重新從 Excel 讀回（自動套用使用者對 Excel 的修改）
+            data_list = import_review_excel(review_path)
+            with open(DATA_FILE, "w", encoding="utf-8") as _f:
+                json.dump(data_list, _f, ensure_ascii=False, indent=2)
+            print(f"✅ 已讀回 {len(data_list)} 個詞彙（含任何修改）\n")
+
         except Exception as e:
             print(f"⚠️  OpenAI 所有金鑰均失敗，嘗試讀取 data.json ...")
             with open(DATA_FILE, "r", encoding="utf-8") as f:
