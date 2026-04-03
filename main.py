@@ -43,6 +43,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from moviepy import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, CompositeAudioClip
 from moviepy.audio.AudioClip import AudioClip, concatenate_audioclips
 from dotenv import load_dotenv
+import openpyxl
+from openpyxl.styles import Font as XlFont, PatternFill, Alignment
 
 load_dotenv()
 
@@ -410,9 +412,6 @@ def _call_tavily(query: str, **kwargs):
 
 def export_review_excel(data_list: list, topic: str) -> str:
     """將 data_list 匯出為審核用 Excel，欄位對應卡片所有欄位。回傳檔案路徑。"""
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment
-
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Review"
@@ -422,7 +421,7 @@ def export_review_excel(data_list: list, topic: str) -> str:
 
     # 標題列格式
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-    header_font = Font(bold=True, color="FFFFFF")
+    header_font = XlFont(bold=True, color="FFFFFF")
     for col_idx, h in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_idx, value=h)
         cell.fill = header_fill
@@ -447,7 +446,6 @@ def export_review_excel(data_list: list, topic: str) -> str:
 
 def import_review_excel(path: str) -> list:
     """從審核 Excel 讀回 data_list，保留使用者在 Excel 中做的任何修改。"""
-    import openpyxl
     wb = openpyxl.load_workbook(path)
     ws = wb.active
     headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
@@ -1436,10 +1434,12 @@ async def process_group(
                     kar_slow_path = os.path.join(TEMP_DIR, f"kar_sent_en_slow_{global_idx}.mp4")
                     kar_norm_path = os.path.join(TEMP_DIR, f"kar_sent_en_{global_idx}.mp4")
                     kar_slow = create_rounded_highlight_video(
-                        img_sent, aud_sent_en_slow, kar_slow_path, FONT_EN, item["word_en"]
+                        img_sent, aud_sent_en_slow, kar_slow_path, FONT_EN, item["word_en"],
+                        sentence_en=item["sentence_en"],
                     )
                     kar_norm = create_rounded_highlight_video(
-                        img_sent, aud_sent_en, kar_norm_path, FONT_EN, item["word_en"]
+                        img_sent, aud_sent_en, kar_norm_path, FONT_EN, item["word_en"],
+                        sentence_en=item["sentence_en"],
                     )
                     # karaoke 成功 → 用 VideoFileClip；失敗 → 降級回靜態卡片
                     v_s_en_slow = VideoFileClip(kar_slow_path) if kar_slow else _image_clip(img_sent, c_s_en_slow)
@@ -1520,7 +1520,8 @@ async def process_group(
                     # v3：karaoke（無CN）+ 2s 靜態思考留白
                     kar2_slow_path = os.path.join(TEMP_DIR, f"kar2_sent_en_slow_{global_idx}.mp4")
                     kar2_slow = create_rounded_highlight_video(
-                        img_sent_hidden, aud_sent_en_slow, kar2_slow_path, FONT_EN, item["word_en"]
+                        img_sent_hidden, aud_sent_en_slow, kar2_slow_path, FONT_EN, item["word_en"],
+                        sentence_en=item["sentence_en"],
                     )
                     if kar2_slow:
                         _fps_a   = 44100
@@ -1535,7 +1536,8 @@ async def process_group(
                     # v5：karaoke（有CN）→ 覆誦
                     kar2_norm_path = os.path.join(TEMP_DIR, f"kar2_sent_en_norm_{global_idx}.mp4")
                     kar2_norm = create_rounded_highlight_video(
-                        img_sent, aud_sent_en_norm, kar2_norm_path, FONT_EN, item["word_en"]
+                        img_sent, aud_sent_en_norm, kar2_norm_path, FONT_EN, item["word_en"],
+                        sentence_en=item["sentence_en"],
                     )
                     v5 = VideoFileClip(kar2_norm_path) if kar2_norm else _image_clip(img_sent, c_s_en_norm)
 
