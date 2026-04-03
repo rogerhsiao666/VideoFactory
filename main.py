@@ -46,6 +46,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Whisper 模型（karaoke 字幕用）────────────────────
+try:
+    from faster_whisper import WhisperModel as _WhisperModel
+    whisper_model = _WhisperModel("base", device="cpu", compute_type="int8")
+except Exception as _e:
+    print(f"⚠️ Whisper 模型載入失敗，karaoke 字幕將停用: {_e}")
+    whisper_model = None
+
 # ================= 配置區 =================
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
