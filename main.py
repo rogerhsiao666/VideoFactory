@@ -177,8 +177,9 @@ def create_waveform_video(
             "-loop", "1", "-framerate", "24", "-i", image_path,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            "[1:a]showwaves=s=1920x120:mode=cline:colors=white[wave_raw];"
-            "[wave_raw]colorkey=black:0.05:0.1[wave];"
+            "[1:a]showwaves=s=1920x120:mode=p2p:colors=white[wave_raw];"
+            "[wave_raw]colorkey=black:0.05:0.1[wave_trans];"
+            "[wave_trans]colorchannelmixer=aa=0.5[wave];"
             "[0:v][wave]overlay=0:H-h-30:format=auto[vo];"
             "[vo]format=yuv420p[v]",
             "-map", "[v]", "-map", "1:a",
@@ -876,7 +877,7 @@ def draw_text_wrapped(draw, text, font, max_width, start_x, start_y, color, line
     lines = []
     if any("\u4e00" <= c <= "\u9fff" for c in text):
         # 中文：以字元數截斷
-        lines = textwrap.wrap(text, width=22)
+        lines = textwrap.wrap(text, width=18)
     else:
         # 英文：以像素寬度截斷
         words = text.split()
