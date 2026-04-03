@@ -1958,7 +1958,7 @@ async def main():
             print(f"✅ 已讀回 {len(data_list)} 個詞彙（含任何修改）\n")
 
         except Exception as e:
-            print(f"⚠️  OpenAI 所有金鑰均失敗，嘗試讀取 data.json ...")
+            print(f"⚠️  OpenAI 失敗（{type(e).__name__}: {e}），嘗試讀取 data.json ...")
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data_list = json.load(f)
     else:
