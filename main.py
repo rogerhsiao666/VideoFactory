@@ -151,11 +151,11 @@ def create_waveform_video(
     output_mp4: str,
 ) -> str | None:
     """
-    使用 FFmpeg 生成「全景掃描音波 (SoundCloud Style)」。
-    - 視覺：預先顯示整句的波形（30% 透明），播放時以 80% 透明度由左至右填滿。
+    使用 FFmpeg 生成「即時累積音波」。
+    - 視覺：畫面初始無音波，隨著聲音播放，波形由左至右即時畫出並保留。
     - 效能：0 Token 消耗，精準對齊音訊總長度。
     """
-    print(f"   🌊 生成全景掃描音波影片: {os.path.basename(output_mp4)}")
+    print(f"   🌊 生成即時累積音波影片: {os.path.basename(output_mp4)}")
 
     # MP3 → WAV：確保時間軸精準
     _ffmpeg_audio = audio_path
@@ -176,7 +176,7 @@ def create_waveform_video(
              "-of", "default=noprint_wrappers=1:nokey=1", _ffmpeg_audio],
             capture_output=True, text=True,
         )
-        audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 5.0
+        audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 2.0
         audio_dur = max(audio_dur, 0.1)  # 防呆，避免除以零
 
         # 2. 生成全景靜態波形圖 (1920x120)
@@ -187,20 +187,16 @@ def create_waveform_video(
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # 3. 合成動態掃描影片
-        # 邏輯：波形分兩份，一份 30% 透明作底，一份 80% 透明並用 drawbox 隨時間推進遮罩
-        # 使用 -t audio_dur 取代 -shortest，確保容器時長精準，避免 MoviePy 末幀讀取 warning
+        # 邏輯：取消底圖。一開始用 drawbox 全黑遮擋，隨著時間 t 推進，黑框往右退，露出左側波形。
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-framerate", "24", "-i", image_path,
             "-loop", "1", "-framerate", "24", "-i", wave_pic,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            f"[1:v]split=2[wave_base_raw][wave_prog_raw];"
-            f"[wave_base_raw]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.3[wave_base];"
-            f"[wave_prog_raw]drawbox=x='in_w*(t/{audio_dur})':y=0:w=in_w:h=in_h:color=black:thickness=fill,"
-            f"colorkey=black:0.05:0.1,colorchannelmixer=aa=0.8[wave_prog];"
-            f"[0:v][wave_base]overlay=0:H-h-30:format=auto[v_base];"
-            f"[v_base][wave_prog]overlay=0:H-h-30:format=auto[v]",
+            f"[1:v]drawbox=x='in_w*(t/{audio_dur})':y=0:w=in_w:h=in_h:color=black:thickness=fill,"
+            f"colorkey=black:0.05:0.1,colorchannelmixer=aa=0.6[wave];"
+            f"[0:v][wave]overlay=0:H-h-30:format=auto[v]",
             "-map", "[v]", "-map", "2:a",
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k",
