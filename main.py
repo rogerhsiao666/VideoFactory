@@ -84,9 +84,9 @@ OUTRO_VIDEO = _pick_prebuilt("outro")
 
 async def generate_custom_intro(text: str, voice: str = "zh-TW-HsiaoChenNeural") -> str | None:
     """
-    將使用者輸入的文字轉成 TTS，疊加到 prebuilt intro 影片上，
-    讓使用者預覽確認後回傳最終 mp4 路徑；取消則回傳 None。
-    支援重試：每次重試使用獨立檔名，避免 Windows 檔案鎖定問題。
+    將使用者輸入的文字轉成 TTS mp3，讓使用者聆聽確認後，
+    才將音訊疊加到 prebuilt intro 影片上，回傳最終 mp4 路徑；
+    取消則回傳 None。支援重試：每次重試獨立 mp3 檔名。
     """
     base_intro = _pick_prebuilt("intro")
     if not os.path.exists(base_intro):
@@ -96,45 +96,42 @@ async def generate_custom_intro(text: str, voice: str = "zh-TW-HsiaoChenNeural")
     attempt = 0
     while True:
         attempt += 1
-        tts_path     = os.path.join(TEMP_DIR, f"custom_intro_tts_{attempt}.mp3")
-        preview_path = os.path.join(TEMP_DIR, f"custom_intro_preview_{attempt}.mp4")
+        tts_path = os.path.join(TEMP_DIR, f"custom_intro_tts_{attempt}.mp3")
 
         print("🎙️  正在生成片頭語音...")
         await generate_audio(text, voice, tts_path)
 
-        # 取得 TTS 時長
-        tts_clip = _load_audio(tts_path)
-        tts_dur  = tts_clip.duration + 0.5   # 加 0.5s 尾部留白
-        tts_clip.close()
-
-        print("🎬  正在合成片頭預覽影片...")
-        # stream_loop 讓 intro 影片循環直到 TTS 結束，-map 1:a 取代原聲
-        cmd = [
-            "ffmpeg", "-y", "-stream_loop", "-1", "-i", base_intro, "-i", tts_path,
-            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
-            "-map", "0:v:0", "-map", "1:a:0", "-t", str(round(tts_dur, 3)),
-            preview_path, "-loglevel", "error"
-        ]
-        ret = subprocess.run(cmd)
-        if ret.returncode != 0 or not os.path.exists(preview_path):
-            print("❌  片頭合成失敗")
-            return None
-
-        # 開啟預覽（跨平台，無 GUI 環境自動降級為印出路徑）
-        print(f"\n▶  預覽片頭：{preview_path}")
+        # 直接播放 mp3 預覽（不合成影片）
+        print(f"\n▶  預覽片頭音訊：{tts_path}")
         try:
             if sys.platform == "win32":
-                os.startfile(preview_path)
+                os.startfile(tts_path)
             elif sys.platform == "darwin":
-                subprocess.run(["open", preview_path], check=True)
+                subprocess.run(["open", tts_path], check=True)
             else:
-                subprocess.run(["xdg-open", preview_path], check=True)
+                subprocess.run(["xdg-open", tts_path], check=True)
         except Exception:
-            print("   (無法自動開啟播放器，請手動點擊上方路徑預覽)")
+            print("   (無法自動開啟播放器，請手動點擊上方路徑試聽)")
 
-        confirm = input("✅  確認使用這個片頭？(y=確認使用 / r=重新嘗試 / n=使用預設，預設 y): ").strip().lower()
+        confirm = input("✅  確認使用這個片頭音訊？(y=確認使用 / r=重新嘗試 / n=使用預設，預設 y): ").strip().lower()
         if confirm in ("", "y"):
-            return preview_path
+            # 確認後才合成影片
+            final_path = os.path.join(TEMP_DIR, f"custom_intro_final_{attempt}.mp4")
+            print("🎬  正在合成片頭影片（僅在確認後執行一次）...")
+            tts_clip = _load_audio(tts_path)
+            tts_dur  = tts_clip.duration + 0.5
+            tts_clip.close()
+            cmd = [
+                "ffmpeg", "-y", "-stream_loop", "-1", "-i", base_intro, "-i", tts_path,
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                "-map", "0:v:0", "-map", "1:a:0", "-t", str(round(tts_dur, 3)),
+                final_path, "-loglevel", "error"
+            ]
+            ret = subprocess.run(cmd)
+            if ret.returncode != 0 or not os.path.exists(final_path):
+                print("❌  片頭合成失敗")
+                return None
+            return final_path
         elif confirm == "r":
             while True:
                 new_text = input("   重新輸入片頭文字：").strip()
