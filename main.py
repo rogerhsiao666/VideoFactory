@@ -482,6 +482,8 @@ SENTENCE RULE: Each "sentence_en" MUST contain a concrete detail and sound like 
 CONTEXT FIT RULE: Every word/phrase MUST be naturally and logically appropriate for the topic "{topic}". If a word feels forced or unnatural in this context, either adjust the example sentence to a scenario where the word fits naturally, or replace the word with a more contextually fitting alternative. NEVER force an example sentence to justify an out-of-context word.
 
 TRANSLATION RULE: All Chinese content (word_cn, sentence_cn) MUST use natural, colloquial Taiwanese Mandarin (台灣日常口語意譯). NEVER produce word-for-word literal translations from English. Use expressions a Taiwanese person would naturally say.
+
+FREQUENCY RULE: Prioritize vocabulary that is GENUINELY HIGH-FREQUENCY in this field — words that appear regularly in industry publications, expert conversations, or job listings. Avoid impressive-sounding jargon that professionals rarely encounter in practice.
 """
 
     else:
@@ -507,6 +509,8 @@ SENTENCE RULE: Each "sentence_en" MUST be a practical, real-life sentence that a
 CONTEXT FIT RULE: Every word/phrase MUST be naturally and logically appropriate for the topic "{topic}". If a word feels forced or unnatural in this context, either adjust the example sentence to a scenario where the word fits naturally, or replace the word with a more contextually fitting alternative. NEVER force an example sentence to justify an out-of-context word.
 
 TRANSLATION RULE: All Chinese content (word_cn, sentence_cn) MUST use natural, colloquial Taiwanese Mandarin (台灣日常口語意譯). NEVER produce word-for-word literal translations from English. Use expressions a Taiwanese person would naturally say.
+
+FREQUENCY RULE: Prioritize vocabulary that is HIGH-FREQUENCY in real daily life. Every word/phrase should be something a learner will realistically hear or use within their first year of speaking English. Avoid rare or obscure expressions.
 """
 
     # ── 跨次歷史紀錄 ──────────────────────────────────────
