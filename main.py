@@ -48,13 +48,6 @@ from openpyxl.styles import Font as XlFont, PatternFill, Alignment
 
 load_dotenv()
 
-# ── Whisper 模型（karaoke 字幕用）────────────────────
-try:
-    from faster_whisper import WhisperModel as _WhisperModel
-    whisper_model = _WhisperModel("base", device="cpu", compute_type="int8")
-except Exception as _e:
-    print(f"⚠️ Whisper 模型載入失敗，karaoke 字幕將停用: {_e}")
-    whisper_model = None
 
 # ================= 配置區 =================
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -152,226 +145,53 @@ async def generate_custom_intro(text: str, voice: str = "zh-TW-HsiaoChenNeural")
         else:
             return None
 
-def create_rounded_highlight_video(
+def create_waveform_video(
     image_path: str,
     audio_path: str,
     output_mp4: str,
-    font_path: str,
-    target_word: str = "",
-    sentence_en: str = "",
 ) -> str | None:
     """
-    在靜態卡片圖上疊動態圓角底框，生成 karaoke 影片。
-    - 位置：從 sentence_en 原句計算，與靜態卡片像素對齊
-    - 視覺 (風格 B)：淡淡微光白框 (透明度 20%)，維持原本字體顏色
-    - 時序：貪婪匹配解決縮寫錯位，加 pre-frame 處理 leading silence
-    - 動畫：同行平滑過渡 (Lerp) 並雙字重繪，換行瞬間切換
+    使用 FFmpeg 原生濾鏡在靜態底圖上疊加極簡音波 (Waveform)。
+    - 視覺：30% 透明度白線，置於畫面最下方
+    - 效能：0 Token 消耗，不依賴 Whisper，處理速度極快
     """
-    if not whisper_model:
-        print("   ❌ 缺少 Whisper 模型，無法生成動態字幕")
-        return None
-
-    _ffmpeg_audio = audio_path
-
-    print(f"   🎙️  Whisper 分析音軌: {os.path.basename(audio_path)}")
-    segments, _ = whisper_model.transcribe(audio_path, word_timestamps=True)
-    words_data = []
-    for segment in segments:
-        for word in segment.words:
-            words_data.append({"word": word.word.strip(), "start": word.start, "end": word.end})
-
-    if not words_data:
-        print("   ⚠️  Whisper 找不到任何單字，跳過 karaoke")
-        return None
+    print(f"   🌊 生成極簡音波影片: {os.path.basename(output_mp4)}")
 
     # MP3 → WAV：避免 ffprobe 估算誤差導致 -shortest 截斷音訊
+    _ffmpeg_audio = audio_path
     if audio_path.lower().endswith('.mp3'):
-        _wav_path = audio_path[:-4] + '_karwav.wav'
+        _wav_path = audio_path[:-4] + '_wave.wav'
         subprocess.run(
             ['ffmpeg', '-y', '-i', audio_path, _wav_path],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         _ffmpeg_audio = _wav_path
 
-    # 排版參數（對齊靜態卡片）
-    font_size   = 80
-    start_x     = 150
-    start_y     = 300
-    max_width   = 1600
-    padding     = 15
     try:
-        font = ImageFont.truetype(font_path, font_size)
-    except Exception:
-        font = ImageFont.load_default()
-
-    clean_target  = re.sub(r'[^\w\s]', '', target_word).lower()
-    target_tokens = {_normalize_token(t) for t in clean_target.split() if t}
-
-    # ── 計算單字座標 ──
-    measure_img  = Image.new("RGBA", (1, 1))
-    measure_draw = ImageDraw.Draw(measure_img)
-    sentence_words = sentence_en.split() if sentence_en else [w["word"] for w in words_data]
-
-    word_layout = []
-    cur_x, cur_y = start_x, start_y
-    for word in sentence_words:
-        bbox_sp = measure_draw.textbbox((0, 0), word + " ", font=font)
-        bbox_w  = measure_draw.textbbox((0, 0), word,       font=font)
-        adv_w   = bbox_sp[2] - bbox_sp[0]
-        word_h  = bbox_sp[3] - bbox_sp[1]
-        if cur_x + adv_w > start_x + max_width:
-            cur_x  = start_x
-            cur_y += word_h + 20
-        word_layout.append({
-            "text":   word,
-            "x":      cur_x,   "y":      cur_y,
-            "box_x1": cur_x + bbox_w[0], "box_y1": cur_y + bbox_w[1],
-            "box_x2": cur_x + bbox_w[2], "box_y2": cur_y + bbox_w[3],
-        })
-        cur_x += adv_w
-
-    # ── Whisper 時間戳對應原句詞（貪婪匹配，解決縮寫錯位） ──
-    w_idx = 0
-    for layout_item in word_layout:
-        target_clean = re.sub(r'[^a-z0-9]', '', layout_item["text"].lower())
-        start_time, end_time = None, None
-        accumulated_str = ""
-        while w_idx < len(words_data):
-            w_item = words_data[w_idx]
-            if start_time is None:
-                start_time = w_item["start"]
-            end_time = w_item["end"]
-            w_clean = re.sub(r'[^a-z0-9]', '', w_item["word"].lower())
-            accumulated_str += w_clean
-            w_idx += 1
-            if target_clean and (target_clean in accumulated_str or accumulated_str in target_clean):
-                break
-        layout_item["start"] = start_time if start_time is not None else 0.0
-        layout_item["end"]   = end_time if end_time is not None else 0.0
-
-    if not word_layout:
-        return None
-
-    # ── 取得音訊總時長 ──
-    probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", _ffmpeg_audio],
-        capture_output=True, text=True,
-    )
-    audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 10.0
-
-    frames_dir = None
-    try:
-        stem       = os.path.splitext(os.path.basename(output_mp4))[0]
-        frames_dir = os.path.join(TEMP_DIR, f"kframes_{stem}")
-        os.makedirs(frames_dir, exist_ok=True)
-        concat_lines = []
-        base_img = Image.open(image_path).convert("RGBA")
-
-        # pre-frame (Leading Silence)
-        lead_silence = word_layout[0]["start"]
-        if lead_silence > 0.05:
-            pre_path = os.path.join(frames_dir, "frame_pre.png")
-            base_img.convert("RGB").save(pre_path)
-            concat_lines.append(f"file '{pre_path.replace(chr(92), '/')}'")
-            concat_lines.append(f"duration {lead_silence:.3f}")
-
-        for i, focus in enumerate(word_layout):
-            img  = base_img.copy()
-            draw = ImageDraw.Draw(img)
-
-            # 風格 B：淡淡微光白框 (alpha=50, 約 20% 透明)
-            draw.rounded_rectangle(
-                [focus["box_x1"] - padding, focus["box_y1"] - padding,
-                 focus["box_x2"] + padding, focus["box_y2"] + padding],
-                radius=16, fill=(255, 255, 255, 50),
-            )
-
-            is_target  = bool(target_tokens and _normalize_token(focus["text"]) in target_tokens)
-            word_color = (255, 210, 0, 255) if is_target else (255, 255, 255, 255)
-
-            draw.text((focus["x"] + 2, focus["y"] + 2), focus["text"], font=font, fill=(100, 100, 100, 160))
-            draw.text((focus["x"], focus["y"]), focus["text"], font=font, fill=word_color)
-
-            frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
-            img.convert("RGB").save(frame_path)
-            del img, draw
-
-            if i + 1 < len(word_layout):
-                total_dur = word_layout[i + 1]["start"] - focus["start"]
-                nxt = word_layout[i + 1]
-
-                LERP_DUR = 0.08
-                LERP_N   = 3
-
-                # 防換行亂飛：只在同一行且時間足夠時滑動
-                if total_dur > LERP_DUR + 0.05 and focus["y"] == nxt["y"]:
-                    main_dur = total_dur - LERP_DUR
-                    concat_lines.append(f"file '{frame_path.replace(chr(92), '/')}'")
-                    concat_lines.append(f"duration {max(main_dur, 0.05):.3f}")
-
-                    nxt_is_target = bool(target_tokens and _normalize_token(nxt["text"]) in target_tokens)
-                    nxt_color = (255, 210, 0, 255) if nxt_is_target else (255, 255, 255, 255)
-                    for lf in range(1, LERP_N + 1):
-                        t    = lf / LERP_N
-                        lx1  = int(focus["box_x1"] + (nxt["box_x1"] - focus["box_x1"]) * t)
-                        ly1  = int(focus["box_y1"] + (nxt["box_y1"] - focus["box_y1"]) * t)
-                        lx2  = int(focus["box_x2"] + (nxt["box_x2"] - focus["box_x2"]) * t)
-                        ly2  = int(focus["box_y2"] + (nxt["box_y2"] - focus["box_y2"]) * t)
-
-                        limg  = base_img.copy()
-                        ldraw = ImageDraw.Draw(limg)
-
-                        ldraw.rounded_rectangle(
-                            [lx1 - padding, ly1 - padding, lx2 + padding, ly2 + padding],
-                            radius=16, fill=(255, 255, 255, 50),
-                        )
-
-                        # 雙字重繪：避免滑動時文字被白框蓋暗
-                        ldraw.text((focus["x"] + 2, focus["y"] + 2), focus["text"], font=font, fill=(100, 100, 100, 160))
-                        ldraw.text((focus["x"], focus["y"]), focus["text"], font=font, fill=word_color)
-                        ldraw.text((nxt["x"] + 2, nxt["y"] + 2), nxt["text"], font=font, fill=(100, 100, 100, 160))
-                        ldraw.text((nxt["x"], nxt["y"]), nxt["text"], font=font, fill=nxt_color)
-
-                        lpath = os.path.join(frames_dir, f"frame_{i:04d}_l{lf}.png")
-                        limg.convert("RGB").save(lpath)
-                        concat_lines.append(f"file '{lpath.replace(chr(92), '/')}'")
-                        concat_lines.append(f"duration {LERP_DUR / LERP_N:.3f}")
-                        del limg, ldraw
-                else:
-                    # 換行或時間太短，直接瞬間切換
-                    concat_lines.append(f"file '{frame_path.replace(chr(92), '/')}'")
-                    concat_lines.append(f"duration {max(total_dur, 0.05):.3f}")
-            else:
-                duration = max(audio_dur - focus["start"] + 0.8, 0.5)
-                concat_lines.append(f"file '{frame_path.replace(chr(92), '/')}'")
-                concat_lines.append(f"duration {max(duration, 0.05):.3f}")
-
-        concat_file = os.path.join(frames_dir, "concat.txt")
-        with open(concat_file, "w", encoding="utf-8") as _cf:
-            _cf.write("\n".join(concat_lines))
-
-        print("   🎬 FFmpeg 合成 karaoke 字幕...")
+        # FFmpeg 濾鏡說明：
+        # 1. showwaves: 產生 1000x150 的音波，連續線條模式(cline)，顏色為 30% 透明的白色
+        # 2. overlay: 將音波置中疊加在畫面最底部 (H-h-50 預留一點安全邊距)
         cmd = [
             "ffmpeg", "-y",
+            "-loop", "1", "-framerate", "24", "-i", image_path,
             "-i", _ffmpeg_audio,
-            "-f", "concat", "-safe", "0", "-i", concat_file.replace("\\", "/"),
-            "-map", "1:v", "-map", "0:a",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-filter_complex",
+            "[1:a]showwaves=s=1000x150:mode=cline:colors=white@0.3[wave];"
+            "[0:v][wave]overlay=(W-w)/2:H-h-50:format=auto,format=yuv420p[v]",
+            "-map", "[v]", "-map", "1:a",
+            "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k",
             "-shortest",
             output_mp4,
-            "-loglevel", "error",
+            "-loglevel", "error"
         ]
         ret = subprocess.run(cmd)
         if ret.returncode != 0 or not os.path.exists(output_mp4):
-            print("   ❌ karaoke 合成失敗")
+            print("   ❌ 音波影片合成失敗")
             return None
         return output_mp4
     finally:
-        import shutil
-        if frames_dir and os.path.isdir(frames_dir):
-            shutil.rmtree(frames_dir, ignore_errors=True)
+        # 清理暫存的 WAV 檔案
         if _ffmpeg_audio != audio_path and os.path.exists(_ffmpeg_audio):
             os.remove(_ffmpeg_audio)
 
@@ -1492,18 +1312,12 @@ async def process_group(
                     v_w_cn  = _image_clip(img_word, c_w_cn)
                     v_tips  = _image_clip(img_word, c_tips)
 
-                    # ── karaoke：英文例句用「有CN無EN底圖」，karaoke 在 y=820 疊上英文 ──
+                    # ── 音波影片：英文例句疊加極簡 waveform ──
                     kar_slow_path = os.path.join(TEMP_DIR, f"kar_sent_en_slow_{global_idx}.mp4")
                     kar_norm_path = os.path.join(TEMP_DIR, f"kar_sent_en_{global_idx}.mp4")
-                    kar_slow = create_rounded_highlight_video(
-                        img_sent, aud_sent_en_slow, kar_slow_path, FONT_EN, item["word_en"],
-                        sentence_en=item["sentence_en"],
-                    )
-                    kar_norm = create_rounded_highlight_video(
-                        img_sent, aud_sent_en, kar_norm_path, FONT_EN, item["word_en"],
-                        sentence_en=item["sentence_en"],
-                    )
-                    # karaoke 成功 → 用 VideoFileClip；失敗 → 降級回靜態卡片
+                    kar_slow = create_waveform_video(img_sent, aud_sent_en_slow, kar_slow_path)
+                    kar_norm = create_waveform_video(img_sent, aud_sent_en, kar_norm_path)
+                    # 成功 → 用 VideoFileClip；失敗 → 降級回靜態卡片
                     v_s_en_slow = VideoFileClip(kar_slow_path) if kar_slow else _image_clip(img_sent, c_s_en_slow)
                     v_s_en      = VideoFileClip(kar_norm_path) if kar_norm else _image_clip(img_sent, c_s_en)
                     v_s_cn      = _image_clip(img_sent, c_s_cn)
@@ -1579,12 +1393,9 @@ async def process_group(
                     v1 = _image_clip(img_word_hidden, c_w_en_slow, extra_dur=RECALL_THINK_TIME)
                     v2 = _image_clip(img_word,        c_w_cn)
 
-                    # v3：karaoke（無CN）+ 2s 靜態思考留白
+                    # v3：音波影片（無CN）+ 2s 靜態思考留白
                     kar2_slow_path = os.path.join(TEMP_DIR, f"kar2_sent_en_slow_{global_idx}.mp4")
-                    kar2_slow = create_rounded_highlight_video(
-                        img_sent_hidden, aud_sent_en_slow, kar2_slow_path, FONT_EN, item["word_en"],
-                        sentence_en=item["sentence_en"],
-                    )
+                    kar2_slow = create_waveform_video(img_sent_hidden, aud_sent_en_slow, kar2_slow_path)
                     if kar2_slow:
                         _fps_a   = 44100
                         _silence = AudioClip(lambda t: [0, 0], duration=RECALL_THINK_TIME, fps=_fps_a)
@@ -1595,12 +1406,9 @@ async def process_group(
 
                     v4 = _image_clip(img_sent, c_s_cn)
 
-                    # v5：karaoke（有CN）→ 覆誦
+                    # v5：音波影片（有CN）→ 覆誦
                     kar2_norm_path = os.path.join(TEMP_DIR, f"kar2_sent_en_norm_{global_idx}.mp4")
-                    kar2_norm = create_rounded_highlight_video(
-                        img_sent, aud_sent_en_norm, kar2_norm_path, FONT_EN, item["word_en"],
-                        sentence_en=item["sentence_en"],
-                    )
+                    kar2_norm = create_waveform_video(img_sent, aud_sent_en_norm, kar2_norm_path)
                     v5 = VideoFileClip(kar2_norm_path) if kar2_norm else _image_clip(img_sent, c_s_en_norm)
 
                     v6 = _image_clip(img_sent, c_s_cn2)
