@@ -933,18 +933,32 @@ def create_word_card_image(data: dict, output_filename: str, pexels_images: list
     base.save(output_filename)
 
 
-def create_sentence_card_image(data: dict, output_filename: str, pexels_images: list):
-    """生成例句教學卡片（例句高亮 + IPA + 中文翻譯）"""
+def create_sentence_card_image(
+    data: dict,
+    output_filename: str,
+    pexels_images: list,
+    draw_en: bool = True,
+    draw_cn: bool = True,
+):
+    """生成例句教學卡片（例句高亮 + 中文翻譯）。
+    draw_en=False：略過英文例句（karaoke 底圖用）。
+    draw_cn=False：略過中文翻譯（Active Recall karaoke 底圖用）。
+    CN 的 Y 座標永遠由英文渲染結果決定，確保與靜態卡片像素級對齊。
+    """
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
     font_header = ImageFont.truetype(FONT_EN, 40)
     font_en     = ImageFont.truetype(FONT_EN, 80)
-    font_ipa    = ImageFont.truetype(FONT_EN, 50)
     font_cn     = _load_cn_font(70)
 
+    # 1. Header
     draw.text((100, 80), f"{data['id']}  |  {BRAND_NAME} - Example", font=font_header, fill="white")
 
+    # 2. 備份「沒有英文」的乾淨畫布（用於 draw_en=False 情境）
+    clean_base = base.copy()
+
+    # 3. 永遠在 base 上畫英文，藉此計算出精準的 cy（確保 CN 位置一致）
     sx, mw, cy = 150, 1600, 300
     cy = draw_text_with_highlight(
         draw, data["sentence_en"], data["word_en"],
@@ -952,9 +966,16 @@ def create_sentence_card_image(data: dict, output_filename: str, pexels_images: 
         default_color="white", highlight_color="#ffdd00", line_spacing=20,
     )
     cy += 40
-    draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
 
-    base.save(output_filename)
+    # 4. 決定最終輸出畫布（draw_en=False → 用備份的乾淨畫布）
+    target_base = base if draw_en else clean_base
+    target_draw = ImageDraw.Draw(target_base)
+
+    # 5. 畫中文（cy 與靜態卡片完全相同，不會跳動）
+    if draw_cn:
+        draw_text_wrapped(target_draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
+
+    target_base.save(output_filename)
 
 
 def _apply_frosted_glass(img: Image.Image, hidden_y: int):
