@@ -169,15 +169,18 @@ def create_waveform_video(
 
     try:
         # FFmpeg 濾鏡說明：
-        # 1. showwaves: 產生 1000x150 的音波，連續線條模式(cline)，顏色為 30% 透明的白色
-        # 2. overlay: 將音波置中疊加在畫面最底部 (H-h-50 預留一點安全邊距)
+        # 1. showwaves: 產生 1920x120 全幅白色音波（預設黑底）
+        # 2. colorkey=black: 把黑色背景移除，使音波背景透明
+        # 3. overlay: 將透明音波疊加在畫面最底部（底部留 30px 安全邊距）
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-framerate", "24", "-i", image_path,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            "[1:a]showwaves=s=1000x150:mode=cline:colors=white@0.3[wave];"
-            "[0:v][wave]overlay=(W-w)/2:H-h-50:format=auto,format=yuv420p[v]",
+            "[1:a]showwaves=s=1920x120:mode=cline:colors=white[wave_raw];"
+            "[wave_raw]colorkey=black:0.05:0.1[wave];"
+            "[0:v][wave]overlay=0:H-h-30:format=auto[vo];"
+            "[vo]format=yuv420p[v]",
             "-map", "[v]", "-map", "1:a",
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k",
@@ -1155,8 +1158,11 @@ def _normalize_prebuilt(src: str) -> str:
     basename = os.path.basename(src)
     dst = os.path.join(TEMP_DIR, f"normalized_{basename}")
     if os.path.exists(dst):
-        print(f"♻️  已存在正規化版本：{basename}")
-        return dst
+        # 若原始檔比 cached 版本更新，需要重新轉碼
+        if os.path.getmtime(src) <= os.path.getmtime(dst):
+            print(f"♻️  已存在正規化版本：{basename}")
+            return dst
+        print(f"🔄 原始檔已更新，重新正規化：{basename}")
 
     print(f"🔄 正在正規化 pre-built 影片規格：{basename} ...")
     ret = os.system(
