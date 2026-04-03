@@ -151,13 +151,13 @@ def create_waveform_video(
     output_mp4: str,
 ) -> str | None:
     """
-    使用 FFmpeg 原生濾鏡在靜態底圖上疊加極簡音波 (Waveform)。
-    - 視覺：30% 透明度白線，置於畫面最下方
-    - 效能：0 Token 消耗，不依賴 Whisper，處理速度極快
+    使用 FFmpeg 生成「全景掃描音波 (SoundCloud Style)」。
+    - 視覺：預先顯示整句的波形（30% 透明），播放時以 80% 透明度由左至右填滿。
+    - 效能：0 Token 消耗，精準對齊音訊總長度。
     """
-    print(f"   🌊 生成極簡音波影片: {os.path.basename(output_mp4)}")
+    print(f"   🌊 生成全景掃描音波影片: {os.path.basename(output_mp4)}")
 
-    # MP3 → WAV：避免 ffprobe 估算誤差導致 -shortest 截斷音訊
+    # MP3 → WAV：確保時間軸精準
     _ffmpeg_audio = audio_path
     if audio_path.lower().endswith('.mp3'):
         _wav_path = audio_path[:-4] + '_wave.wav'
@@ -167,25 +167,44 @@ def create_waveform_video(
         )
         _ffmpeg_audio = _wav_path
 
+    wave_pic = _ffmpeg_audio[:-4] + '_wavepic.png'
+
     try:
-        # FFmpeg 濾鏡說明：
-        # 1. showwaves: 產生 1920x120 全幅白色音波（預設黑底）
-        # 2. colorkey=black: 把黑色背景移除，使音波背景透明
-        # 3. overlay: 將透明音波疊加在畫面最底部（底部留 30px 安全邊距）
+        # 1. 取得音訊精確時長
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", _ffmpeg_audio],
+            capture_output=True, text=True,
+        )
+        audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 5.0
+        audio_dur = max(audio_dur, 0.1)  # 防呆，避免除以零
+
+        # 2. 生成全景靜態波形圖 (1920x120)
+        subprocess.run([
+            "ffmpeg", "-y", "-i", _ffmpeg_audio,
+            "-filter_complex", "showwavespic=s=1920x120:colors=white",
+            "-frames:v", "1", wave_pic
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # 3. 合成動態掃描影片
+        # 邏輯：波形分兩份，一份 30% 透明作底，一份 80% 透明並用 drawbox 隨時間推進遮罩
+        # 使用 -t audio_dur 取代 -shortest，確保容器時長精準，避免 MoviePy 末幀讀取 warning
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-framerate", "24", "-i", image_path,
+            "-loop", "1", "-framerate", "24", "-i", wave_pic,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            "[1:a]showwaves=s=1920x120:mode=p2p:colors=white[wave_raw];"
-            "[wave_raw]colorkey=black:0.05:0.1[wave_trans];"
-            "[wave_trans]colorchannelmixer=aa=0.5[wave];"
-            "[0:v][wave]overlay=0:H-h-30:format=auto[vo];"
-            "[vo]format=yuv420p[v]",
-            "-map", "[v]", "-map", "1:a",
+            f"[1:v]split=2[wave_base_raw][wave_prog_raw];"
+            f"[wave_base_raw]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.3[wave_base];"
+            f"[wave_prog_raw]drawbox=x='in_w*(t/{audio_dur})':y=0:w=in_w:h=in_h:color=black:thickness=fill,"
+            f"colorkey=black:0.05:0.1,colorchannelmixer=aa=0.8[wave_prog];"
+            f"[0:v][wave_base]overlay=0:H-h-30:format=auto[v_base];"
+            f"[v_base][wave_prog]overlay=0:H-h-30:format=auto[v]",
+            "-map", "[v]", "-map", "2:a",
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
+            "-t", str(audio_dur),
             output_mp4,
             "-loglevel", "error"
         ]
@@ -195,9 +214,11 @@ def create_waveform_video(
             return None
         return output_mp4
     finally:
-        # 清理暫存的 WAV 檔案
+        # 清理暫存檔案
         if _ffmpeg_audio != audio_path and os.path.exists(_ffmpeg_audio):
             os.remove(_ffmpeg_audio)
+        if os.path.exists(wave_pic):
+            os.remove(wave_pic)
 
 
 BRAND_NAME       = "Rayo: AI Flashcards"
