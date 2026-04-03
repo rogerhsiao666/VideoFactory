@@ -150,6 +150,137 @@ async def generate_custom_intro(text: str, voice: str = "zh-TW-HsiaoChenNeural")
         else:
             return None
 
+def create_rounded_highlight_video(
+    image_path: str,
+    audio_path: str,
+    output_mp4: str,
+    font_path: str,
+    target_word: str = "",
+) -> str | None:
+    """
+    生成帶有「動態黑色圓角底框」的 karaoke 字幕影片（1920×1080 橫式）。
+    目標單字 (target_word) 全程以亮橘黃色顯示，其他字白色。
+    回傳 output_mp4 路徑；失敗則回傳 None。
+    """
+    if not whisper_model:
+        print("   ❌ 缺少 Whisper 模型，無法生成動態字幕")
+        return None
+
+    print(f"   🎙️ Whisper 分析音軌: {os.path.basename(audio_path)}")
+
+    segments, _ = whisper_model.transcribe(audio_path, word_timestamps=True)
+    words_data = []
+    for segment in segments:
+        for word in segment.words:
+            words_data.append({
+                "word":  word.word.strip(),
+                "start": word.start,
+                "end":   word.end,
+            })
+
+    if not words_data:
+        print("   ⚠️ Whisper 找不到任何單字，跳過 karaoke")
+        return None
+
+    # 排版參數（1920×1080 橫式，字幕置於下方）
+    font_size   = 60
+    start_x     = 100
+    start_y     = 820
+    max_width   = 1720
+    line_height = 90
+    padding     = 15
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    try:
+        space_width = font.getlength(" ")
+    except AttributeError:
+        space_width = font.getsize(" ")[0]
+
+    # 計算每個單字的座標（自動換行）
+    layout = []
+    current_x, current_y = start_x, start_y
+    for w_info in words_data:
+        text = w_info["word"]
+        try:
+            w_width = font.getlength(text)
+        except AttributeError:
+            w_width = font.getsize(text)[0]
+        if current_x + w_width > start_x + max_width:
+            current_x  = start_x
+            current_y += line_height
+        layout.append({
+            "text":  text,
+            "x":     current_x,
+            "y":     current_y,
+            "w":     w_width,
+            "h":     font_size,
+            "start": w_info["start"],
+            "end":   w_info["end"],
+        })
+        current_x += w_width + space_width
+
+    # 逐幀產生透明 PNG
+    frames_dir = os.path.join(TEMP_DIR, "karaoke_frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    clean_target = re.sub(r'[^\w\s]', '', target_word).lower() if target_word else ""
+    concat_lines: list[str] = []
+
+    for i, focus in enumerate(layout):
+        img  = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # 目前焦點單字底框
+        tx, ty, tw, th = focus["x"], focus["y"], focus["w"], focus["h"]
+        draw.rounded_rectangle(
+            [tx - padding, ty - padding, tx + tw + padding, ty + th + padding],
+            radius=20, fill=(0, 0, 0, 200),
+        )
+
+        # 所有單字文字
+        for w in layout:
+            clean_w = re.sub(r'[^\w\s]', '', w["text"]).lower()
+            color = (255, 180, 0, 255) if clean_target and clean_target == clean_w else (255, 255, 255, 255)
+            draw.text((w["x"], w["y"]), w["text"], font=font, fill=color)
+
+        frame_path = os.path.join(frames_dir, f"frame_{i}.png")
+        img.save(frame_path)
+
+        duration = (
+            layout[i + 1]["start"] - focus["start"]
+            if i + 1 < len(layout)
+            else focus["end"] - focus["start"] + 0.5
+        )
+        safe_path = frame_path.replace("\\", "/")
+        concat_lines.append(f"file '{safe_path}'")
+        concat_lines.append(f"duration {duration:.3f}")
+
+    concat_file = os.path.join(frames_dir, "concat.txt")
+    with open(concat_file, "w", encoding="utf-8") as _cf:
+        _cf.write("\n".join(concat_lines))
+
+    print("   🎬 FFmpeg 合成 karaoke 字幕...")
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", image_path,
+        "-i", audio_path,
+        "-f", "concat", "-safe", "0", "-i", concat_file.replace("\\", "/"),
+        "-filter_complex", "[0:v][2:v]overlay=0:0:shortest=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest",
+        output_mp4,
+        "-loglevel", "error",
+    ]
+    ret = subprocess.run(cmd)
+    if ret.returncode != 0 or not os.path.exists(output_mp4):
+        print("   ❌ karaoke 合成失敗")
+        return None
+    return output_mp4
+
+
 BRAND_NAME       = "Rayo: AI Flashcards"
 BATCH_SIZE       = 5
 GENERATE_CHUNK   = 20          # 每次呼叫 OpenAI 最多要求幾個詞彙
