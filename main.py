@@ -32,6 +32,7 @@ import termios
 import textwrap
 import asyncio
 import random
+import time
 import gc
 import shutil
 import subprocess
@@ -80,8 +81,74 @@ INTRO_VIDEO = _pick_prebuilt("intro")
 BREAK_VIDEO = _pick_prebuilt("break")
 OUTRO_VIDEO = _pick_prebuilt("outro")
 
-BRAND_NAME  = "Rayo: AI Flashcards"
-BATCH_SIZE  = 5
+
+async def generate_custom_intro(text: str, voice: str = "zh-TW-HsiaoChenNeural") -> str | None:
+    """
+    將使用者輸入的文字轉成 TTS，疊加到 prebuilt intro 影片上，
+    讓使用者預覽確認後回傳最終 mp4 路徑；取消則回傳 None。
+    支援重試：每次重試使用獨立檔名，避免 Windows 檔案鎖定問題。
+    """
+    base_intro = _pick_prebuilt("intro")
+    if not os.path.exists(base_intro):
+        print("⚠️  找不到 prebuilt intro 影片，無法生成客製化片頭")
+        return None
+
+    attempt = 0
+    while True:
+        attempt += 1
+        tts_path     = os.path.join(TEMP_DIR, f"custom_intro_tts_{attempt}.mp3")
+        preview_path = os.path.join(TEMP_DIR, f"custom_intro_preview_{attempt}.mp4")
+
+        print("🎙️  正在生成片頭語音...")
+        await generate_audio(text, voice, tts_path)
+
+        # 取得 TTS 時長
+        tts_clip = _load_audio(tts_path)
+        tts_dur  = tts_clip.duration + 0.5   # 加 0.5s 尾部留白
+        tts_clip.close()
+
+        print("🎬  正在合成片頭預覽影片...")
+        # stream_loop 讓 intro 影片循環直到 TTS 結束，-map 1:a 取代原聲
+        cmd = [
+            "ffmpeg", "-y", "-stream_loop", "-1", "-i", base_intro, "-i", tts_path,
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            "-map", "0:v:0", "-map", "1:a:0", "-t", str(round(tts_dur, 3)),
+            preview_path, "-loglevel", "error"
+        ]
+        ret = subprocess.run(cmd)
+        if ret.returncode != 0 or not os.path.exists(preview_path):
+            print("❌  片頭合成失敗")
+            return None
+
+        # 開啟預覽（跨平台，無 GUI 環境自動降級為印出路徑）
+        print(f"\n▶  預覽片頭：{preview_path}")
+        try:
+            if sys.platform == "win32":
+                os.startfile(preview_path)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", preview_path], check=True)
+            else:
+                subprocess.run(["xdg-open", preview_path], check=True)
+        except Exception:
+            print("   (無法自動開啟播放器，請手動點擊上方路徑預覽)")
+
+        confirm = input("✅  確認使用這個片頭？(y=確認使用 / r=重新嘗試 / n=使用預設，預設 y): ").strip().lower()
+        if confirm in ("", "y"):
+            return preview_path
+        elif confirm == "r":
+            while True:
+                new_text = input("   重新輸入片頭文字：").strip()
+                if new_text:
+                    text = new_text
+                    break
+                print("   ⚠️ 文字不能為空，請重新輸入。")
+        else:
+            return None
+
+BRAND_NAME       = "Rayo: AI Flashcards"
+BATCH_SIZE       = 5
+GENERATE_CHUNK   = 20          # 每次呼叫 OpenAI 最多要求幾個詞彙
+USED_WORDS_FILE  = os.path.join(BASE_DIR, "used_words.json")
 BUFFER_TIME      = 0.5   # seconds of silence padding after each audio clip
 RECALL_THINK_TIME = 2.0  # 遮中文卡念完後的靜音思考秒數（Phase 2）
 FPS = 24
@@ -224,8 +291,6 @@ STRICT SELECTION RULES:
 ❌ FORBIDDEN: Basic vocabulary (launch, new, use, make, show, say, oops, cringe, bad, sad), generic filler phrases.
 
 SENTENCE RULE: Each "sentence_en" MUST contain a concrete detail and sound like professional journalism.
-
-{field_spec}
 """
 
     else:
@@ -237,36 +302,100 @@ SENTENCE RULE: Each "sentence_en" MUST contain a concrete detail and sound like 
         prompt = f"""You are an enthusiastic and practical English vocabulary teacher.
 Your mission: Generate {count} highly useful, everyday English vocabulary items (words, phrases, or idioms) related to the topic "{topic}".
 
+VARIETY RULE: Spread across different real-life scenarios — home, work, socializing, shopping, health, emotions, dining, transport, requests, small talk. Do NOT cluster around one scenario.
+
 STRICT SELECTION RULES:
-✅ PRIORITIZE:
-  1. Practical survival phrases (e.g., "boarding pass", "tap your card")
-  2. Natural spoken expressions native speakers actually use (e.g., "grab a bite", "on the house")
+✅ PRIORITIZE: Natural spoken expressions, phrasal verbs, idioms, and collocations that native speakers use every day in real conversations.
 ❌ FORBIDDEN:
-  1. Overly academic or obscure words (e.g., "aviation regulatory compliance")
-  2. Stiff, textbook-style sentences
+  1. Overly academic, technical, or travel-specific vocabulary
+  2. Stiff, textbook-style words or sentences
+  3. Any word or phrase you used as an example in previous responses — always pick fresh vocabulary
 
-SENTENCE RULE: Each "sentence_en" MUST be a natural, conversational sentence a traveler or learner would actually say or hear in real life.
-
-{field_spec}
+SENTENCE RULE: Each "sentence_en" MUST be a practical, real-life sentence that a beginner can immediately use in daily conversation — something people actually say at work, at a restaurant, with friends, or while traveling. Prioritize usefulness over formality.
 """
 
-    response = _call_openai(
-        messages=[{"role": "user", "content": prompt}],
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        temperature=0.7,
-    )
+    # ── 跨次歷史紀錄 ──────────────────────────────────────
+    used_words: set[str] = set()
+    if os.path.exists(USED_WORDS_FILE):
+        try:
+            with open(USED_WORDS_FILE, "r", encoding="utf-8") as f:
+                used_words = set(json.load(f))
+        except Exception:
+            pass
 
-    content = json.loads(response.choices[0].message.content)
-    items   = content.get("items", [])
+    def _call_chunk(chunk_size: int, exclude: set[str]) -> list:
+        """呼叫一次 OpenAI，回傳去重後的新詞彙。"""
+        exclusion_note = ""
+        if exclude:
+            # 隨機抽樣，避免永遠只排除 Z 開頭的詞
+            sample = random.sample(list(exclude), min(200, len(exclude)))
+            exclusion_note = f"\nNEVER generate any of these already-used words/phrases: {', '.join(sample)}\n"
 
-    for i, item in enumerate(items):
-        if item.get("word_en"):
-            w = item["word_en"]
-            item["word_en"] = w[0].upper() + w[1:] if w else w
+        full_prompt = prompt + exclusion_note + f"\nGenerate exactly {chunk_size} items.\n" + field_spec
+        try:
+            resp = _call_openai(
+                messages=[{"role": "user", "content": full_prompt}],
+                model="gpt-4o-mini",
+                response_format={"type": "json_object"},
+                temperature=1.1,
+            )
+            raw = json.loads(resp.choices[0].message.content).get("items", [])
+        except Exception as e:
+            print(f"      [Chunk 警告] API 呼叫或解析失敗，等待 2 秒後重試: {e}")
+            time.sleep(2)
+            return []
+
+        result = []
+        for item in raw:
+            # 標點符號正規化："word." 和 "word" 視為同一詞
+            key = item.get("word_en", "").lower().strip().strip(".,!?")
+            if key and key not in exclude:
+                if item.get("word_en"):
+                    w = item["word_en"]
+                    item["word_en"] = w[0].upper() + w[1:] if w else w
+                result.append(item)
+                exclude.add(key)
+        return result
+
+    # ── 分批生成直到數量足夠 ──────────────────────────────
+    all_items: list   = []
+    seen: set[str]    = set(used_words)
+    max_rounds        = math.ceil(count / GENERATE_CHUNK) + 3
+    rounds            = 0
+    consecutive_fails = 0
+
+    while len(all_items) < count and rounds < max_rounds:
+        need       = count - len(all_items)
+        chunk_size = min(GENERATE_CHUNK, need + 3)
+        print(f"   🔄 OpenAI 呼叫 #{rounds + 1}（目標 {chunk_size} 個，已有 {len(all_items)} 個）...")
+        new_items = _call_chunk(chunk_size, seen)
+        if not new_items:
+            consecutive_fails += 1
+            if consecutive_fails >= 3:
+                print("   ⚠️  連續失敗 3 次，中斷生成。")
+                break
+            continue   # API 失敗不消耗 rounds
+        consecutive_fails = 0
+        all_items.extend(new_items)
+        rounds += 1
+
+    all_items = all_items[:count]
+
+    for i, item in enumerate(all_items):
         item["id"] = f"{i + 1:02d}"
 
-    return items[:count]
+    # ── 更新歷史紀錄（原子寫入）──────────────────────────
+    new_keys = {item["word_en"].lower().strip().strip(".,!?") for item in all_items if item.get("word_en")}
+    updated  = used_words | new_keys
+    try:
+        tmp_words_file = USED_WORDS_FILE + ".tmp"
+        with open(tmp_words_file, "w", encoding="utf-8") as f:
+            json.dump(sorted(updated), f, ensure_ascii=False, indent=2)
+        os.replace(tmp_words_file, USED_WORDS_FILE)
+    except Exception as e:
+        print(f"   ⚠️  歷史紀錄儲存失敗: {e}")
+
+    return all_items
 
 
 def get_tavily_context(query: str, max_chars: int = 6000) -> str:
@@ -839,9 +968,8 @@ def create_sent_card_hidden_image(data: dict, output_filename: str, pexels_image
 # ================= 音訊合成 =================
 
 def clean_for_tts(text: str) -> str:
-    """移除會被 TTS 誤讀的標點（e.g. '-' 被中文唸成「負」）"""
-    text = text.replace("-", " ")
-    text = text.replace("/", " ")
+    """移除會被 TTS 誤讀的標點（e.g. '-' 被中文唸成「負」，'+' 唸成「加」或「plus」）"""
+    text = re.sub(r"[\-/+]", " ", text)
     text = re.sub(r"[()（）]", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
@@ -973,12 +1101,38 @@ async def process_group(
     """
     chunk_files = []
 
+    # ── Checkpoint 恢復 ───────────────────────────────────
+    ckpt_file = os.path.join(TEMP_DIR, f"ckpt_g{group_idx}.json")
+    ckpt: dict = {}
+    if os.path.exists(ckpt_file):
+        try:
+            with open(ckpt_file, "r", encoding="utf-8") as _f:
+                ckpt = json.load(_f)
+            print(f"   ♻️  偵測到 checkpoint（已完成 {len(ckpt)} 個 batch）")
+        except Exception:
+            ckpt = {}
+
     for batch_num, batch_start in enumerate(range(0, len(group), BATCH_SIZE)):
         batch      = group[batch_start:batch_start + BATCH_SIZE]
         batch_label = f"G{group_idx}-B{batch_num}"
+        chunk_path  = os.path.join(TEMP_DIR, f"chunk_g{group_idx}_b{batch_num}.mp4")
+
+        # ── 已有 checkpoint，直接恢復 ──────────────────────
+        key = str(batch_num)
+        if key in ckpt and os.path.exists(chunk_path):
+            entry = ckpt[key]
+            cumulative_time = entry["cumulative_time_after"]
+            srt_entries.extend(entry["srt_entries_delta"])
+            chapter_entries.extend(entry["chapter_entries_delta"])
+            chunk_files.append(chunk_path)
+            print(f"\n⏩ Batch {batch_label} 已有 checkpoint，跳過")
+            continue
+
         print(f"\n📦 Batch {batch_label}（項目 {batch_start + 1}～{batch_start + len(batch)}）")
 
-        batch_clips = []
+        srt_before     = len(srt_entries)
+        chapter_before = len(chapter_entries)
+        batch_clips    = []
 
         for i, item in enumerate(batch):
             global_idx = group_idx * 1000 + batch_start + i   # unique temp-file prefix
@@ -1066,7 +1220,7 @@ async def process_group(
                     img_sent_hidden   = os.path.join(TEMP_DIR, f"card_sent_hidden_{global_idx}.png")
                     aud_word_en_slow  = os.path.join(TEMP_DIR, f"word_en_slow_{global_idx}.mp3")
                     aud_sent_en_slow  = os.path.join(TEMP_DIR, f"sent_en_slow2_{global_idx}.mp3")
-                    aud_sent_en_fast  = os.path.join(TEMP_DIR, f"sent_en_fast_{global_idx}.mp3")
+                    aud_sent_en_norm  = os.path.join(TEMP_DIR, f"sent_en_norm_{global_idx}.mp3")
 
                     # A. 生成圖片（完整 + 遮中文）
                     create_word_card_image(item, img_word, pexels_images)
@@ -1079,13 +1233,13 @@ async def process_group(
                     # 步驟2：word_cn（揭曉）
                     # 步驟3：0.8x sent_en（遮中文，思考用）
                     # 步驟4：sent_cn（揭曉）
-                    # 步驟5：1.2x sent_en（已揭曉，加速覆誦）
+                    # 步驟5：原速 sent_en（已揭曉，覆誦）
                     # 步驟6：sent_cn（鞏固收尾）
                     await asyncio.gather(
                         generate_audio(clean_for_tts(item["word_en"]),     "en-US-GuyNeural",       aud_word_en_slow, rate="-20%"),
                         generate_audio(clean_for_tts(item["word_cn"]),     "zh-TW-HsiaoChenNeural", aud_word_cn),
                         generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_slow, rate="-20%"),
-                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_fast, rate="+20%"),
+                        generate_audio(clean_for_tts(item["sentence_en"]), "en-US-GuyNeural",       aud_sent_en_norm, rate="+0%"),
                         generate_audio(clean_for_tts(item["sentence_cn"]), "zh-TW-HsiaoChenNeural", aud_sent_cn),
                     )
 
@@ -1093,39 +1247,39 @@ async def process_group(
                     c_w_en_slow  = _load_audio(aud_word_en_slow)
                     c_w_cn       = _load_audio(aud_word_cn)
                     c_s_en_slow  = _load_audio(aud_sent_en_slow)
-                    c_s_en_fast  = _load_audio(aud_sent_en_fast)
+                    c_s_en_norm  = _load_audio(aud_sent_en_norm)
                     c_s_cn       = _load_audio(aud_sent_cn)
                     c_s_cn2      = _load_audio(aud_sent_cn)
 
                     dur_w_en_slow  = c_w_en_slow.duration
                     dur_w_cn       = c_w_cn.duration
                     dur_s_en_slow  = c_s_en_slow.duration
-                    dur_s_en_fast  = c_s_en_fast.duration
+                    dur_s_en_norm  = c_s_en_norm.duration
                     dur_s_cn       = c_s_cn.duration
 
                     # D. 記錄 SRT 時間戳（以聲音為主，RECALL_THINK_TIME 保留為有意義的思考留白）
                     word_section = (dur_w_en_slow + RECALL_THINK_TIME) + dur_w_cn
                     sent_start   = cumulative_time + word_section
                     round_recall = (dur_s_en_slow + RECALL_THINK_TIME) + dur_s_cn
-                    round_fast   = dur_s_en_fast + c_s_cn2.duration
-                    sent_end     = sent_start + round_recall + round_fast
+                    round_norm   = dur_s_en_norm + c_s_cn2.duration
+                    sent_end     = sent_start + round_recall + round_norm
 
                     srt_entries.append((sent_start, sent_end,
                                         item["sentence_en"], item["sentence_cn"]))
-                    cumulative_time += word_section + round_recall + round_fast
+                    cumulative_time += word_section + round_recall + round_norm
 
                     # E. 組合影片片段（6 步 Active Recall）
                     # 1. 遮中文單字卡 + word_en (0.8x) + 2s靜音 → 聽英文，回想中文
                     # 2. 完整單字卡   + word_cn           → 揭曉解答
                     # 3. 遮中文例句卡 + sent_en (0.8x) + 2s靜音 → 聽例句，回想中文
                     # 4. 完整例句卡   + sent_cn           → 揭曉中文
-                    # 5. 完整例句卡   + sent_en (1.2x)    → 加速覆誦
+                    # 5. 完整例句卡   + sent_en (原速)    → 覆誦
                     # 6. 完整例句卡   + sent_cn           → 鞏固收尾
                     v1 = _image_clip(img_word_hidden, c_w_en_slow,  extra_dur=RECALL_THINK_TIME)
                     v2 = _image_clip(img_word,        c_w_cn)
                     v3 = _image_clip(img_sent_hidden, c_s_en_slow,  extra_dur=RECALL_THINK_TIME)
                     v4 = _image_clip(img_sent,        c_s_cn)
-                    v5 = _image_clip(img_sent,        c_s_en_fast)
+                    v5 = _image_clip(img_sent,        c_s_en_norm)
                     v6 = _image_clip(img_sent,        c_s_cn2)
 
                     item_clip = concatenate_videoclips([v1, v2, v3, v4, v5, v6])
@@ -1152,6 +1306,20 @@ async def process_group(
             )
             chunk_files.append(chunk_path)
 
+            # ── 儲存 Checkpoint ────────────────────────────
+            ckpt[str(batch_num)] = {
+                "cumulative_time_after":  cumulative_time,
+                "srt_entries_delta":      srt_entries[srt_before:],
+                "chapter_entries_delta":  chapter_entries[chapter_before:],
+            }
+            try:
+                tmp_ckpt_file = ckpt_file + ".tmp"
+                with open(tmp_ckpt_file, "w", encoding="utf-8") as _f:
+                    json.dump(ckpt, _f, ensure_ascii=False, indent=2)
+                os.replace(tmp_ckpt_file, ckpt_file)
+            except Exception as _e:
+                print(f"   ⚠️  checkpoint 儲存失敗: {_e}")
+
             batch_video.close()
             for clip in batch_clips:
                 clip.close()
@@ -1164,6 +1332,13 @@ async def process_group(
                 os.remove(f)
             except OSError:
                 pass
+
+    # 全部完成後移除 checkpoint（下次重新開始）
+    if os.path.exists(ckpt_file):
+        try:
+            os.remove(ckpt_file)
+        except OSError:
+            pass
 
     return chunk_files, cumulative_time
 
@@ -1326,8 +1501,9 @@ async def main():
     count = 10
     fmt = 2
     range_str = ""
+    intro_text = ""
 
-    while step <= 4:
+    while step <= 5:
         if step == 0:
             print("  【第一階段】輸入內容來源（系統自動判斷模式）：")
             print("  · 主題文字      e.g.  Airport")
@@ -1382,12 +1558,12 @@ async def main():
 
         elif step == 2:
             _flush_stdin()
-            raw = input("🔢 詞彙數量 (1-20，預設 10，q=返回): ").strip()
+            raw = input("🔢 詞彙數量 (1-200，預設 10，q=返回): ").strip()
             if raw.lower() == "q":
                 step = 0 if source_type in ("normal", "tavily") else 1
                 continue
             count = int(raw) if raw.isdigit() else 10
-            count = max(1, min(20, count))
+            count = max(1, min(200, count))
 
             # Firestore 分類由 source_type 決定（與產出格式無關）
             fs_category = "videofactory" if source_type == "normal" else "trending"
@@ -1419,6 +1595,16 @@ async def main():
                 step = 3
                 continue
             range_str = raw
+            step = 5
+
+        elif step == 5:
+            _flush_stdin()
+            print("🎙️  【片頭語音】輸入片頭旁白文字（留空=使用原始 prebuilt intro，q=返回）：")
+            raw = input("   文字: ").strip()
+            if raw.lower() == "q":
+                step = 4
+                continue
+            intro_text = raw
             break
 
     # ════════════════════════════════════════════════════
@@ -1528,13 +1714,23 @@ async def main():
     else:
         print("⚠️  未設定 PEXELS_API_KEY，使用 assets/bg/ 本地圖片\n")
 
-    # ── 5. 雙階段結構 ───────────────────────────────────
+    # ── 5. 客製片頭（若有輸入文字）──────────────────────
+    active_intro = INTRO_VIDEO
+    if intro_text:
+        custom_path = await generate_custom_intro(intro_text)
+        if custom_path:
+            active_intro = custom_path
+            print(f"✅  使用客製片頭：{os.path.basename(custom_path)}")
+        else:
+            print("↩️  取消客製，改用預設 prebuilt intro")
+
+    # ── 6. 雙階段結構 ───────────────────────────────────
     srt_entries:     list  = []
     chapter_entries: list  = []
     cumulative_time: float = 0.0
 
-    if os.path.exists(INTRO_VIDEO):
-        dur = _video_duration(INTRO_VIDEO)
+    if os.path.exists(active_intro):
+        dur = _video_duration(active_intro)
         chapter_entries.append((0.0, "Intro"))
         cumulative_time += dur
         print(f"🎬 Intro 已偵測 ({dur:.1f}s)")
@@ -1573,8 +1769,8 @@ async def main():
     desc_path    = os.path.join(OUTPUT_DIR, f"description_{safe_topic}.txt")
 
     with open(concat_path, "w", encoding="utf-8") as f:
-        if os.path.exists(INTRO_VIDEO):
-            f.write(f"file '{_normalize_prebuilt(INTRO_VIDEO)}'\n")
+        if os.path.exists(active_intro):
+            f.write(f"file '{_normalize_prebuilt(active_intro)}'\n")
         for chunk in chunks_g0:
             f.write(f"file '{chunk}'\n")
         if os.path.exists(BREAK_VIDEO):
@@ -1595,26 +1791,8 @@ async def main():
             f'-c:v libx264 -preset fast -c:a aac -ar 48000 -ac 2 "{merged_path}" -loglevel error'
         )
 
-    # ── 9. 混合背景音樂 ─────────────────────────────────
-    bgm_file = pick_bgm()
-    if bgm_file and os.path.exists(merged_path):
-        print("🎵 正在混合背景音樂（10% 音量）...")
-        bgm_cmd = (
-            f'ffmpeg -y '
-            f'-i "{merged_path}" '
-            f'-stream_loop -1 -i "{bgm_file}" '
-            f'-filter_complex '
-            f'"[1:a]volume=0.10[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]" '
-            f'-map 0:v -map "[aout]" '
-            f'-c:v copy -c:a aac -b:a 192k '
-            f'"{output_file}" -loglevel error'
-        )
-        ret = os.system(bgm_cmd)
-        if ret != 0:
-            print("⚠️  BGM 混合失敗，使用無 BGM 版本")
-            shutil.copy(merged_path, output_file)
-    else:
-        shutil.copy(merged_path, output_file)
+    # ── 9. 輸出（無背景音樂）─────────────────────────────
+    shutil.copy(merged_path, output_file)
 
     # ── 10. 輸出 SRT + 影片描述 ────────────────────────
     write_srt(srt_entries, srt_path)
