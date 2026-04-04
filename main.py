@@ -151,11 +151,17 @@ def create_waveform_video(
     output_mp4: str,
 ) -> str | None:
     """
-    使用 FFmpeg 生成「即時累積音波 (心電圖效果)」。
-    - 視覺：畫面初始無音波，隨著聲音播放，波形由左至右即時畫出並保留。
-    - 修正：使用 overlay 滑動遮罩取代 crop，完美相容 FFmpeg 7.1.1。
+    使用 FFmpeg 生成「SoundCloud 風格心電圖音波」。
+    - 視覺：白色波形底（一直顯示）+ 橘黃色從左填滿（隨播放進度）
+    - 位置：x=150 對齊英文文字起始點，寬度 1620px
+    - 尾端：音訊結束後多留 1.5 秒，讓用戶繼續對照
     """
     print(f"   🌊 生成即時累積音波影片: {os.path.basename(output_mp4)}")
+
+    WAVE_X   = 150    # 對齊卡片英文文字 start_x
+    WAVE_W   = 1620   # 1920 - 150
+    WAVE_H   = 100
+    LINGER   = 1.5    # 音訊結束後多留幾秒
 
     # MP3 → WAV：確保時間軸精準
     _ffmpeg_audio = audio_path
@@ -167,7 +173,8 @@ def create_waveform_video(
         )
         _ffmpeg_audio = _wav_path
 
-    wave_pic = _ffmpeg_audio[:-4] + '_wavepic.png'
+    wave_white  = _ffmpeg_audio[:-4] + '_wave_w.png'
+    wave_orange = _ffmpeg_audio[:-4] + '_wave_o.png'
 
     try:
         # 1. 取得音訊精確時長
@@ -178,32 +185,44 @@ def create_waveform_video(
         )
         audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 2.0
         audio_dur = max(audio_dur, 0.1)
+        total_dur = audio_dur + LINGER
 
-        # 2. 生成全景靜態波形圖 (1920x120)
-        subprocess.run([
-            "ffmpeg", "-y", "-i", _ffmpeg_audio,
-            "-filter_complex", "showwavespic=s=1920x120:colors=white",
-            "-frames:v", "1", wave_pic
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 2. 生成白色 + 橘黃色靜態波形圖（各一張）
+        for pic, color in [(wave_white, "white"), (wave_orange, "0xFF6600")]:
+            subprocess.run([
+                "ffmpeg", "-y", "-i", _ffmpeg_audio,
+                "-filter_complex", f"showwavespic=s={WAVE_W}x{WAVE_H}:colors={color}",
+                "-frames:v", "1", pic
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 3. 合成動態掃描影片 (overlay 滑動遮罩法)
-        # 邏輯：一塊 1920x120 純黑畫布從 x=0 滑向 x=1920（右邊界之外）
-        # 黑布蓋住右側尚未「到達」的波形；滑開後波形逐漸露出（心電圖累積效果）
-        # 最後 colorkey 去除黑底，疊到背景卡片底部
+        # 3. 合成動態影片
+        # 輸入：0=背景圖, 1=白色波形, 2=橘色波形, 3=音訊
+        # 白色波形：colorkey 去黑底 → 疊在 x=WAVE_X（始終可見）
+        # 橘色波形：黑布從 x='w*(t/audio_dur)' 右滑遮住未到部分 → colorkey → 疊在白色上方
+        # 音訊：apad 補 1.5 秒靜音以支援 total_dur
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-framerate", "24", "-i", image_path,
-            "-loop", "1", "-framerate", "24", "-i", wave_pic,
+            "-loop", "1", "-framerate", "24", "-i", wave_white,
+            "-loop", "1", "-framerate", "24", "-i", wave_orange,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            f"color=black:s=1920x120:rate=24[blackbox];"
-            f"[1:v][blackbox]overlay=x='w*(t/{audio_dur})':y=0[wave_revealed];"
-            f"[wave_revealed]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.8[wave_trans];"
-            f"[0:v][wave_trans]overlay=0:H-h-30:format=auto[v]",
-            "-map", "[v]", "-map", "2:a",
+            # 白色底層（全程可見）
+            f"[1:v]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.55[ww];"
+            # 橘色層（滑動遮罩揭露）
+            f"color=black:s={WAVE_W}x{WAVE_H}:rate=24[mask];"
+            f"[2:v][mask]overlay=x='min(w, w*(t/{audio_dur}))':y=0[om];"
+            f"[om]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.9[ow];"
+            # 疊合順序：背景 → 白色波形 → 橘色波形
+            f"[0:v][ww]overlay={WAVE_X}:H-h-40[base];"
+            f"[base][ow]overlay={WAVE_X}:H-h-40:format=auto[vo];"
+            f"[vo]format=yuv420p[v];"
+            # 音訊補靜音尾巴
+            f"[3:a]apad=pad_dur={LINGER}[a]",
+            "-map", "[v]", "-map", "[a]",
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k",
-            "-t", str(audio_dur),
+            "-t", str(total_dur),
             output_mp4,
             "-loglevel", "error"
         ]
@@ -213,10 +232,11 @@ def create_waveform_video(
             return None
         return output_mp4
     finally:
+        for f in (wave_white, wave_orange):
+            if os.path.exists(f):
+                os.remove(f)
         if _ffmpeg_audio != audio_path and os.path.exists(_ffmpeg_audio):
             os.remove(_ffmpeg_audio)
-        if os.path.exists(wave_pic):
-            os.remove(wave_pic)
 
 
 BRAND_NAME       = "Rayo: AI Flashcards"
