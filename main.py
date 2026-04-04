@@ -151,33 +151,31 @@ def create_waveform_video(
     output_mp4: str,
 ) -> str | None:
     """
-    使用 FFmpeg 生成「SoundCloud 風格心電圖音波」。
-    - 視覺：白色波形底（一直顯示）+ 橘黃色從左填滿（隨播放進度）
-    - 位置：x=150 對齊英文文字起始點，寬度 1620px
-    - 尾端：音訊結束後多留 1.5 秒，讓用戶繼續對照
+    使用 FFmpeg 生成「等速跑馬燈 (Marquee) 音波」。
+    - 修正 1：自動裁切頭尾靜音，一有聲音就精準對齊。
+    - 修正 2：波形以固定速度向左滾動，維持 UI 一致性，解決忽快忽慢問題。
+    - 修正 3：加入播放頭 (Playhead) 垂直線，經過播放頭後變為橘色。
     """
-    print(f"   🌊 生成即時累積音波影片: {os.path.basename(output_mp4)}")
+    print(f"   🌊 生成等速跑馬燈音波: {os.path.basename(output_mp4)}")
 
-    WAVE_X   = 150    # 對齊卡片英文文字 start_x
-    WAVE_W   = 1620   # 1920 - 150
-    WAVE_H   = 100
-    LINGER   = 1.5    # 音訊結束後多留幾秒
+    PLAYHEAD_X = 600  # 播放頭位置 (X座標，大約在畫面左側 1/3 處)
+    PPS        = 300  # Pixels Per Second (每秒滾動像素，確保永遠等速)
+    WAVE_H     = 180  # 波形高度 (放大讓視覺更清楚)
 
-    # MP3 → WAV：確保時間軸精準
-    _ffmpeg_audio = audio_path
-    if audio_path.lower().endswith('.mp3'):
-        _wav_path = audio_path[:-4] + '_wave.wav'
-        subprocess.run(
-            ['ffmpeg', '-y', '-i', audio_path, _wav_path],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        _ffmpeg_audio = _wav_path
+    # 1. 強制裁切頭尾靜音，確保「一有聲音就跑波形」
+    _ffmpeg_audio = audio_path[:-4] + '_trimmed.wav'
+    subprocess.run(
+        ['ffmpeg', '-y', '-i', audio_path,
+         '-af', 'silenceremove=start_periods=1:start_threshold=-50dB:stop_periods=1:stop_threshold=-50dB',
+         _ffmpeg_audio],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
     wave_white  = _ffmpeg_audio[:-4] + '_wave_w.png'
     wave_orange = _ffmpeg_audio[:-4] + '_wave_o.png'
 
     try:
-        # 1. 取得音訊精確時長
+        # 2. 取得裁切後的精確時長
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", _ffmpeg_audio],
@@ -185,21 +183,19 @@ def create_waveform_video(
         )
         audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 2.0
         audio_dur = max(audio_dur, 0.1)
-        total_dur = audio_dur + LINGER
 
-        # 2. 生成白色 + 橘黃色靜態波形圖（各一張）
+        # 3. 計算跑馬燈長圖的總寬度 (秒數 × 每秒像素)
+        WAVE_W = max(10, int(audio_dur * PPS))
+
+        # 4. 生成超長靜態波形圖 (加入 compand 讓波形更豐滿)
         for pic, color in [(wave_white, "white"), (wave_orange, "0xFF6600")]:
             subprocess.run([
                 "ffmpeg", "-y", "-i", _ffmpeg_audio,
-                "-filter_complex", f"showwavespic=s={WAVE_W}x{WAVE_H}:colors={color}",
+                "-filter_complex", f"compand,showwavespic=s={WAVE_W}x{WAVE_H}:colors={color}",
                 "-frames:v", "1", pic
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 3. 合成動態影片
-        # 輸入：0=背景圖, 1=白色波形, 2=橘色波形, 3=音訊
-        # 白色波形：colorkey 去黑底 → 疊在 x=WAVE_X（始終可見）
-        # 橘色波形：黑布從 x='w*(t/audio_dur)' 右滑遮住未到部分 → colorkey → 疊在白色上方
-        # 音訊：apad 補 1.5 秒靜音以支援 total_dur
+        # 5. 合成跑馬燈影片 (利用精準的座標計算與遮罩)
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-framerate", "24", "-i", image_path,
@@ -207,22 +203,33 @@ def create_waveform_video(
             "-loop", "1", "-framerate", "24", "-i", wave_orange,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            # 白色底層（全程可見）
-            f"[1:v]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.55[ww];"
-            # 橘色層（滑動遮罩揭露）
-            f"color=black:s={WAVE_W}x{WAVE_H}:rate=24[mask];"
-            f"[2:v][mask]overlay=x='min(w, w*(t/{audio_dur}))':y=0[om];"
-            f"[om]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.9[ow];"
-            # 疊合順序：背景 → 白色波形 → 橘色波形
-            f"[0:v][ww]overlay={WAVE_X}:H-h-40[base];"
-            f"[base][ow]overlay={WAVE_X}:H-h-40:format=auto[vo];"
-            f"[vo]format=yuv420p[v];"
-            # 音訊補靜音尾巴
-            f"[3:a]apad=pad_dur={LINGER}[a]",
-            "-map", "[v]", "-map", "[a]",
+            # 白波形去背 (透明度 0.5)
+            f"[1:v]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.5[ww];"
+            # 橘波形去背 (透明度 1.0)
+            f"[2:v]colorkey=black:0.05:0.1,colorchannelmixer=aa=1.0[ow];"
+
+            # --- 橘色波形遮罩邏輯 ---
+            # 建立一張黑布，將橘波形疊上並向左滾動
+            f"color=black:s=1920x{WAVE_H}:rate=24[canvas];"
+            f"[canvas][ow]overlay=x='{PLAYHEAD_X}-t*{PPS}':y=0[scroll_o];"
+            # 裁切出左側 (0 ~ PLAYHEAD_X) 的橘波形，並把黑布去背
+            f"[scroll_o]crop=w={PLAYHEAD_X}:h={WAVE_H}:x=0:y=0[left_o];"
+            f"[left_o]colorkey=black:0.05:0.1[o_final];"
+
+            # --- 最終疊加 ---
+            # 疊加白波形 (全寬滾動，作為未來的預覽)
+            f"[0:v][ww]overlay=x='{PLAYHEAD_X}-t*{PPS}':y=H-{WAVE_H}-40[bg_w];"
+            # 疊加橘波形 (僅顯示在播放頭左側)
+            f"[bg_w][o_final]overlay=x=0:y=H-{WAVE_H}-40[bg_w_o];"
+            # 加入播放頭垂直線 (Playhead)，讓視覺焦點更明確
+            f"color=white:s=2x{WAVE_H}:rate=24[ph_raw];"
+            f"[ph_raw]colorchannelmixer=aa=0.8[ph];"
+            f"[bg_w_o][ph]overlay=x={PLAYHEAD_X}:y=H-{WAVE_H}-40:format=auto[v]",
+
+            "-map", "[v]", "-map", "3:a",
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k",
-            "-t", str(total_dur),
+            "-t", str(audio_dur),
             output_mp4,
             "-loglevel", "error"
         ]
@@ -235,7 +242,7 @@ def create_waveform_video(
         for f in (wave_white, wave_orange):
             if os.path.exists(f):
                 os.remove(f)
-        if _ffmpeg_audio != audio_path and os.path.exists(_ffmpeg_audio):
+        if os.path.exists(_ffmpeg_audio):
             os.remove(_ffmpeg_audio)
 
 
