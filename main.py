@@ -187,15 +187,16 @@ def create_waveform_video(
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # 3. 合成動態掃描影片
-        # 邏輯：取消底圖。一開始用 drawbox 全黑遮擋，隨著時間 t 推進，黑框往右退，露出左側波形。
+        # 修正邏輯：改用 crop 濾鏡。隨著時間 t 推進，動態增加裁切寬度 (w)，
+        # 讓靜態波形圖由左至右逐漸顯露，達成心電圖般的即時生長效果。
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-framerate", "24", "-i", image_path,
             "-loop", "1", "-framerate", "24", "-i", wave_pic,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            f"[1:v]drawbox=x='in_w*(t/{audio_dur})':y=0:w=in_w:h=in_h:color=black:thickness=fill,"
-            f"colorkey=black:0.05:0.1,colorchannelmixer=aa=0.6[wave];"
+            f"[1:v]crop=w='max(2, iw*(t/{audio_dur}))':h=ih:x=0:y=0,"
+            f"colorkey=black:0.05:0.1,colorchannelmixer=aa=0.8[wave];"
             f"[0:v][wave]overlay=0:H-h-30:format=auto[v]",
             "-map", "[v]", "-map", "2:a",
             "-c:v", "libx264", "-preset", "fast",
