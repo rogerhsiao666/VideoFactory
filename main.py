@@ -195,7 +195,7 @@ def create_waveform_video(
             "-loop", "1", "-framerate", "24", "-i", wave_pic,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            f"[1:v]crop=w='max(2, iw*(t/{audio_dur}))':h=ih:x=0:y=0,"
+            f"[1:v]crop=w='max(2, iw*(t/{audio_dur}))':h=ih:x=0:y=0:eval=frame,"
             f"colorkey=black:0.05:0.1,colorchannelmixer=aa=0.8[wave];"
             f"[0:v][wave]overlay=0:H-h-30:format=auto[v]",
             "-map", "[v]", "-map", "2:a",
