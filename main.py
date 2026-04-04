@@ -151,9 +151,9 @@ def create_waveform_video(
     output_mp4: str,
 ) -> str | None:
     """
-    使用 FFmpeg 生成「即時累積音波」。
+    使用 FFmpeg 生成「即時累積音波 (心電圖效果)」。
     - 視覺：畫面初始無音波，隨著聲音播放，波形由左至右即時畫出並保留。
-    - 效能：0 Token 消耗，精準對齊音訊總長度。
+    - 修正：使用 overlay 滑動遮罩取代 crop，完美相容 FFmpeg 7.1.1。
     """
     print(f"   🌊 生成即時累積音波影片: {os.path.basename(output_mp4)}")
 
@@ -177,7 +177,7 @@ def create_waveform_video(
             capture_output=True, text=True,
         )
         audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 2.0
-        audio_dur = max(audio_dur, 0.1)  # 防呆，避免除以零
+        audio_dur = max(audio_dur, 0.1)
 
         # 2. 生成全景靜態波形圖 (1920x120)
         subprocess.run([
@@ -186,18 +186,20 @@ def create_waveform_video(
             "-frames:v", "1", wave_pic
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 3. 合成動態掃描影片
-        # 修正邏輯：改用 crop 濾鏡。隨著時間 t 推進，動態增加裁切寬度 (w)，
-        # 讓靜態波形圖由左至右逐漸顯露，達成心電圖般的即時生長效果。
+        # 3. 合成動態掃描影片 (overlay 滑動遮罩法)
+        # 邏輯：一塊 1920x120 純黑畫布從 x=0 滑向 x=1920（右邊界之外）
+        # 黑布蓋住右側尚未「到達」的波形；滑開後波形逐漸露出（心電圖累積效果）
+        # 最後 colorkey 去除黑底，疊到背景卡片底部
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1", "-framerate", "24", "-i", image_path,
             "-loop", "1", "-framerate", "24", "-i", wave_pic,
             "-i", _ffmpeg_audio,
             "-filter_complex",
-            f"[1:v]crop=w='max(2, iw*(t/{audio_dur}))':h=ih:x=0:y=0:eval=frame,"
-            f"colorkey=black:0.05:0.1,colorchannelmixer=aa=0.8[wave];"
-            f"[0:v][wave]overlay=0:H-h-30:format=auto[v]",
+            f"color=black:s=1920x120:rate=24[blackbox];"
+            f"[1:v][blackbox]overlay=x='w*(t/{audio_dur})':y=0[wave_revealed];"
+            f"[wave_revealed]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.8[wave_trans];"
+            f"[0:v][wave_trans]overlay=0:H-h-30:format=auto[v]",
             "-map", "[v]", "-map", "2:a",
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k",
@@ -211,7 +213,6 @@ def create_waveform_video(
             return None
         return output_mp4
     finally:
-        # 清理暫存檔案
         if _ffmpeg_audio != audio_path and os.path.exists(_ffmpeg_audio):
             os.remove(_ffmpeg_audio)
         if os.path.exists(wave_pic):
