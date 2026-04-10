@@ -17,6 +17,16 @@ output/
 
 # Environment / secrets
 .env
+venv/
+.venv/
+
+# Project Data
+used_words.json
+Thumbnail/
+YT/
+cards/
+封面素材/
+docs/
 
 # OS generated files
 .DS_Store

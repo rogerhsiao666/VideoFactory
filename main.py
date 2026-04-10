@@ -56,10 +56,12 @@ TEMP_DIR   = os.path.join(BASE_DIR, "temp")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 IMAGES_DIR = os.path.join(TEMP_DIR, "images")
 DATA_FILE  = os.path.join(BASE_DIR, "data.json")
+CARDS_DIR  = os.path.join(BASE_DIR, "cards")
 
 os.makedirs(TEMP_DIR,   exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(IMAGES_DIR, exist_ok=True)
+os.makedirs(CARDS_DIR,  exist_ok=True)
 
 FONT_EN     = os.path.join(ASSETS_DIR, "font_en.ttf")
 FONT_CN     = os.path.join(ASSETS_DIR, "font_cn.otf")
@@ -151,99 +153,48 @@ def create_waveform_video(
     output_mp4: str,
 ) -> str | None:
     """
-    使用 FFmpeg 生成「等速跑馬燈 (Marquee) 音波」。
-    - 修正 1：自動裁切頭尾靜音，一有聲音就精準對齊。
-    - 修正 2：波形以固定速度向左滾動，維持 UI 一致性，解決忽快忽慢問題。
-    - 修正 3：加入播放頭 (Playhead) 垂直線，經過播放頭後變為橘色。
+    使用 FFmpeg 生成「即時動態音波」(極簡版)。
+    直接使用即時濾鏡，不需生成長圖與跑馬燈，大幅降低複雜度。
     """
-    print(f"   🌊 生成等速跑馬燈音波: {os.path.basename(output_mp4)}")
+    print(f"   🌊 生成即時動態音波: {os.path.basename(output_mp4)}")
 
-    PLAYHEAD_X = 600  # 播放頭位置 (X座標，大約在畫面左側 1/3 處)
-    PPS        = 300  # Pixels Per Second (每秒滾動像素，確保永遠等速)
-    WAVE_H     = 180  # 波形高度 (放大讓視覺更清楚)
+    WAVE_W = 800  # 音波的固定寬度 (可依需求調整)
+    WAVE_H = 150  # 音波的固定高度
 
-    # 1. 強制裁切頭尾靜音，確保「一有聲音就跑波形」
-    _ffmpeg_audio = audio_path[:-4] + '_trimmed.wav'
-    subprocess.run(
-        ['ffmpeg', '-y', '-i', audio_path,
-         '-af', 'silenceremove=start_periods=1:start_threshold=-50dB:stop_periods=1:stop_threshold=-50dB',
-         _ffmpeg_audio],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
-    wave_white  = _ffmpeg_audio[:-4] + '_wave_w.png'
-    wave_orange = _ffmpeg_audio[:-4] + '_wave_o.png'
-
+    # 1. 取得精確時長
     try:
-        # 2. 取得裁切後的精確時長
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", _ffmpeg_audio],
-            capture_output=True, text=True,
-        )
-        audio_dur = float(probe.stdout.strip()) if probe.returncode == 0 and probe.stdout.strip() else 2.0
-        audio_dur = max(audio_dur, 0.1)
+        with AudioFileClip(audio_path) as ac:
+            audio_dur = ac.duration
+    except Exception as e:
+        print(f"   ⚠️ 無法讀取音訊長度: {e}")
+        audio_dur = 2.0
+    audio_dur = max(audio_dur, 0.1)
 
-        # 3. 計算跑馬燈長圖的總寬度 (秒數 × 每秒像素)
-        WAVE_W = max(10, int(audio_dur * PPS))
-
-        # 4. 生成超長靜態波形圖 (加入 compand 讓波形更豐滿)
-        for pic, color in [(wave_white, "white"), (wave_orange, "0xFF6600")]:
-            subprocess.run([
-                "ffmpeg", "-y", "-i", _ffmpeg_audio,
-                "-filter_complex", f"compand,showwavespic=s={WAVE_W}x{WAVE_H}:colors={color}",
-                "-frames:v", "1", pic
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        # 5. 合成跑馬燈影片 (利用精準的座標計算與遮罩)
-        cmd = [
-            "ffmpeg", "-y",
-            "-loop", "1", "-framerate", "24", "-i", image_path,
-            "-loop", "1", "-framerate", "24", "-i", wave_white,
-            "-loop", "1", "-framerate", "24", "-i", wave_orange,
-            "-i", _ffmpeg_audio,
-            "-filter_complex",
-            # 白波形去背 (透明度 0.5)
-            f"[1:v]colorkey=black:0.05:0.1,colorchannelmixer=aa=0.5[ww];"
-            # 橘波形去背 (透明度 1.0)
-            f"[2:v]colorkey=black:0.05:0.1,colorchannelmixer=aa=1.0[ow];"
-
-            # --- 橘色波形遮罩邏輯 ---
-            # 建立一張黑布，將橘波形疊上並向左滾動
-            f"color=black:s=1920x{WAVE_H}:rate=24[canvas];"
-            f"[canvas][ow]overlay=x='{PLAYHEAD_X}-t*{PPS}':y=0[scroll_o];"
-            # 裁切出左側 (0 ~ PLAYHEAD_X) 的橘波形，並把黑布去背
-            f"[scroll_o]crop=w={PLAYHEAD_X}:h={WAVE_H}:x=0:y=0[left_o];"
-            f"[left_o]colorkey=black:0.05:0.1[o_final];"
-
-            # --- 最終疊加 ---
-            # 疊加白波形 (全寬滾動，作為未來的預覽)
-            f"[0:v][ww]overlay=x='{PLAYHEAD_X}-t*{PPS}':y=H-{WAVE_H}-40[bg_w];"
-            # 疊加橘波形 (僅顯示在播放頭左側)
-            f"[bg_w][o_final]overlay=x=0:y=H-{WAVE_H}-40[bg_w_o];"
-            # 加入播放頭垂直線 (Playhead)，讓視覺焦點更明確
-            f"color=white:s=2x{WAVE_H}:rate=24[ph_raw];"
-            f"[ph_raw]colorchannelmixer=aa=0.8[ph];"
-            f"[bg_w_o][ph]overlay=x={PLAYHEAD_X}:y=H-{WAVE_H}-40:format=auto[v]",
-
-            "-map", "[v]", "-map", "3:a",
-            "-c:v", "libx264", "-preset", "fast",
-            "-c:a", "aac", "-b:a", "192k",
-            "-t", str(audio_dur),
-            output_mp4,
-            "-loglevel", "error"
-        ]
-        ret = subprocess.run(cmd)
-        if ret.returncode != 0 or not os.path.exists(output_mp4):
-            print("   ❌ 音波影片合成失敗")
-            return None
-        return output_mp4
-    finally:
-        for f in (wave_white, wave_orange):
-            if os.path.exists(f):
-                os.remove(f)
-        if os.path.exists(_ffmpeg_audio):
-            os.remove(_ffmpeg_audio)
+    # 2. 極簡版 FFmpeg 合成指令
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-framerate", "24", "-i", image_path,
+        "-i", audio_path,
+        "-filter_complex",
+        # 生成音波並疊加到背景
+        f"[1:a]showwaves=s={WAVE_W}x{WAVE_H*2}:mode=cline:rate=24:colors=white,crop=iw:ih/2:0:0,scale={WAVE_W}:{WAVE_H}[wave];"
+        f"[0:v][wave]overlay=x=(W-w)/2:y=H-{WAVE_H}-100:format=auto[v]",
+        
+        "-map", "[v]",
+        "-map", "1:a",
+        "-c:v", "libx264", "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-t", str(audio_dur),
+        output_mp4,
+        "-loglevel", "error"
+    ]
+    
+    ret = subprocess.run(cmd)
+    if ret.returncode != 0 or not os.path.exists(output_mp4):
+        print("   ❌ 音波影片合成失敗")
+        return None
+    return output_mp4
 
 
 BRAND_NAME       = "Rayo: AI Flashcards"
@@ -556,6 +507,43 @@ FREQUENCY RULE: Prioritize vocabulary that is HIGH-FREQUENCY in real daily life.
         print(f"   ⚠️  歷史紀錄儲存失敗: {e}")
 
     return all_items
+
+
+def load_local_cards(topic: str) -> list:
+    """從 cards/ 資料夾讀取本地卡片，支援 .xlsx 與 .json。
+    topic → 空格/連字號換底線（保留大小寫與中文）→ cards/<slug>.xlsx 或 .json
+    找不到時列出可用檔案並拋出 FileNotFoundError。
+    """
+    slug = topic.strip().replace(" ", "_").replace("-", "_")
+    xlsx_path = os.path.join(CARDS_DIR, f"{slug}.xlsx")
+    json_path = os.path.join(CARDS_DIR, f"{slug}.json")
+
+    if os.path.exists(xlsx_path):
+        data = import_review_excel(xlsx_path)
+        for i, item in enumerate(data):
+            item["id"] = f"{i + 1:02d}"
+        print(f"✅ 已從本地讀取 {len(data)} 個詞彙（cards/{slug}.xlsx）")
+        return data
+
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for i, item in enumerate(data):
+            item["id"] = f"{i + 1:02d}"
+        print(f"✅ 已從本地讀取 {len(data)} 個詞彙（cards/{slug}.json）")
+        return data
+
+    available = sorted(
+        f for f in os.listdir(CARDS_DIR) if f.endswith(".xlsx") or f.endswith(".json")
+    )
+    if available:
+        print("   📂 cards/ 資料夾中可用的卡片：")
+        for name in available:
+            print(f"     · {name}")
+    raise FileNotFoundError(
+        f"找不到卡片檔案：{xlsx_path} 或 {json_path}\n"
+        f"請將 Excel 或 JSON 檔案放入 cards/ 資料夾，檔名設為 {slug}.xlsx（或 .json）"
+    )
 
 
 def get_tavily_context(query: str, max_chars: int = 6000) -> str:
@@ -1138,7 +1126,7 @@ async def generate_audio(text: str, voice: str, output_filename: str, retries: i
     for attempt in range(retries):
         try:
             comm = edge_tts.Communicate(text, voice, rate=rate)
-            await comm.save(output_filename)
+            await asyncio.wait_for(comm.save(output_filename), timeout=30)
             return
         except Exception as e:
             if attempt == retries - 1:
@@ -1671,10 +1659,11 @@ async def main():
     print("=" * 55)
     print()
     print("  請確認 .env 已設定以下金鑰：")
-    print("    OPENAI_API_KEY           — 詞彙生成（必要）")
     print("    TAVILY_API_KEY           — Tavily 知識搜尋（來源 2 需要）")
     print("    PEXELS_API_KEY           — 背景圖片（格式 2/3 選用）")
     print("    FIREBASE_SERVICE_ACCOUNT — Firestore 匯出（格式 1/3 必要）")
+    print()
+    print(f"  📂 卡片來源：cards/<主題名稱>.json（例：cards/airport.json）")
     print()
 
     # ════════════════════════════════════════════════════
@@ -1742,14 +1731,11 @@ async def main():
 
         elif step == 2:
             _flush_stdin()
-            raw = input("🔢 詞彙數量 (1-200，預設 10，q=返回): ").strip()
+            raw = input("🔢 卡片數量（留空=全部，q=返回）: ").strip()
             if raw.lower() == "q":
-                step = 0 if source_type in ("normal", "tavily") else 1
+                step = 1
                 continue
-            count = int(raw) if raw.isdigit() else 10
-            count = max(1, min(200, count))
-
-            # Firestore 分類由 source_type 決定（與產出格式無關）
+            count = int(raw) if raw.isdigit() and int(raw) > 0 else 0  # 0 = 全部
             fs_category = "videofactory" if source_type == "normal" else "trending"
             src_label = {"normal": "日常主題", "tavily": "Tavily 搜尋",
                          "youtube": "YouTube 字幕", "url": "網頁爬取", "text": "長文貼入"}
@@ -1795,16 +1781,12 @@ async def main():
     # 格式 1：純產字卡（Cards Only）
     # ════════════════════════════════════════════════════
     if fmt == 1:
-        if not OPENAI_KEYS:
-            print("❌ 需要 OPENAI_API_KEY")
-            return
         try:
-            data_list = generate_content(topic, count, context=context)
+            data_list = load_local_cards(topic)
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(data_list, f, ensure_ascii=False, indent=2)
-            print(f"✅ 已生成 {len(data_list)} 個詞彙")
         except Exception as e:
-            print(f"❌ OpenAI 生成失敗: {e}")
+            print(f"❌ 讀取本地卡片失敗: {e}")
             return
 
         if not data_list:
@@ -1847,46 +1829,41 @@ async def main():
     if not check_assets():
         return
 
-    # ── 生成教學內容 ──────────────────────────────────
-    if OPENAI_KEYS:
-        try:
-            data_list = generate_content(topic, count, context=context)
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(data_list, f, ensure_ascii=False, indent=2)
-            print(f"✅ 已生成 {len(data_list)} 個詞彙並儲存至 data.json")
+    # ── 讀取本地卡片內容 ──────────────────────────────────
+    try:
+        data_list = load_local_cards(topic)
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data_list, f, ensure_ascii=False, indent=2)
 
-            # ── 內容審核關卡 ──────────────────────────────────
-            review_path = export_review_excel(data_list, topic)
-            print(f"\n📊 內容審核 Excel：{review_path}")
-            try:
-                if sys.platform == "win32":
-                    os.startfile(review_path)
-                elif sys.platform == "darwin":
-                    subprocess.run(["open", review_path], check=True)
-                else:
-                    subprocess.run(["xdg-open", review_path], check=True)
-            except Exception:
-                pass  # 無法自動開啟也繼續
+        # ── 內容審核關卡 ──────────────────────────────────
+        review_path = export_review_excel(data_list, topic)
+        print(f"\n📊 內容審核 Excel：{review_path}")
+        # try:
+        #     if sys.platform == "win32":
+        #         os.startfile(review_path)
+        #     elif sys.platform == "darwin":
+        #         subprocess.run(["open", review_path], check=True)
+        #     else:
+        #         subprocess.run(["xdg-open", review_path], check=True)
+        # except Exception:
+        #     pass  # 無法自動開啟也繼續
 
-            _confirm = input("\n✅ 請在 Excel 確認（或修改）內容後按 Enter 繼續，輸入 q 中止：").strip().lower()
-            if _confirm == "q":
-                print("⛔ 已中止。")
-                return
+        _confirm = input("\n✅ 請在 Excel 確認（或修改）內容後按 Enter 繼續，輸入 q 中止：").strip().lower()
+        if _confirm == "q":
+            print("⛔ 已中止。")
+            return
 
-            # 重新從 Excel 讀回（自動套用使用者對 Excel 的修改）
-            data_list = import_review_excel(review_path)
-            with open(DATA_FILE, "w", encoding="utf-8") as _f:
-                json.dump(data_list, _f, ensure_ascii=False, indent=2)
-            print(f"✅ 已讀回 {len(data_list)} 個詞彙（含任何修改）\n")
+        # 重新從 Excel 讀回（自動套用使用者對 Excel 的修改）
+        data_list = import_review_excel(review_path)
+        if count > 0:
+            data_list = data_list[:count]
+        with open(DATA_FILE, "w", encoding="utf-8") as _f:
+            json.dump(data_list, _f, ensure_ascii=False, indent=2)
+        print(f"✅ 已讀回 {len(data_list)} 個詞彙（含任何修改）\n")
 
-        except Exception as e:
-            print(f"⚠️  OpenAI 失敗（{type(e).__name__}: {e}），嘗試讀取 data.json ...")
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data_list = json.load(f)
-    else:
-        print("⚠️  未設定任何 OPENAI_API_KEY，直接讀取 data.json")
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data_list = json.load(f)
+    except Exception as e:
+        print(f"❌ 讀取本地卡片失敗: {e}")
+        return
 
     if not data_list:
         print("❌ 沒有可處理的教學內容！")

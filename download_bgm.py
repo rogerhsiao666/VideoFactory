@@ -2,7 +2,7 @@
 """
 download_bgm.py
 從 Archive.org（不需 API key）和 Freesound.org（免費 API key）
-下載 CC0 授權的環境音樂到 assets/bgm/
+下載 CC0 授權的 Lo-Fi / Chillhop 音樂到 assets/bgm/
 """
 
 import os
@@ -18,7 +18,7 @@ BGM_DIR     = os.path.join(BASE_DIR, "assets", "bgm")
 os.makedirs(BGM_DIR, exist_ok=True)
 
 FREESOUND_KEY = os.getenv("FREESOUND_API_KEY", "")
-TARGET_COUNT  = 8   # 下載目標數量
+TARGET_COUNT  = 10  # 下載目標數量
 
 
 # ── 工具函數 ──────────────────────────────────────────────
@@ -37,7 +37,7 @@ def download_file(url: str, dest: str, label: str = "") -> bool:
             for chunk in r.iter_content(chunk_size=16384):
                 f.write(chunk)
         size = os.path.getsize(dest) / (1024 * 1024)
-        if size < 0.05:          # 太小 = 下載失敗或空檔案
+        if size < 0.05:
             os.remove(dest)
             print(f"   ⚠️  {label} — 檔案過小，跳過")
             return False
@@ -53,11 +53,21 @@ def download_file(url: str, dest: str, label: str = "") -> bool:
 # ── Archive.org ───────────────────────────────────────────
 
 ARCHIVE_QUERIES = [
-    'subject:"ambient music" AND mediatype:audio',
-    'subject:"nature sounds" AND mediatype:audio',
-    'subject:"white noise" AND mediatype:audio',
-    'subject:"lo-fi" AND mediatype:audio',
-    'subject:"relaxing music" AND mediatype:audio',
+    'title:"rain" AND mediatype:audio',
+    'title:"ocean waves" AND mediatype:audio',
+    'title:"waterfall" AND mediatype:audio',
+    'title:"stream" AND mediatype:audio',
+    'title:"river" AND mediatype:audio',
+    'title:"thunder" AND mediatype:audio',
+    'title:"campfire" AND mediatype:audio',
+    'title:"wind" AND mediatype:audio',
+    'title:"brook" AND mediatype:audio',
+    'title:"creek" AND mediatype:audio',
+    'title:"waves" AND mediatype:audio',
+    'title:"rainfall" AND mediatype:audio',
+    'title:"fireplace" AND mediatype:audio',
+    'title:"storm" AND mediatype:audio',
+    'title:"crickets" AND mediatype:audio',
 ]
 
 CC0_FILTER = 'licenseurl:"https://creativecommons.org/publicdomain/zero/1.0/"'
@@ -110,13 +120,13 @@ def archive_get_mp3(identifier: str) -> str | None:
     return None
 
 
-def download_from_archive() -> list[str]:
-    print("🔍 搜尋 Archive.org CC0 環境音樂...")
+def download_from_archive(need: int) -> list[str]:
+    print("🔍 搜尋 Archive.org CC0 自然音效...")
     identifiers = archive_search()
     downloaded: list[str] = []
 
     for iid, title in identifiers:
-        if len(downloaded) >= TARGET_COUNT:
+        if len(downloaded) >= need:
             break
 
         mp3_name = archive_get_mp3(iid)
@@ -128,7 +138,6 @@ def download_from_archive() -> list[str]:
 
         if os.path.exists(dest):
             print(f"   ⏩ 已存在，跳過: {os.path.basename(dest)}")
-            downloaded.append(dest)
             continue
 
         if download_file(url, dest, label=title[:50]):
@@ -142,16 +151,20 @@ def download_from_archive() -> list[str]:
 # ── Freesound.org ─────────────────────────────────────────
 
 FREESOUND_QUERIES = [
-    "ambient drone loop",
-    "study background music",
-    "white noise loop",
-    "rain ambient",
-    "cafe ambience",
-    "forest nature sounds",
+    "rain ambience",
+    "ocean waves",
+    "waterfall",
+    "river flowing",
+    "campfire crackling",
+    "thunderstorm",
+    "wind ambience",
+    "fireplace",
+    "crickets night",
+    "rain on window",
 ]
 
 
-def download_from_freesound() -> list[str]:
+def download_from_freesound(need: int) -> list[str]:
     if not FREESOUND_KEY:
         print("ℹ️  未設定 FREESOUND_API_KEY，跳過 Freesound")
         return []
@@ -161,7 +174,7 @@ def download_from_freesound() -> list[str]:
     seen: set[int] = set()
 
     for q in FREESOUND_QUERIES:
-        if len(downloaded) >= 4:
+        if len(downloaded) >= need:
             break
         url = (
             "https://freesound.org/apiv2/search/text/"
@@ -184,7 +197,6 @@ def download_from_freesound() -> list[str]:
                 dest = os.path.join(BGM_DIR, safe_filename(name, prefix="fs_"))
                 if os.path.exists(dest):
                     print(f"   ⏩ 已存在，跳過: {os.path.basename(dest)}")
-                    downloaded.append(dest)
                     continue
                 if download_file(preview, dest, label=name[:50]):
                     downloaded.append(dest)
@@ -196,6 +208,24 @@ def download_from_freesound() -> list[str]:
     return downloaded
 
 
+# ── 正規化音量 ────────────────────────────────────────────
+
+def normalize_bgm(path: str) -> bool:
+    """用 ffmpeg loudnorm 將音量統一到 -18 LUFS，原地覆蓋。"""
+    tmp = path + ".tmp.mp3"
+    ret = os.system(
+        f'ffmpeg -y -i "{path}" '
+        f'-af loudnorm=I=-18:TP=-1.5:LRA=11 '
+        f'-c:a libmp3lame -q:a 4 "{tmp}" -loglevel error'
+    )
+    if ret == 0 and os.path.exists(tmp):
+        os.replace(tmp, path)
+        return True
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    return False
+
+
 # ── 主程式 ────────────────────────────────────────────────
 
 def main():
@@ -205,18 +235,30 @@ def main():
     print("=" * 55)
     print(f"目標資料夾: {BGM_DIR}\n")
 
+
     existing = [f for f in os.listdir(BGM_DIR) if f.endswith(".mp3")]
-    if existing:
-        print(f"📁 已有 {len(existing)} 個檔案\n")
+    need = max(0, TARGET_COUNT - len(existing))
+    print(f"📁 已有 {len(existing)} 個，還需下載 {need} 個\n")
 
     downloaded: list[str] = []
 
-    # 1. Archive.org（不需 API key）
-    downloaded += download_from_archive()
+    if need > 0:
+        # 1. Archive.org（不需 API key）
+        downloaded += download_from_archive(need)
 
-    # 2. Freesound（若有 key 則補充）
-    if len(downloaded) < TARGET_COUNT:
-        downloaded += download_from_freesound()
+        # 2. Freesound（若有 key 則補充）
+        still_need = need - len(downloaded)
+        if still_need > 0:
+            downloaded += download_from_freesound(still_need)
+
+    # ── 正規化所有 BGM 音量 ───────────────────────────────
+    all_files = [f for f in os.listdir(BGM_DIR) if f.endswith(".mp3")]
+    if all_files:
+        print(f"\n🔊 正規化音量（loudnorm -18 LUFS）...")
+        for fname in sorted(all_files):
+            fpath = os.path.join(BGM_DIR, fname)
+            ok = normalize_bgm(fpath)
+            print(f"   {'✅' if ok else '⚠️ '} {fname}")
 
     # ── 結果報告 ──────────────────────────────────────────
     all_files = [f for f in os.listdir(BGM_DIR) if f.endswith(".mp3")]

@@ -1,22 +1,12 @@
 [
   {
-    "word_en": "Multi-modal capabilities",
-    "word_ipa": "/ˈmʌltiˌmoʊdəl kəˈbeɪləˌtiz/",
-    "word_cn": "多模態能力",
-    "tips": "multi(多)+modal(模式)=多種模式",
-    "sentence_en": "Google's AI ecosystem leverages multi-modal capabilities to seamlessly integrate various tools like Gemini and YouTube Studio.",
-    "sentence_ipa": "/ˈɡuːɡlz eɪˈaɪ ˈiːkoʊˌsɪstəm ˈlɛvɪdʒɪz ˈmʌltiˌmoʊdəl kəˈbeɪləˌtiz tu ˈsiːmlɛsli ˈɪntɪɡreɪt ˈvɛriəs tulz laɪk dʒəˈmaɪni ənd ˈjuːˌtoʊb ˈstjuːdioʊ/",
-    "sentence_cn": "谷歌的AI生態系統利用多模態能力，無縫整合各種工具，如Gemini和YouTube Studio。",
-    "id": "01"
-  },
-  {
-    "word_en": "Content repurposing",
-    "word_ipa": "/ˈkɒntɛnt ˌriːˈpɜːrpəsɪŋ/",
-    "word_cn": "內容再利用",
-    "tips": "content(內容)+repurpose(再利用)=內容再利用",
-    "sentence_en": "The integration of Opal allows for efficient content repurposing across various platforms, maximizing the reach of each video.",
-    "sentence_ipa": "/ðə ˌɪntɪˈɡreɪʃən əv ˈoʊpəl əˈlaʊz fɔr ɪˈfɪʃənt ˈkɒntɛnt ˌriːˈpɜːrpəsɪŋ əkrɔs ˈvɛriəs ˈplætfɔrmz, ˈmæksɪmaɪzɪŋ ðə riːtʃ əv iːtʃ ˈvɪdioʊ/",
-    "sentence_cn": "Opal的整合使得在各種平台上高效進行內容再利用，最大化每個視頻的影響力。",
-    "id": "02"
+    "id": "01",
+    "word_en": "Happy Mother's Day",
+    "word_ipa": "/ˌhæpi ˈmʌðərz deɪ/",
+    "word_cn": "母親節快樂",
+    "tips": "節日名稱字首大寫，常接 to + 人",
+    "sentence_en": "Happy Mother's Day to the best mom!",
+    "sentence_ipa": "/ˌhæpi ˈmʌðərz deɪ tu ðə bɛst mɑm/",
+    "sentence_cn": "祝最棒的媽媽母親節快樂！"
   }
 ]
