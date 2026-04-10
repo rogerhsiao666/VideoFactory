@@ -177,7 +177,7 @@ def create_waveform_video(
         "-i", audio_path,
         "-filter_complex",
         # 生成音波並疊加到背景
-        f"[1:a]showwaves=s={WAVE_W}x{WAVE_H*2}:mode=cline:rate=24:colors=white,crop=iw:ih/2:0:0,scale={WAVE_W}:{WAVE_H}[wave];"
+        f"[1:a]showwaves=s={WAVE_W}x{WAVE_H}:mode=p2p:rate=24:colors=white[wave];"
         f"[0:v][wave]overlay=x=(W-w)/2:y=H-{WAVE_H}-100:format=auto[v]",
         
         "-map", "[v]",
