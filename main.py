@@ -917,28 +917,26 @@ def _create_base_image(pexels_images: list) -> Image.Image:
 
 def draw_text_wrapped(draw, text, font, max_width, start_x, start_y, color, line_spacing=15):
     """
-    自動換行繪圖（支援中英文）。
-    回傳：繪製結束後的 Y 座標（供後續文字接續使用）。
+    自動換行繪圖（支援中英文混合，統一用像素寬度計算）。
     """
+    import re
+    # 拆分字元：中文字元個別拆開，其餘符號與英文字詞保留
+    tokens = re.findall(r'[\u4e00-\u9fff]|[^\u4e00-\u9fff\s]+|\s+', text)
+    
     lines = []
-    if any("\u4e00" <= c <= "\u9fff" for c in text):
-        # 中文：以字元數截斷
-        lines = textwrap.wrap(text, width=12)
-    else:
-        # 英文：以像素寬度截斷
-        words = text.split()
-        current_line: list[str] = []
-        for word in words:
-            test = " ".join(current_line + [word])
-            w = draw.textbbox((0, 0), test, font=font)[2]
-            if w <= max_width:
-                current_line.append(word)
-            else:
-                if current_line:
-                    lines.append(" ".join(current_line))
-                current_line = [word]
-        if current_line:
-            lines.append(" ".join(current_line))
+    current_line = ""
+    for token in tokens:
+        test_line = current_line + token
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        w = bbox[2] - bbox[0]
+        if w <= max_width:
+            current_line += token
+        else:
+            if current_line.strip():
+                lines.append(current_line.strip())
+            current_line = token
+    if current_line.strip():
+        lines.append(current_line.strip())
 
     current_y = start_y
     for line in lines:
@@ -1003,28 +1001,35 @@ def draw_text_with_highlight(
 
 
 def create_word_card_image(data: dict, output_filename: str, pexels_images: list):
-    """生成單字教學卡片（詞彙 + IPA + 中文 + Tip）"""
+    """生成單字教學卡片（強化字體與排版版本）"""
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 35)
-    font_en     = ImageFont.truetype(FONT_EN, 90)
-    font_ipa    = ImageFont.truetype(FONT_EN, 45)
-    font_cn     = _load_cn_font(65)
-    font_tips   = _load_cn_font(45)
+    font_header = ImageFont.truetype(FONT_EN, 50)
+    font_en     = ImageFont.truetype(FONT_EN, 120)
+    font_ipa    = ImageFont.truetype(FONT_EN, 70)
+    font_cn     = _load_cn_font(95)
+    font_tips   = _load_cn_font(75)
 
     draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Vocabulary", font=font_header, fill="white")
 
-    sx, mw, cy = 100, 880, 400
-    cy = draw_text_wrapped(draw, data["word_en"],  font_en,   mw, sx, cy, "#ffdd00", 20)
-    cy += 20
-    cy = draw_text_wrapped(draw, data["word_ipa"], font_ipa,  mw, sx, cy, "#cccccc", 15)
+    sx, mw, cy = 80, 920, 470
+    cy = draw_text_wrapped(draw, data["word_en"],  font_en,   mw, sx, cy, "#ffdd00", 30)
+    cy += 10
+
+    # 修正音標：加上 / / 符號並優化尺寸
+    ipa_text = data.get("word_ipa", "").strip()
+    if ipa_text:
+        if not ipa_text.startswith("/"): ipa_text = "/" + ipa_text
+        if not ipa_text.endswith("/"):   ipa_text = ipa_text + "/"
+    cy = draw_text_wrapped(draw, ipa_text, font_ipa,  mw, sx, cy, "#cccccc", 20)
+
     cy += 60
-    cy = draw_text_wrapped(draw, data["word_cn"],  font_cn,   mw, sx, cy, "white",   20)
-    cy += 100
+    cy = draw_text_wrapped(draw, data["word_cn"],  font_cn,   mw, sx, cy, "white",   30)
+    cy += 80
     draw.text((sx, cy), "Tip:", font=font_tips, fill="#00ffcc")
-    cy += 60
-    draw_text_wrapped(draw, data["tips"], font_tips, mw, sx, cy, "#eeeeee", 20)
+    cy += 120  # 加大與內容的間距
+    draw_text_wrapped(draw, data["tips"], font_tips, mw, sx, cy, "#eeeeee", 30)
 
     base.save(output_filename)
 
@@ -1034,20 +1039,20 @@ def create_sentence_card_image(data: dict, output_filename: str, pexels_images: 
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 35)
-    font_en     = ImageFont.truetype(FONT_EN, 70)
-    font_cn     = _load_cn_font(65)
+    font_header = ImageFont.truetype(FONT_EN, 50)
+    font_en     = ImageFont.truetype(FONT_EN, 95)
+    font_cn     = _load_cn_font(85)
 
     draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Example", font=font_header, fill="white")
 
-    sx, mw, cy = 100, 880, 450
+    sx, mw, cy = 80, 920, 530
     cy = draw_text_with_highlight(
         draw, data["sentence_en"], data["word_en"],
         font=font_en, max_width=mw, start_x=sx, start_y=cy,
-        default_color="white", highlight_color="#ffdd00", line_spacing=20,
+        default_color="white", highlight_color="#ffdd00", line_spacing=30,
     )
-    cy += 40
-    draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
+    cy += 50
+    draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 30)
     base.save(output_filename)
 
 
@@ -1436,24 +1441,20 @@ async def process_group(
                     dur_s_en_norm  = c_s_en_norm.duration
                     dur_s_cn       = c_s_cn.duration
 
-                    # D. 記錄 SRT 時間戳（以聲音為主，RECALL_THINK_TIME 保留為有意義的思考留白）
+                    # D. 記錄 SRT 時間戳
                     word_section = (dur_w_en_slow + RECALL_THINK_TIME) + dur_w_cn
                     sent_start   = cumulative_time + word_section
-                    round_recall = (dur_s_en_slow + RECALL_THINK_TIME) + dur_s_cn
-                    round_norm   = dur_s_en_norm + c_s_cn2.duration
-                    sent_end     = sent_start + round_recall + round_norm
-
+                    sent_end     = sent_start + (dur_s_en_slow + RECALL_THINK_TIME) + dur_s_cn
+                    
                     srt_entries.append((sent_start, sent_end,
                                         item["sentence_en"], item["sentence_cn"]))
-                    cumulative_time += word_section + round_recall + round_norm
+                    cumulative_time += word_section + (dur_s_en_slow + RECALL_THINK_TIME) + dur_s_cn
 
-                    # E. 組合影片片段（6 步 Active Recall）
-                    # 1. 遮中文單字卡 + word_en (0.8x) + 2s靜音 → 聽英文，回想中文
-                    # 2. 完整單字卡   + word_cn           → 揭曉解答
-                    # 3. karaoke EN（無CN底圖）+ 2s靜態思考留白 → 聽例句，回想中文
-                    # 4. 完整例句卡   + sent_cn           → 揭曉中文
-                    # 5. karaoke EN（有CN底圖）→ 覆誦
-                    # 6. 完整例句卡   + sent_cn           → 鞏固收尾
+                    # E. 組合影片片段（減法版：去除重複例句）
+                    # 1. 遮中文單字卡 + word_en (0.8x) + 2s靜音
+                    # 2. 完整單字卡   + word_cn
+                    # 3. karaoke EN（無CN底圖）+ 2s靜態思考留白
+                    # 4. 完整例句卡   + sent_cn
                     v1 = _image_clip(img_word_hidden, c_w_en_slow, extra_dur=RECALL_THINK_TIME)
                     v2 = _image_clip(img_word,        c_w_cn)
 
@@ -1470,14 +1471,7 @@ async def process_group(
 
                     v4 = _image_clip(img_sent, c_s_cn)
 
-                    # v5：音波影片（有CN）→ 覆誦
-                    kar2_norm_path = os.path.join(TEMP_DIR, f"kar2_sent_en_norm_{global_idx}.mp4")
-                    kar2_norm = create_waveform_video(img_sent, aud_sent_en_norm, kar2_norm_path)
-                    v5 = VideoFileClip(kar2_norm_path) if kar2_norm else _image_clip(img_sent, c_s_en_norm)
-
-                    v6 = _image_clip(img_sent, c_s_cn2)
-
-                    item_clip = concatenate_videoclips([v1, v2, v3, v4, v5, v6])
+                    item_clip = concatenate_videoclips([v1, v2, v3, v4])
 
                 batch_clips.append(item_clip)
 
