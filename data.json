@@ -1,12 +1,12 @@
 [
   {
     "id": "01",
-    "word_en": "Happy Mother's Day",
-    "word_ipa": "/ˌhæpi ˈmʌðərz deɪ/",
-    "word_cn": "母親節快樂",
-    "tips": "節日名稱字首大寫，常接 to + 人",
-    "sentence_en": "Happy Mother's Day to the best mom!",
-    "sentence_ipa": "/ˌhæpi ˈmʌðərz deɪ tu ðə bɛst mɑm/",
-    "sentence_cn": "祝最棒的媽媽母親節快樂！"
+    "word_en": "Nag",
+    "word_ipa": "/næɡ/",
+    "word_cn": "碎碎念；嘮叨",
+    "tips": "Nag someone about something 對某人嘮叨某事",
+    "sentence_en": "I know you nag because you care about me.",
+    "sentence_ipa": "/aɪ noʊ ju næɡ bɪˈkɔz ju kɛr əˈbaʊt mi/",
+    "sentence_cn": "我知道妳愛碎碎念都是因為關心我啦。"
   }
 ]

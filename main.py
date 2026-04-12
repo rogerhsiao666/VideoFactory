@@ -158,7 +158,7 @@ def create_waveform_video(
     """
     print(f"   🌊 生成即時動態音波: {os.path.basename(output_mp4)}")
 
-    WAVE_W = 800  # 音波的固定寬度 (可依需求調整)
+    WAVE_W = 700  # 音波的固定寬度 (可依需求調整)
     WAVE_H = 150  # 音波的固定高度
 
     # 1. 取得精確時長
@@ -178,7 +178,7 @@ def create_waveform_video(
         "-filter_complex",
         # 生成音波並疊加到背景
         f"[1:a]showwaves=s={WAVE_W}x{WAVE_H}:mode=p2p:rate=24:colors=white[wave];"
-        f"[0:v][wave]overlay=x=(W-w)/2:y=H-{WAVE_H}-100:format=auto[v]",
+        f"[0:v][wave]overlay=x=(W-w)/2:y=H-{WAVE_H}-350:format=auto[v]",
         
         "-map", "[v]",
         "-map", "1:a",
@@ -734,7 +734,7 @@ def download_pexels_images(topic: str, count: int = 10) -> list:
     params  = {
         "query":       topic,
         "per_page":    min(count, 80),
-        "orientation": "landscape",
+        "orientation": "portrait",
         "size":        "large",
     }
 
@@ -896,9 +896,21 @@ def _load_cn_font(size: int) -> ImageFont.FreeTypeFont:
 # ================= 圖片繪製 =================
 
 def _create_base_image(pexels_images: list) -> Image.Image:
-    """建立 1920×1080 帶有 80% 暗色遮罩的背景圖"""
+    """建立 1080×1920 帶有 80% 暗色遮罩的背景圖 (滿版裁切)"""
     bg_path = _pick_bg(pexels_images)
-    base    = Image.open(bg_path).convert("RGBA").resize((1920, 1080))
+    img = Image.open(bg_path).convert("RGBA")
+    
+    # 滿版裁切 (Center Crop) 邏輯
+    target_w, target_h = 1080, 1920
+    img_w, img_h = img.size
+    scale = max(target_w / img_w, target_h / img_h)
+    new_w, new_h = int(img_w * scale), int(img_h * scale)
+    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    
+    left = (new_w - target_w) // 2
+    top = (new_h - target_h) // 2
+    base = img.crop((left, top, left + target_w, top + target_h))
+    
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 200))   # alpha=200 ≈ 78%
     return Image.alpha_composite(base, overlay)
 
@@ -911,7 +923,7 @@ def draw_text_wrapped(draw, text, font, max_width, start_x, start_y, color, line
     lines = []
     if any("\u4e00" <= c <= "\u9fff" for c in text):
         # 中文：以字元數截斷
-        lines = textwrap.wrap(text, width=18)
+        lines = textwrap.wrap(text, width=12)
     else:
         # 英文：以像素寬度截斷
         words = text.split()
@@ -995,15 +1007,15 @@ def create_word_card_image(data: dict, output_filename: str, pexels_images: list
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 40)
-    font_en     = ImageFont.truetype(FONT_EN, 100)
-    font_ipa    = ImageFont.truetype(FONT_EN, 50)
-    font_cn     = _load_cn_font(70)
-    font_tips   = _load_cn_font(50)
+    font_header = ImageFont.truetype(FONT_EN, 35)
+    font_en     = ImageFont.truetype(FONT_EN, 90)
+    font_ipa    = ImageFont.truetype(FONT_EN, 45)
+    font_cn     = _load_cn_font(65)
+    font_tips   = _load_cn_font(45)
 
-    draw.text((100, 80), f"{data['id']}  |  {BRAND_NAME} - Vocabulary", font=font_header, fill="white")
+    draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Vocabulary", font=font_header, fill="white")
 
-    sx, mw, cy = 150, 1600, 250
+    sx, mw, cy = 100, 880, 400
     cy = draw_text_wrapped(draw, data["word_en"],  font_en,   mw, sx, cy, "#ffdd00", 20)
     cy += 20
     cy = draw_text_wrapped(draw, data["word_ipa"], font_ipa,  mw, sx, cy, "#cccccc", 15)
@@ -1022,13 +1034,13 @@ def create_sentence_card_image(data: dict, output_filename: str, pexels_images: 
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 40)
-    font_en     = ImageFont.truetype(FONT_EN, 80)
-    font_cn     = _load_cn_font(70)
+    font_header = ImageFont.truetype(FONT_EN, 35)
+    font_en     = ImageFont.truetype(FONT_EN, 70)
+    font_cn     = _load_cn_font(65)
 
-    draw.text((100, 80), f"{data['id']}  |  {BRAND_NAME} - Example", font=font_header, fill="white")
+    draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Example", font=font_header, fill="white")
 
-    sx, mw, cy = 150, 1600, 300
+    sx, mw, cy = 100, 880, 450
     cy = draw_text_with_highlight(
         draw, data["sentence_en"], data["word_en"],
         font=font_en, max_width=mw, start_x=sx, start_y=cy,
@@ -1040,8 +1052,8 @@ def create_sentence_card_image(data: dict, output_filename: str, pexels_images: 
 
 
 def _apply_frosted_glass(img: Image.Image, hidden_y: int):
-    """對 img 的 hidden_y~1080 區域套用磨砂玻璃效果（模糊 + 半透明遮罩）"""
-    region  = img.crop((0, hidden_y, 1920, 1080))
+    """對 img 的 hidden_y~1920 區域套用磨砂玻璃效果（模糊 + 半透明遮罩）"""
+    region  = img.crop((0, hidden_y, 1080, 1920))
     blurred = region.filter(ImageFilter.GaussianBlur(radius=18))
     overlay = Image.new("RGBA", blurred.size, (0, 0, 0, 120))
     blurred = Image.alpha_composite(blurred, overlay)
@@ -1053,15 +1065,15 @@ def create_word_card_hidden_image(data: dict, output_filename: str, pexels_image
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 40)
-    font_en     = ImageFont.truetype(FONT_EN, 100)
-    font_ipa    = ImageFont.truetype(FONT_EN, 50)
-    font_cn     = _load_cn_font(70)
-    font_tips   = _load_cn_font(50)
+    font_header = ImageFont.truetype(FONT_EN, 35)
+    font_en     = ImageFont.truetype(FONT_EN, 90)
+    font_ipa    = ImageFont.truetype(FONT_EN, 45)
+    font_cn     = _load_cn_font(65)
+    font_tips   = _load_cn_font(45)
 
-    draw.text((100, 80), f"{data['id']}  |  {BRAND_NAME} - Active Recall", font=font_header, fill="white")
+    draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Active Recall", font=font_header, fill="white")
 
-    sx, mw, cy = 150, 1600, 250
+    sx, mw, cy = 100, 880, 400
     cy = draw_text_wrapped(draw, data["word_en"],  font_en,  mw, sx, cy, "#ffdd00", 20)
     cy += 20
     cy = draw_text_wrapped(draw, data["word_ipa"], font_ipa, mw, sx, cy, "#cccccc", 15)
@@ -1077,7 +1089,7 @@ def create_word_card_hidden_image(data: dict, output_filename: str, pexels_image
     _apply_frosted_glass(base, hidden_y)
     hint_draw = ImageDraw.Draw(base)
     font_hint  = _load_cn_font(55)
-    hint_draw.text((150, hidden_y + 25), "請回想中文意思", font=font_hint, fill="#ffe066")
+    hint_draw.text((sx, hidden_y + 25), "請回想中文意思", font=font_hint, fill="#ffe066")
     base.save(output_filename)
 
 
@@ -1086,14 +1098,14 @@ def create_sent_card_hidden_image(data: dict, output_filename: str, pexels_image
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 40)
-    font_en     = ImageFont.truetype(FONT_EN, 80)
-    font_ipa    = ImageFont.truetype(FONT_EN, 50)
-    font_cn     = _load_cn_font(70)
+    font_header = ImageFont.truetype(FONT_EN, 35)
+    font_en     = ImageFont.truetype(FONT_EN, 70)
+    font_ipa    = ImageFont.truetype(FONT_EN, 45)
+    font_cn     = _load_cn_font(65)
 
-    draw.text((100, 80), f"{data['id']}  |  {BRAND_NAME} - Active Recall", font=font_header, fill="white")
+    draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Active Recall", font=font_header, fill="white")
 
-    sx, mw, cy = 150, 1600, 300
+    sx, mw, cy = 100, 880, 450
     cy = draw_text_with_highlight(
         draw, data["sentence_en"], data["word_en"],
         font=font_en, max_width=mw, start_x=sx, start_y=cy,
@@ -1107,7 +1119,7 @@ def create_sent_card_hidden_image(data: dict, output_filename: str, pexels_image
     _apply_frosted_glass(base, hidden_y)
     hint_draw = ImageDraw.Draw(base)
     font_hint  = _load_cn_font(55)
-    hint_draw.text((150, hidden_y + 25), "請回想中文意思", font=font_hint, fill="#ffe066")
+    hint_draw.text((sx, hidden_y + 25), "請回想中文意思", font=font_hint, fill="#ffe066")
     base.save(output_filename)
 
 
@@ -1155,7 +1167,7 @@ def _chapter_time(seconds: float) -> str:
 
 def _normalize_prebuilt(src: str) -> str:
     """
-    將 pre-built 影片轉碼為與 chunk 相同規格：1920x1080, 24fps, libx264, aac 48kHz。
+    將 pre-built 影片轉碼為與 chunk 相同規格：1080x1920, 24fps, libx264, aac 48kHz。
     輸出至 TEMP_DIR，只在規格不符時才轉碼（用 ffprobe 檢查）。
     回傳正規化後的路徑。
     """
@@ -1181,7 +1193,7 @@ def _normalize_prebuilt(src: str) -> str:
                 fps_val = float(num) / float(den)
             except Exception:
                 fps_val = 0.0
-            if w != 1920 or h != 1080 or abs(fps_val - 24) > 0.5:
+            if w != 1080 or h != 1920 or abs(fps_val - 24) > 0.5:
                 needs_transcode = True
         if s.get("codec_type") == "audio":
             if int(s.get("sample_rate", 0)) != 48000:
@@ -1193,17 +1205,28 @@ def _normalize_prebuilt(src: str) -> str:
     basename = os.path.basename(src)
     dst = os.path.join(TEMP_DIR, f"normalized_{basename}")
     if os.path.exists(dst):
-        # 若原始檔比 cached 版本更新，需要重新轉碼
-        if os.path.getmtime(src) <= os.path.getmtime(dst):
+        # 額外檢查快取檔案的解析度是否符合 1080x1920
+        is_correct_res = False
+        try:
+            res = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", dst],
+                capture_output=True, text=True
+            )
+            if res.stdout.strip() == "1080,1920":
+                is_correct_res = True
+        except Exception:
+            pass
+
+        if is_correct_res and os.path.getmtime(src) <= os.path.getmtime(dst):
             print(f"♻️  已存在正規化版本：{basename}")
             return dst
-        print(f"🔄 原始檔已更新，重新正規化：{basename}")
+        print(f"🔄 快取規格不符或原始檔已更新，重新正規化：{basename}")
 
     print(f"🔄 正在正規化 pre-built 影片規格：{basename} ...")
     ret = os.system(
         f'ffmpeg -y -i "{src}" '
-        f'-vf "scale=1920:1080:force_original_aspect_ratio=decrease,'
-        f'pad=1920:1080:(ow-iw)/2:(oh-ih)/2" '
+        f'-vf \"scale=1080:1920:force_original_aspect_ratio=increase,'
+        f'crop=1080:1920\" '
         f'-r 24 -c:v libx264 -preset fast '
         f'-c:a aac -ar 48000 -ac 2 -b:a 192k '
         f'"{dst}" -loglevel error'
@@ -1928,19 +1951,6 @@ async def main():
         phase=1,
     )
 
-    if os.path.exists(BREAK_VIDEO):
-        dur = _video_duration(BREAK_VIDEO)
-        chapter_entries.append((cumulative_time, "⏸ Active Recall Challenge"))
-        cumulative_time += dur
-        print(f"\n⏸ Break 已偵測 ({dur:.1f}s)")
-
-    # ── 7. Phase 2：Active Recall ───────────────────────
-    print(f"\n▶ Phase 2（Active Recall）：{len(data_list)} 個詞彙")
-    chunks_g1, cumulative_time = await process_group(
-        data_list, 1, pexels_images, cumulative_time, srt_entries, chapter_entries,
-        phase=2,
-    )
-
     if os.path.exists(OUTRO_VIDEO):
         chapter_entries.append((cumulative_time, "Outro"))
 
@@ -1958,10 +1968,6 @@ async def main():
         if os.path.exists(active_intro):
             f.write(f"file '{_normalize_prebuilt(active_intro)}'\n")
         for chunk in chunks_g0:
-            f.write(f"file '{chunk}'\n")
-        if os.path.exists(BREAK_VIDEO):
-            f.write(f"file '{_normalize_prebuilt(BREAK_VIDEO)}'\n")
-        for chunk in chunks_g1:
             f.write(f"file '{chunk}'\n")
         if os.path.exists(OUTRO_VIDEO):
             f.write(f"file '{_normalize_prebuilt(OUTRO_VIDEO)}'\n")
