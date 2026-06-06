@@ -123,9 +123,7 @@ async def generate_custom_intro(text: str, voice: str = "zh-TW-HsiaoChenNeural")
             # 確認後才合成影片
             final_path = os.path.join(TEMP_DIR, f"custom_intro_final_{attempt}.mp4")
             print("🎬  正在合成片頭影片（僅在確認後執行一次）...")
-            tts_clip = _load_audio(tts_path)
-            tts_dur  = tts_clip.duration + 0.5
-            tts_clip.close()
+            tts_dur  = _audio_duration(tts_path) + 0.5
             cmd = [
                 "ffmpeg", "-y", "-stream_loop", "-1", "-i", base_intro, "-i", tts_path,
                 "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
@@ -163,8 +161,7 @@ def create_waveform_video(
 
     # 1. 取得精確時長
     try:
-        with AudioFileClip(audio_path) as ac:
-            audio_dur = ac.duration
+        audio_dur = _audio_duration(audio_path)
     except Exception as e:
         print(f"   ⚠️ 無法讀取音訊長度: {e}")
         audio_dur = 2.0
@@ -205,17 +202,61 @@ BUFFER_TIME      = 0.5   # seconds of silence padding after each audio clip
 RECALL_THINK_TIME = 2.0  # 遮中文卡念完後的靜音思考秒數（Phase 2）
 FPS = 24
 
+_AUDIO_TRANSCODE_CACHE: dict[str, str] = {}
+_AUDIO_DURATION_CACHE: dict[str, float] = {}
+_BACKGROUND_BASE_CACHE: dict[str, Image.Image] = {}
+_FALLBACK_BG_CACHE: list[str] | None = None
+
+
+def _resolve_audio_path(path: str) -> str:
+    """將 MP3 轉為可重用的 WAV；同一來源檔單次執行只轉一次。"""
+    if not path.endswith(".mp3"):
+        return path
+
+    cached = _AUDIO_TRANSCODE_CACHE.get(path)
+    wav_path = path[:-4] + ".wav"
+    if cached and os.path.exists(cached) and os.path.getmtime(cached) >= os.path.getmtime(path):
+        return cached
+    if os.path.exists(wav_path) and os.path.getmtime(wav_path) >= os.path.getmtime(path):
+        _AUDIO_TRANSCODE_CACHE[path] = wav_path
+        return wav_path
+
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", path, wav_path],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    _AUDIO_TRANSCODE_CACHE[path] = wav_path
+    return wav_path
+
+
+def _audio_duration(path: str) -> float:
+    """優先用 ffprobe 取得精確音訊長度，失敗時才回退至 AudioFileClip。"""
+    resolved = _resolve_audio_path(path)
+    cached = _AUDIO_DURATION_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", resolved],
+            capture_output=True, text=True, check=True,
+        )
+        info = json.loads(result.stdout)
+        duration = float(info["format"]["duration"])
+    except Exception:
+        clip = AudioFileClip(resolved)
+        try:
+            duration = clip.duration
+        finally:
+            clip.close()
+
+    _AUDIO_DURATION_CACHE[resolved] = duration
+    return duration
+
 
 def _load_audio(path: str) -> AudioFileClip:
-    """載入音訊。MP3 先轉 WAV 以確保 duration 精確（WAV header 含精確 sample count）。"""
-    if path.endswith('.mp3'):
-        wav_path = path[:-4] + '.wav'
-        subprocess.run(
-            ['ffmpeg', '-y', '-i', path, wav_path],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        path = wav_path
-    return AudioFileClip(path)
+    """載入音訊。MP3 先轉 WAV 並重用轉檔結果，以確保 duration 精確。"""
+    return AudioFileClip(_resolve_audio_path(path))
 
 
 def _image_clip(img_path: str, audio: AudioFileClip, extra_dur: float = 0.0) -> ImageClip:
@@ -753,8 +794,9 @@ def download_pexels_images(topic: str, count: int = 10) -> list:
         print(f"   ⚠️  搜尋「{topic}」無結果，將使用本地圖片")
         return []
 
+    selected_photos = photos[:count]
     image_paths = []
-    for i, photo in enumerate(photos[:count]):
+    for i, photo in enumerate(selected_photos):
         url      = photo["src"].get("large2x", photo["src"]["large"])
         img_path = os.path.join(IMAGES_DIR, f"pexels_{i:02d}.jpg")
         try:
@@ -763,7 +805,7 @@ def download_pexels_images(topic: str, count: int = 10) -> list:
             with open(img_path, "wb") as f:
                 f.write(r.content)
             image_paths.append(img_path)
-            print(f"   ✅ [{i + 1}/{len(photos[:count])}] 已下載")
+            print(f"   ✅ [{i + 1}/{len(selected_photos)}] 已下載")
         except Exception as e:
             print(f"   ⚠️  圖片 {i + 1} 下載失敗: {e}")
 
@@ -814,6 +856,10 @@ def check_assets() -> bool:
 
 def _get_fallback_bg_images() -> list:
     """取得本地備用背景圖（assets/bg/ 或 assets/bg.jpg）"""
+    global _FALLBACK_BG_CACHE
+    if _FALLBACK_BG_CACHE is not None:
+        return _FALLBACK_BG_CACHE
+
     bg_dir = os.path.join(ASSETS_DIR, "bg")
     if os.path.isdir(bg_dir):
         imgs = [
@@ -822,9 +868,11 @@ def _get_fallback_bg_images() -> list:
             if f.lower().endswith((".jpg", ".jpeg", ".png"))
         ]
         if imgs:
+            _FALLBACK_BG_CACHE = imgs
             return imgs
     fallback = os.path.join(ASSETS_DIR, "bg.jpg")
-    return [fallback] if os.path.exists(fallback) else []
+    _FALLBACK_BG_CACHE = [fallback] if os.path.exists(fallback) else []
+    return _FALLBACK_BG_CACHE
 
 
 _last_bg_path: str | None = None   # 記錄上一張背景，避免前後連續相同
@@ -898,9 +946,13 @@ def _load_cn_font(size: int) -> ImageFont.FreeTypeFont:
 def _create_base_image(pexels_images: list) -> Image.Image:
     """建立 1920×1080 帶有 80% 暗色遮罩的背景圖"""
     bg_path = _pick_bg(pexels_images)
-    base    = Image.open(bg_path).convert("RGBA").resize((1920, 1080))
-    overlay = Image.new("RGBA", base.size, (0, 0, 0, 200))   # alpha=200 ≈ 78%
-    return Image.alpha_composite(base, overlay)
+    cached = _BACKGROUND_BASE_CACHE.get(bg_path)
+    if cached is None:
+        base = Image.open(bg_path).convert("RGBA").resize((1920, 1080))
+        overlay = Image.new("RGBA", base.size, (0, 0, 0, 200))   # alpha=200 ≈ 78%
+        cached = Image.alpha_composite(base, overlay)
+        _BACKGROUND_BASE_CACHE[bg_path] = cached
+    return cached.copy()
 
 
 def draw_text_wrapped(draw, text, font, max_width, start_x, start_y, color, line_spacing=15):
@@ -1233,6 +1285,40 @@ def _video_duration(path: str) -> float:
         return dur
 
 
+def _close_clip_resources(clip, seen: set[int] | None = None):
+    """遞迴關閉 clip、其子 clip 與掛載的 audio，避免 batch 累積資源。"""
+    if clip is None:
+        return
+    if seen is None:
+        seen = set()
+    obj_id = id(clip)
+    if obj_id in seen:
+        return
+    seen.add(obj_id)
+
+    for child in getattr(clip, "clips", []) or []:
+        _close_clip_resources(child, seen)
+    _close_clip_resources(getattr(clip, "audio", None), seen)
+
+    close = getattr(clip, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _purge_temp_caches():
+    """清除已不存在的暫存檔快取，避免跨 phase 保留失效路徑。"""
+    stale_transcodes = [src for src, wav in _AUDIO_TRANSCODE_CACHE.items() if not os.path.exists(wav)]
+    for src in stale_transcodes:
+        _AUDIO_TRANSCODE_CACHE.pop(src, None)
+
+    stale_durations = [path for path in _AUDIO_DURATION_CACHE if not os.path.exists(path)]
+    for path in stale_durations:
+        _AUDIO_DURATION_CACHE.pop(path, None)
+
+
 # ================= 批次處理 =================
 
 async def process_group(
@@ -1492,9 +1578,9 @@ async def process_group(
             except Exception as _e:
                 print(f"   ⚠️  checkpoint 儲存失敗: {_e}")
 
-            batch_video.close()
+            _close_clip_resources(batch_video)
             for clip in batch_clips:
-                clip.close()
+                _close_clip_resources(clip)
             gc.collect()
 
     # 清理 MP3 轉換產生的 WAV 暫存檔
@@ -1504,6 +1590,7 @@ async def process_group(
                 os.remove(f)
             except OSError:
                 pass
+    _purge_temp_caches()
 
     # 全部完成後移除 checkpoint（下次重新開始）
     if os.path.exists(ckpt_file):
@@ -1881,7 +1968,17 @@ async def main():
 
     print(f"   實際處理：{len(data_list)} 張\n")
 
-    # ── 4. 下載 Pexels 圖片 ─────────────────────────────
+    # ── 4. 客製片頭（若有輸入文字）──────────────────────
+    active_intro = INTRO_VIDEO
+    if intro_text:
+        custom_path = await generate_custom_intro(intro_text)
+        if custom_path:
+            active_intro = custom_path
+            print(f"✅  使用客製片頭：{os.path.basename(custom_path)}")
+        else:
+            print("↩️  取消客製，改用預設 prebuilt intro")
+
+    # ── 5. 下載 Pexels 圖片 ─────────────────────────────
     # <=10 張：下載相同張數；11-20 張：下載 10 張隨機用；>20 張：下載 ceil(count/2) 張
     vocab_count = len(data_list)
     if vocab_count <= 10:
@@ -1899,16 +1996,6 @@ async def main():
             print(f"⚠️  Pexels 下載失敗 ({e})，將使用本地圖片")
     else:
         print("⚠️  未設定 PEXELS_API_KEY，使用 assets/bg/ 本地圖片\n")
-
-    # ── 5. 客製片頭（若有輸入文字）──────────────────────
-    active_intro = INTRO_VIDEO
-    if intro_text:
-        custom_path = await generate_custom_intro(intro_text)
-        if custom_path:
-            active_intro = custom_path
-            print(f"✅  使用客製片頭：{os.path.basename(custom_path)}")
-        else:
-            print("↩️  取消客製，改用預設 prebuilt intro")
 
     # ── 6. 雙階段結構 ───────────────────────────────────
     srt_entries:     list  = []

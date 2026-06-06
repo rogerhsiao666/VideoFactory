@@ -1,12 +1,502 @@
 [
   {
     "id": "01",
-    "word_en": "Happy Mother's Day",
-    "word_ipa": "/ˌhæpi ˈmʌðərz deɪ/",
-    "word_cn": "母親節快樂",
-    "tips": "節日名稱字首大寫，常接 to + 人",
-    "sentence_en": "Happy Mother's Day to the best mom!",
-    "sentence_ipa": "/ˌhæpi ˈmʌðərz deɪ tu ðə bɛst mɑm/",
-    "sentence_cn": "祝最棒的媽媽母親節快樂！"
+    "word_en": "Just browsing",
+    "word_ipa": "/dʒʌst ˈbraʊzɪŋ/",
+    "word_cn": "只是看看",
+    "tips": "婉拒店員推銷時最自然有禮的說法。",
+    "sentence_en": "No thanks, I'm just browsing.",
+    "sentence_ipa": "",
+    "sentence_cn": "不用謝謝，我只是隨便看看。"
+  },
+  {
+    "id": "02",
+    "word_en": "Try on",
+    "word_ipa": "/traɪ ɑn/",
+    "word_cn": "試穿",
+    "tips": "詢問是否能試穿衣服的必備動詞片語。",
+    "sentence_en": "Can I try this on somewhere?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問我可以在哪裡試穿這件？"
+  },
+  {
+    "id": "03",
+    "word_en": "Fitting room",
+    "word_ipa": "/ˈfɪtɪŋ rum/",
+    "word_cn": "試衣間",
+    "tips": "替換 changing room，美式英文最常用。",
+    "sentence_en": "Where is the fitting room?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問試衣間在哪裡？"
+  },
+  {
+    "id": "04",
+    "word_en": "Snug",
+    "word_ipa": "/snʌɡ/",
+    "word_cn": "貼身/微緊",
+    "tips": "替換 too small，形容衣服合身但偏緊的道地字。",
+    "sentence_en": "This shirt is a little too snug on me.",
+    "sentence_ipa": "",
+    "sentence_cn": "這件襯衫我穿起來有點太緊。"
+  },
+  {
+    "id": "05",
+    "word_en": "Baggy",
+    "word_ipa": "/ˈbæɡi/",
+    "word_cn": "寬鬆的",
+    "tips": "替換 too big，形容衣服版型寬大。",
+    "sentence_en": "I like to wear baggy jeans.",
+    "sentence_ipa": "",
+    "sentence_cn": "我喜歡穿寬鬆的牛仔褲。"
+  },
+  {
+    "id": "06",
+    "word_en": "Size up",
+    "word_ipa": "/saɪz ʌp/",
+    "word_cn": "拿大一號",
+    "tips": "衣服太小時請店員拿大一號的精準說法。",
+    "sentence_en": "I think I need to size up.",
+    "sentence_ipa": "",
+    "sentence_cn": "我覺得我需要拿大一號。"
+  },
+  {
+    "id": "07",
+    "word_en": "Size down",
+    "word_ipa": "/saɪz daʊn/",
+    "word_cn": "拿小一號",
+    "tips": "衣服太大時請店員拿小一號的說法。",
+    "sentence_en": "This is too loose, I should size down.",
+    "sentence_ipa": "",
+    "sentence_cn": "這件太鬆了，我應該拿小一號。"
+  },
+  {
+    "id": "08",
+    "word_en": "In the back",
+    "word_ipa": "/ɪn ðə bæk/",
+    "word_cn": "在倉庫裡",
+    "tips": "詢問店員庫存是否還有貨的內行用語。",
+    "sentence_en": "Do you have any more of these in the back?",
+    "sentence_ipa": "",
+    "sentence_cn": "你們倉庫裡還有這款嗎？"
+  },
+  {
+    "id": "09",
+    "word_en": "Out of stock",
+    "word_ipa": "/aʊt ʌv stɑk/",
+    "word_cn": "缺貨",
+    "tips": "替換 no more，表示商品已經賣完。",
+    "sentence_en": "I'm sorry, that item is currently out of stock.",
+    "sentence_ipa": "",
+    "sentence_cn": "很抱歉，那件商品目前缺貨。"
+  },
+  {
+    "id": "10",
+    "word_en": "On sale",
+    "word_ipa": "/ɑn seɪl/",
+    "word_cn": "特價中",
+    "tips": "替換 cheap，表示商品正在打折。",
+    "sentence_en": "Are these shoes on sale?",
+    "sentence_ipa": "",
+    "sentence_cn": "這雙鞋有在特價嗎？"
+  },
+  {
+    "id": "11",
+    "word_en": "Flattering",
+    "word_ipa": "/ˈflætərɪŋ/",
+    "word_cn": "顯瘦/修身的",
+    "tips": "稱讚衣服穿起來很好看的最高級形容詞。",
+    "sentence_en": "That dress is very flattering on you.",
+    "sentence_ipa": "",
+    "sentence_cn": "那件洋裝妳穿起來非常修身好看。"
+  },
+  {
+    "id": "12",
+    "word_en": "Go with",
+    "word_ipa": "/ɡoʊ wɪð/",
+    "word_cn": "搭配",
+    "tips": "詢問某件單品是否適合搭配另一件的用法。",
+    "sentence_en": "Does this tie go with my suit?",
+    "sentence_ipa": "",
+    "sentence_cn": "這條領帶搭我的西裝適合嗎？"
+  },
+  {
+    "id": "13",
+    "word_en": "Put on hold",
+    "word_ipa": "/pʊt ɑn hoʊld/",
+    "word_cn": "保留商品",
+    "tips": "請店員暫時幫你保留商品晚點再買的說法。",
+    "sentence_en": "Can you put this on hold for me until tomorrow?",
+    "sentence_ipa": "",
+    "sentence_cn": "你可以幫我保留這件到明天嗎？"
+  },
+  {
+    "id": "14",
+    "word_en": "Ring up",
+    "word_ipa": "/rɪŋ ʌp/",
+    "word_cn": "結帳",
+    "tips": "替換 pay，指店員在收銀機掃描商品的動作。",
+    "sentence_en": "I'm ready for you to ring me up.",
+    "sentence_ipa": "",
+    "sentence_cn": "我準備好可以結帳了。"
+  },
+  {
+    "id": "15",
+    "word_en": "Price match",
+    "word_ipa": "/praɪs mæʧ/",
+    "word_cn": "價格匹配",
+    "tips": "要求店家跟進競爭對手較低價格的術語。",
+    "sentence_en": "Do you guys price match with Amazon?",
+    "sentence_ipa": "",
+    "sentence_cn": "你們有提供與亞馬遜相同的價格匹配嗎？"
+  },
+  {
+    "id": "16",
+    "word_en": "A steal",
+    "word_ipa": "/ə stil/",
+    "word_cn": "超划算",
+    "tips": "替換 very cheap，形容價格便宜到像賺到。",
+    "sentence_en": "Five dollars for this shirt is an absolute steal.",
+    "sentence_ipa": "",
+    "sentence_cn": "這件襯衫只要五元簡直太划算了。"
+  },
+  {
+    "id": "17",
+    "word_en": "Rip-off",
+    "word_ipa": "/ˈrɪpˌɔf/",
+    "word_cn": "敲竹槓",
+    "tips": "形容商品價格貴得極度不合理的口語。",
+    "sentence_en": "Fifty bucks for a plain t-shirt is a rip-off.",
+    "sentence_ipa": "",
+    "sentence_cn": "一件素色T恤要五十元根本是敲竹槓。"
+  },
+  {
+    "id": "18",
+    "word_en": "BOGO",
+    "word_ipa": "/ˈboʊɡoʊ/",
+    "word_cn": "買一送一",
+    "tips": "Buy one get one 的縮寫，特價標籤常見。",
+    "sentence_en": "Look, these sunglasses are BOGO today.",
+    "sentence_ipa": "",
+    "sentence_cn": "你看，這些太陽眼鏡今天買一送一。"
+  },
+  {
+    "id": "19",
+    "word_en": "Receipt",
+    "word_ipa": "/rɪˈsit/",
+    "word_cn": "收據",
+    "tips": "易錯發音 p 不發音，退換貨的必備憑證。",
+    "sentence_en": "Would you like your receipt in the bag?",
+    "sentence_ipa": "",
+    "sentence_cn": "您的收據要放在袋子裡嗎？"
+  },
+  {
+    "id": "20",
+    "word_en": "Exchange",
+    "word_ipa": "/ɪksˈʧeɪndʒ/",
+    "word_cn": "換貨",
+    "tips": "替換 change，指更換尺寸或顏色的動作。",
+    "sentence_en": "I'd like to exchange this for a different color.",
+    "sentence_ipa": "",
+    "sentence_cn": "我想把這件換成別的顏色。"
+  },
+  {
+    "id": "21",
+    "word_en": "Refund",
+    "word_ipa": "/ˈriˌfʌnd/",
+    "word_cn": "退款",
+    "tips": "商品不滿意要求退回現金的專有名詞。",
+    "sentence_en": "Can I get a full refund for this?",
+    "sentence_ipa": "",
+    "sentence_cn": "這件我可以獲得全額退款嗎？"
+  },
+  {
+    "id": "22",
+    "word_en": "Store credit",
+    "word_ipa": "/stɔr ˈkrɛdɪt/",
+    "word_cn": "商店購物金",
+    "tips": "退貨時不退現金而是退回等值購物金。",
+    "sentence_en": "We can only offer store credit for items without a receipt.",
+    "sentence_ipa": "",
+    "sentence_cn": "沒有收據的商品我們只能提供商店購物金。"
+  },
+  {
+    "id": "23",
+    "word_en": "Final sale",
+    "word_ipa": "/ˈfaɪnəl seɪl/",
+    "word_cn": "售出不退",
+    "tips": "看到這個標籤代表商品買了就不能退換。",
+    "sentence_en": "All clearance items are final sale.",
+    "sentence_ipa": "",
+    "sentence_cn": "所有出清商品皆為售出不退。"
+  },
+  {
+    "id": "24",
+    "word_en": "Gift wrap",
+    "word_ipa": "/ɡɪft ræp/",
+    "word_cn": "禮物包裝",
+    "tips": "結帳時請店員幫忙包裝成禮物的說法。",
+    "sentence_en": "Do you offer a gift wrap service?",
+    "sentence_ipa": "",
+    "sentence_cn": "你們有提供禮物包裝服務嗎？"
+  },
+  {
+    "id": "25",
+    "word_en": "Window shopping",
+    "word_ipa": "/ˈwɪndoʊ ˈʃɑpɪŋ/",
+    "word_cn": "逛街不買",
+    "tips": "形容只看不買的休閒逛街行為。",
+    "sentence_en": "We didn't buy anything, just went window shopping.",
+    "sentence_ipa": "",
+    "sentence_cn": "我們什麼都沒買，只是去逛逛櫥窗。"
+  },
+  {
+    "id": "26",
+    "word_en": "Checkout",
+    "word_ipa": "/ˈʧɛkˌaʊt/",
+    "word_cn": "結帳櫃檯",
+    "tips": "詢問哪裡可以付款時最標準的名詞。",
+    "sentence_en": "Excuse me, where is the checkout?",
+    "sentence_ipa": "",
+    "sentence_cn": "不好意思，請問結帳櫃檯在哪裡？"
+  },
+  {
+    "id": "27",
+    "word_en": "Clearance",
+    "word_ipa": "/ˈklɪrəns/",
+    "word_cn": "出清特賣",
+    "tips": "這是比一般打折還要便宜的最後降價區。",
+    "sentence_en": "I found this amazing jacket in the clearance section.",
+    "sentence_ipa": "",
+    "sentence_cn": "我在出清特賣區找到這件超棒的外套。"
+  },
+  {
+    "id": "28",
+    "word_en": "Display item",
+    "word_ipa": "/dɪˈspleɪ ˈaɪtəm/",
+    "word_cn": "展示品",
+    "tips": "架上沒貨時詢問能否購買模特兒身上那件的專用詞。",
+    "sentence_en": "Can I buy the display item if it's the last one?",
+    "sentence_ipa": "",
+    "sentence_cn": "如果這是最後一件，我可以買展示品嗎？"
+  },
+  {
+    "id": "29",
+    "word_en": "Defect",
+    "word_ipa": "/ˈdiˌfɛkt/",
+    "word_cn": "瑕疵",
+    "tips": "發現衣服有破洞或污漬時用來要求折扣的單字。",
+    "sentence_en": "There is a small defect here, can I get a discount?",
+    "sentence_ipa": "",
+    "sentence_cn": "這裡有個小瑕疵，我可以拿點折扣嗎？"
+  },
+  {
+    "id": "30",
+    "word_en": "Mark down",
+    "word_ipa": "/mɑrk daʊn/",
+    "word_cn": "標價調降",
+    "tips": "指店家將商品原本的價格往下調整。",
+    "sentence_en": "All winter coats have been marked down by 30%.",
+    "sentence_ipa": "",
+    "sentence_cn": "所有冬季大衣都已經降價百分之三十了。"
+  },
+  {
+    "id": "31",
+    "word_en": "Coupon",
+    "word_ipa": "/ˈkuˌpɑn/",
+    "word_cn": "折價券",
+    "tips": "結帳前詢問能否使用折扣碼或實體券的字眼。",
+    "sentence_en": "Can I use this online coupon in the store?",
+    "sentence_ipa": "",
+    "sentence_cn": "我可以在實體店面使用這張網路折價券嗎？"
+  },
+  {
+    "id": "32",
+    "word_en": "Restock",
+    "word_ipa": "/riˈstɑk/",
+    "word_cn": "補貨",
+    "tips": "詢問缺貨商品何時會再次進貨的動詞。",
+    "sentence_en": "Do you know when you will restock this item?",
+    "sentence_ipa": "",
+    "sentence_cn": "你知道這件商品什麼時候會補貨嗎？"
+  },
+  {
+    "id": "33",
+    "word_en": "Alteration",
+    "word_ipa": "/ˌɔltəˈreɪʃən/",
+    "word_cn": "修改衣服",
+    "tips": "詢問店家是否有提供改褲管或腰圍的服務。",
+    "sentence_en": "Do you offer free alterations for these pants?",
+    "sentence_ipa": "",
+    "sentence_cn": "你們有提供這條褲子的免費修改服務嗎？"
+  },
+  {
+    "id": "34",
+    "word_en": "Shrink",
+    "word_ipa": "/ʃrɪŋk/",
+    "word_cn": "縮水",
+    "tips": "購買純棉衣物時常問店員洗後會不會變小的動詞。",
+    "sentence_en": "Will this sweater shrink after I wash it?",
+    "sentence_ipa": "",
+    "sentence_cn": "這件毛衣洗過之後會縮水嗎？"
+  },
+  {
+    "id": "35",
+    "word_en": "Wardrobe staple",
+    "word_ipa": "/ˈwɔrˌdroʊb ˈsteɪpəl/",
+    "word_cn": "百搭基本款",
+    "tips": "形容衣櫃裡必備且永遠不退流行的經典單品。",
+    "sentence_en": "A plain white t-shirt is a true wardrobe staple.",
+    "sentence_ipa": "",
+    "sentence_cn": "素色白T恤是真正的衣櫃百搭基本款。"
+  },
+  {
+    "id": "36",
+    "word_en": "Knockoff",
+    "word_ipa": "/ˈnɑkˌɔf/",
+    "word_cn": "山寨品",
+    "tips": "形容仿冒名牌但品質粗糙的便宜貨。",
+    "sentence_en": "I think this bag is just a cheap knockoff.",
+    "sentence_ipa": "",
+    "sentence_cn": "我覺得這個包包只是一個便宜的山寨品。"
+  },
+  {
+    "id": "37",
+    "word_en": "Splurge",
+    "word_ipa": "/splɜrdʒ/",
+    "word_cn": "狠下心買",
+    "tips": "形容為了犒賞自己而花大錢買昂貴商品的行為。",
+    "sentence_en": "I decided to splurge on a designer handbag today.",
+    "sentence_ipa": "",
+    "sentence_cn": "我今天決定狠下心買一個設計師名牌包。"
+  },
+  {
+    "id": "38",
+    "word_en": "On a budget",
+    "word_ipa": "/ɑn ə ˈbʌdʒət/",
+    "word_cn": "預算有限",
+    "tips": "告訴店員你不想看太貴的商品時的委婉說法。",
+    "sentence_en": "I'm on a tight budget, so I'm looking for something cheaper.",
+    "sentence_ipa": "",
+    "sentence_cn": "我預算很緊，所以在找比較便宜的東西。"
+  },
+  {
+    "id": "39",
+    "word_en": "Price tag",
+    "word_ipa": "/praɪs tæɡ/",
+    "word_cn": "吊牌標籤",
+    "tips": "結帳前發現衣服上沒有價格標示時用的單字。",
+    "sentence_en": "This shirt is missing its price tag.",
+    "sentence_ipa": "",
+    "sentence_cn": "這件襯衫的吊牌標籤不見了。"
+  },
+  {
+    "id": "40",
+    "word_en": "Mannequin",
+    "word_ipa": "/ˈmænɪkɪn/",
+    "word_cn": "假人模特兒",
+    "tips": "指示店員你想看穿在假人身上的那套衣服。",
+    "sentence_en": "Do you have the dress that's on the mannequin?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問你們有假人模特兒身上的那件洋裝嗎？"
+  },
+  {
+    "id": "41",
+    "word_en": "Contactless",
+    "word_ipa": "/ˈkɑntæktləs/",
+    "word_cn": "感應支付",
+    "tips": "詢問能否使用行動支付或信用卡感應付款的術語。",
+    "sentence_en": "Do you accept contactless payment here?",
+    "sentence_ipa": "",
+    "sentence_cn": "你們這裡接受感應支付嗎？"
+  },
+  {
+    "id": "42",
+    "word_en": "Installments",
+    "word_ipa": "/ɪnˈstɔlmənts/",
+    "word_cn": "分期付款",
+    "tips": "購買高單價商品時詢問能否分期繳納的說法。",
+    "sentence_en": "Can I pay for this laptop in installments?",
+    "sentence_ipa": "",
+    "sentence_cn": "我可以分期付款買這台筆記型電腦嗎？"
+  },
+  {
+    "id": "43",
+    "word_en": "Loyalty program",
+    "word_ipa": "/ˈlɔɪəlti ˈproʊˌɡræm/",
+    "word_cn": "會員計畫",
+    "tips": "店員結帳時常問你有沒有加入累積點數的制度。",
+    "sentence_en": "Would you like to join our loyalty program today?",
+    "sentence_ipa": "",
+    "sentence_cn": "您今天想加入我們的會員計畫嗎？"
+  },
+  {
+    "id": "44",
+    "word_en": "Retail therapy",
+    "word_ipa": "/ˈriˌteɪl ˈθɛrəpi/",
+    "word_cn": "購物紓壓",
+    "tips": "幽默表達靠買東西來發洩壓力或改善心情的詞彙。",
+    "sentence_en": "I had a bad day, so I need some retail therapy.",
+    "sentence_ipa": "",
+    "sentence_cn": "我今天過得很糟，所以我需要去購物紓壓一下。"
+  },
+  {
+    "id": "45",
+    "word_en": "Sold out",
+    "word_ipa": "/soʊld aʊt/",
+    "word_cn": "全數售罄",
+    "tips": "與缺貨不同，這通常代表短期內不會再進貨了。",
+    "sentence_en": "I'm afraid the limited edition sneakers are completely sold out.",
+    "sentence_ipa": "",
+    "sentence_cn": "恐怕這款限量版運動鞋已經全數售罄了。"
+  },
+  {
+    "id": "46",
+    "word_en": "Run small",
+    "word_ipa": "/rʌn smɔl/",
+    "word_cn": "版型偏小",
+    "tips": "店員提醒你這款衣服剪裁較緊，建議拿大一號。",
+    "sentence_en": "These shoes run small, so you might want to size up.",
+    "sentence_ipa": "",
+    "sentence_cn": "這雙鞋版型偏小，所以你可能需要拿大一號。"
+  },
+  {
+    "id": "47",
+    "word_en": "Run large",
+    "word_ipa": "/rʌn lɑrdʒ/",
+    "word_cn": "版型偏大",
+    "tips": "店員提醒你這款版型寬鬆，建議拿小一號。",
+    "sentence_en": "This brand tends to run large.",
+    "sentence_ipa": "",
+    "sentence_cn": "這個牌子的版型通常偏大。"
+  },
+  {
+    "id": "48",
+    "word_en": "Take it",
+    "word_ipa": "/teɪk ɪt/",
+    "word_cn": "決定買了",
+    "tips": "試穿滿意後告訴店員你要購買這件的霸氣宣言。",
+    "sentence_en": "I love how this looks, I'll take it.",
+    "sentence_ipa": "",
+    "sentence_cn": "我很喜歡這件穿起來的樣子，我決定買了。"
+  },
+  {
+    "id": "49",
+    "word_en": "Throw in",
+    "word_ipa": "/θroʊ ɪn/",
+    "word_cn": "額外附贈",
+    "tips": "殺價時詢問老闆能不能多送個小東西的片語。",
+    "sentence_en": "If I buy two, can you throw in a pair of socks?",
+    "sentence_ipa": "",
+    "sentence_cn": "如果我買兩件，你能額外送我一雙襪子嗎？"
+  },
+  {
+    "id": "50",
+    "word_en": "Cash or credit",
+    "word_ipa": "/kæʃ ɔr ˈkrɛdɪt/",
+    "word_cn": "付現或刷卡",
+    "tips": "結帳時店員確認付款方式的最常見問句。",
+    "sentence_en": "Will that be cash or credit today?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問今天付現還是刷卡？"
   }
 ]
