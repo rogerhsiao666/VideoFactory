@@ -10,6 +10,7 @@ output/
 *.png
 *.jpg
 !assets/
+!assets/bg.jpg
 !assets/bg/
 !assets/intro.mp4
 !assets/outro.mp4

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 download_bgm.py
 從 Archive.org（不需 API key）和 Freesound.org（免費 API key）
@@ -8,6 +10,7 @@ download_bgm.py
 import os
 import json
 import time
+import shutil
 import requests
 from dotenv import load_dotenv
 
@@ -81,15 +84,22 @@ def archive_search() -> list[tuple[str, str]]:
     for q in ARCHIVE_QUERIES:
         if len(results) >= TARGET_COUNT * 3:
             break
-        url = (
-            "https://archive.org/advancedsearch.php"
-            f"?q={requests.utils.quote(q)}"
-            f"&fq[]={requests.utils.quote(CC0_FILTER)}"
-            "&fl[]=identifier,title"
-            "&output=json&rows=12&sort[]=downloads+desc"
-        )
+        params = {
+            "q": f"{q} AND {CC0_FILTER}",
+            "fl[]": ["identifier", "title"],
+            "output": "json",
+            "rows": "12",
+            "sort[]": "downloads desc",
+        }
         try:
-            data = requests.get(url, timeout=15).json()
+            data = requests.get(
+                "https://archive.org/advancedsearch.php",
+                params=params,
+                timeout=15,
+            ).json()
+            if "error" in data:
+                print(f"   ⚠️  Archive API 錯誤: {data['error']}")
+                continue
             docs = data.get("response", {}).get("docs", [])
             for doc in docs:
                 iid = doc.get("identifier", "")
@@ -133,7 +143,7 @@ def download_from_archive(need: int) -> list[str]:
         if not mp3_name:
             continue
 
-        url  = f"https://archive.org/download/{iid}/{requests.utils.quote(mp3_name)}"
+        url  = f"https://archive.org/download/{iid}/{requests.utils.quote(mp3_name, safe='')}"
         dest = os.path.join(BGM_DIR, safe_filename(title, prefix="arc_"))
 
         if os.path.exists(dest):
@@ -254,11 +264,14 @@ def main():
     # ── 正規化所有 BGM 音量 ───────────────────────────────
     all_files = [f for f in os.listdir(BGM_DIR) if f.endswith(".mp3")]
     if all_files:
-        print(f"\n🔊 正規化音量（loudnorm -18 LUFS）...")
-        for fname in sorted(all_files):
-            fpath = os.path.join(BGM_DIR, fname)
-            ok = normalize_bgm(fpath)
-            print(f"   {'✅' if ok else '⚠️ '} {fname}")
+        if shutil.which("ffmpeg"):
+            print(f"\n🔊 正規化音量（loudnorm -18 LUFS）...")
+            for fname in sorted(all_files):
+                fpath = os.path.join(BGM_DIR, fname)
+                ok = normalize_bgm(fpath)
+                print(f"   {'✅' if ok else '⚠️ '} {fname}")
+        else:
+            print("\nℹ️  未安裝 ffmpeg，跳過音量正規化")
 
     # ── 結果報告 ──────────────────────────────────────────
     all_files = [f for f in os.listdir(BGM_DIR) if f.endswith(".mp3")]

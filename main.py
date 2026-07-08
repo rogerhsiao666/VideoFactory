@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import sys
 print("=== 環境診斷 ===")
 print(f"Python 路徑: {sys.executable}")
@@ -38,6 +40,7 @@ import shutil
 import subprocess
 import requests
 import edge_tts
+import imageio_ffmpeg
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from moviepy import ImageClip, AudioFileClip, VideoFileClip, concatenate_videoclips, CompositeAudioClip
@@ -71,6 +74,10 @@ MOCKUP_DIR   = os.path.join(ASSETS_DIR, "mockup")
 MOTION_DIR   = os.path.join(ASSETS_DIR, "motion")
 AUDIO_DIR    = os.path.join(ASSETS_DIR, "Audio")
 PREBUILT_DIR = os.path.join(ASSETS_DIR, "prebuilt")
+
+
+FFMPEG_BIN = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
+FFPROBE_BIN = shutil.which("ffprobe") or "ffprobe"
 
 
 def _pick_prebuilt(segment: str) -> str:
@@ -127,7 +134,7 @@ async def generate_custom_intro(text: str, voice: str = "zh-TW-HsiaoChenNeural")
             tts_dur  = tts_clip.duration + 0.5
             tts_clip.close()
             cmd = [
-                "ffmpeg", "-y", "-stream_loop", "-1", "-i", base_intro, "-i", tts_path,
+                FFMPEG_BIN, "-y", "-stream_loop", "-1", "-i", base_intro, "-i", tts_path,
                 "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
                 "-map", "0:v:0", "-map", "1:a:0", "-t", str(round(tts_dur, 3)),
                 final_path, "-loglevel", "error"
@@ -153,13 +160,13 @@ def create_waveform_video(
     output_mp4: str,
 ) -> str | None:
     """
-    使用 FFmpeg 生成「即時動態音波」(極簡版)。
-    直接使用即時濾鏡，不需生成長圖與跑馬燈，大幅降低複雜度。
+    使用 FFmpeg 生成「即時動態音波」(純線條 line 模式)。
+    居中疊加於畫面下方，30% 透明白線，無填充面。
     """
     print(f"   🌊 生成即時動態音波: {os.path.basename(output_mp4)}")
 
-    WAVE_W = 700  # 音波的固定寬度 (可依需求調整)
-    WAVE_H = 150  # 音波的固定高度
+    WAVE_W = 700
+    WAVE_H = 150
 
     # 1. 取得精確時長
     try:
@@ -170,16 +177,16 @@ def create_waveform_video(
         audio_dur = 2.0
     audio_dur = max(audio_dur, 0.1)
 
-    # 2. 極簡版 FFmpeg 合成指令
+    # 2. line 純線條音波（非 p2p/cline，不會產生填充面）
+    filter_complex = (
+        f"[1:a]showwaves=s={WAVE_W}x{WAVE_H}:mode=line:rate={FPS}:colors=white@0.3[wave];"
+        f"[0:v][wave]overlay=x=(W-w)/2:y=H-{WAVE_H}-80:format=auto[v]"
+    )
     cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1", "-framerate", "24", "-i", image_path,
+        FFMPEG_BIN, "-y",
+        "-loop", "1", "-framerate", str(FPS), "-i", image_path,
         "-i", audio_path,
-        "-filter_complex",
-        # 生成音波並疊加到背景
-        f"[1:a]showwaves=s={WAVE_W}x{WAVE_H}:mode=p2p:rate=24:colors=white[wave];"
-        f"[0:v][wave]overlay=x=(W-w)/2:y=H-{WAVE_H}-350:format=auto[v]",
-        
+        "-filter_complex", filter_complex,
         "-map", "[v]",
         "-map", "1:a",
         "-c:v", "libx264", "-preset", "fast",
@@ -187,9 +194,9 @@ def create_waveform_video(
         "-c:a", "aac", "-b:a", "192k",
         "-t", str(audio_dur),
         output_mp4,
-        "-loglevel", "error"
+        "-loglevel", "error",
     ]
-    
+
     ret = subprocess.run(cmd)
     if ret.returncode != 0 or not os.path.exists(output_mp4):
         print("   ❌ 音波影片合成失敗")
@@ -204,6 +211,8 @@ USED_WORDS_FILE  = os.path.join(BASE_DIR, "used_words.json")
 BUFFER_TIME      = 0.5   # seconds of silence padding after each audio clip
 RECALL_THINK_TIME = 2.0  # 遮中文卡念完後的靜音思考秒數（Phase 2）
 FPS = 24
+VIDEO_W = 1920
+VIDEO_H = 1080
 
 
 def _load_audio(path: str) -> AudioFileClip:
@@ -211,7 +220,7 @@ def _load_audio(path: str) -> AudioFileClip:
     if path.endswith('.mp3'):
         wav_path = path[:-4] + '.wav'
         subprocess.run(
-            ['ffmpeg', '-y', '-i', path, wav_path],
+            [FFMPEG_BIN, '-y', '-i', path, wav_path],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         path = wav_path
@@ -335,6 +344,9 @@ def import_review_excel(path: str) -> list:
     result = []
     for row in ws.iter_rows(min_row=2, values_only=True):
         item = {headers[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row)}
+        if not item.get("sentence_cn") and re.search(r"[\u4e00-\u9fff]", item.get("sentence_ipa", "")):
+            item["sentence_cn"] = item["sentence_ipa"]
+            item["sentence_ipa"] = ""
         if item.get("word_en"):   # 空列跳過
             result.append(item)
     return result
@@ -896,12 +908,12 @@ def _load_cn_font(size: int) -> ImageFont.FreeTypeFont:
 # ================= 圖片繪製 =================
 
 def _create_base_image(pexels_images: list) -> Image.Image:
-    """建立 1080×1920 帶有 80% 暗色遮罩的背景圖 (滿版裁切)"""
+    """建立 1920×1080 橫屏、帶有 80% 暗色遮罩的背景圖 (滿版裁切)"""
     bg_path = _pick_bg(pexels_images)
     img = Image.open(bg_path).convert("RGBA")
     
     # 滿版裁切 (Center Crop) 邏輯
-    target_w, target_h = 1080, 1920
+    target_w, target_h = VIDEO_W, VIDEO_H
     img_w, img_h = img.size
     scale = max(target_w / img_w, target_h / img_h)
     new_w, new_h = int(img_w * scale), int(img_h * scale)
@@ -1001,64 +1013,66 @@ def draw_text_with_highlight(
 
 
 def create_word_card_image(data: dict, output_filename: str, pexels_images: list):
-    """生成單字教學卡片（強化字體與排版版本）"""
+    """生成單字教學卡片（橫屏 1920×1080）"""
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 50)
-    font_en     = ImageFont.truetype(FONT_EN, 120)
-    font_ipa    = ImageFont.truetype(FONT_EN, 70)
-    font_cn     = _load_cn_font(95)
-    font_tips   = _load_cn_font(75)
+    font_header = ImageFont.truetype(FONT_EN, 42)
+    font_en     = ImageFont.truetype(FONT_EN, 100)
+    font_ipa    = ImageFont.truetype(FONT_EN, 56)
+    font_cn     = _load_cn_font(78)
+    font_tips   = _load_cn_font(52)
 
-    draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Vocabulary", font=font_header, fill="white")
+    draw.text((100, 50), f"{data['id']}  |  {BRAND_NAME} - Vocabulary", font=font_header, fill="white")
 
-    sx, mw, cy = 80, 920, 470
-    cy = draw_text_wrapped(draw, data["word_en"],  font_en,   mw, sx, cy, "#ffdd00", 30)
-    cy += 10
+    sx, mw, cy = 100, 1720, 220
+    cy = draw_text_wrapped(draw, data["word_en"],  font_en,   mw, sx, cy, "#ffdd00", 20)
+    cy += 8
 
     # 修正音標：加上 / / 符號並優化尺寸
     ipa_text = data.get("word_ipa", "").strip()
     if ipa_text:
         if not ipa_text.startswith("/"): ipa_text = "/" + ipa_text
         if not ipa_text.endswith("/"):   ipa_text = ipa_text + "/"
-    cy = draw_text_wrapped(draw, ipa_text, font_ipa,  mw, sx, cy, "#cccccc", 20)
+    cy = draw_text_wrapped(draw, ipa_text, font_ipa,  mw, sx, cy, "#cccccc", 16)
 
-    cy += 60
-    cy = draw_text_wrapped(draw, data["word_cn"],  font_cn,   mw, sx, cy, "white",   30)
-    cy += 80
+    cy += 36
+    cy = draw_text_wrapped(draw, data["word_cn"],  font_cn,   mw, sx, cy, "white",   20)
+    cy += 40
     draw.text((sx, cy), "Tip:", font=font_tips, fill="#00ffcc")
-    cy += 120  # 加大與內容的間距
-    draw_text_wrapped(draw, data["tips"], font_tips, mw, sx, cy, "#eeeeee", 30)
+    cy += 70
+    draw_text_wrapped(draw, data["tips"], font_tips, mw, sx, cy, "#eeeeee", 18)
 
     base.save(output_filename)
 
 
 def create_sentence_card_image(data: dict, output_filename: str, pexels_images: list):
-    """生成例句教學卡片（例句高亮 + 中文翻譯）"""
+    """生成例句教學卡片（例句高亮 + 中文翻譯，橫屏）"""
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 50)
-    font_en     = ImageFont.truetype(FONT_EN, 95)
-    font_cn     = _load_cn_font(85)
+    font_header = ImageFont.truetype(FONT_EN, 42)
+    font_en     = ImageFont.truetype(FONT_EN, 72)
+    font_cn     = _load_cn_font(64)
 
-    draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Example", font=font_header, fill="white")
+    draw.text((100, 50), f"{data['id']}  |  {BRAND_NAME} - Example", font=font_header, fill="white")
 
-    sx, mw, cy = 80, 920, 530
+    sx, mw, cy = 100, 1720, 260
     cy = draw_text_with_highlight(
         draw, data["sentence_en"], data["word_en"],
         font=font_en, max_width=mw, start_x=sx, start_y=cy,
-        default_color="white", highlight_color="#ffdd00", line_spacing=30,
+        default_color="white", highlight_color="#ffdd00", line_spacing=22,
     )
-    cy += 50
-    draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 30)
+    cy += 36
+    draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
     base.save(output_filename)
 
 
 def _apply_frosted_glass(img: Image.Image, hidden_y: int):
-    """對 img 的 hidden_y~1920 區域套用磨砂玻璃效果（模糊 + 半透明遮罩）"""
-    region  = img.crop((0, hidden_y, 1080, 1920))
+    """對 img 的 hidden_y~底部區域套用磨砂玻璃效果（模糊 + 半透明遮罩）"""
+    w, h = img.size
+    hidden_y = max(0, min(hidden_y, h - 1))
+    region  = img.crop((0, hidden_y, w, h))
     blurred = region.filter(ImageFilter.GaussianBlur(radius=18))
     overlay = Image.new("RGBA", blurred.size, (0, 0, 0, 120))
     blurred = Image.alpha_composite(blurred, overlay)
@@ -1070,31 +1084,31 @@ def create_word_card_hidden_image(data: dict, output_filename: str, pexels_image
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 35)
+    font_header = ImageFont.truetype(FONT_EN, 36)
     font_en     = ImageFont.truetype(FONT_EN, 90)
-    font_ipa    = ImageFont.truetype(FONT_EN, 45)
-    font_cn     = _load_cn_font(65)
-    font_tips   = _load_cn_font(45)
+    font_ipa    = ImageFont.truetype(FONT_EN, 48)
+    font_cn     = _load_cn_font(64)
+    font_tips   = _load_cn_font(44)
 
-    draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Active Recall", font=font_header, fill="white")
+    draw.text((100, 50), f"{data['id']}  |  {BRAND_NAME} - Active Recall", font=font_header, fill="white")
 
-    sx, mw, cy = 100, 880, 400
-    cy = draw_text_wrapped(draw, data["word_en"],  font_en,  mw, sx, cy, "#ffdd00", 20)
-    cy += 20
-    cy = draw_text_wrapped(draw, data["word_ipa"], font_ipa, mw, sx, cy, "#cccccc", 15)
-    cy += 60
+    sx, mw, cy = 100, 1720, 200
+    cy = draw_text_wrapped(draw, data["word_en"],  font_en,  mw, sx, cy, "#ffdd00", 16)
+    cy += 12
+    cy = draw_text_wrapped(draw, data["word_ipa"], font_ipa, mw, sx, cy, "#cccccc", 12)
+    cy += 36
 
     hidden_y = cy  # 中文從此處開始 → 模糊遮罩
-    cy = draw_text_wrapped(draw, data["word_cn"], font_cn,   mw, sx, cy, "white",   20)
-    cy += 100
+    cy = draw_text_wrapped(draw, data["word_cn"], font_cn,   mw, sx, cy, "white",   16)
+    cy += 50
     draw.text((sx, cy), "Tip:", font=font_tips, fill="#00ffcc")
-    cy += 60
-    draw_text_wrapped(draw, data["tips"], font_tips, mw, sx, cy, "#eeeeee", 20)
+    cy += 50
+    draw_text_wrapped(draw, data["tips"], font_tips, mw, sx, cy, "#eeeeee", 16)
 
     _apply_frosted_glass(base, hidden_y)
     hint_draw = ImageDraw.Draw(base)
-    font_hint  = _load_cn_font(55)
-    hint_draw.text((sx, hidden_y + 25), "請回想中文意思", font=font_hint, fill="#ffe066")
+    font_hint  = _load_cn_font(48)
+    hint_draw.text((sx, hidden_y + 20), "請回想中文意思", font=font_hint, fill="#ffe066")
     base.save(output_filename)
 
 
@@ -1103,28 +1117,27 @@ def create_sent_card_hidden_image(data: dict, output_filename: str, pexels_image
     base = _create_base_image(pexels_images)
     draw = ImageDraw.Draw(base)
 
-    font_header = ImageFont.truetype(FONT_EN, 35)
-    font_en     = ImageFont.truetype(FONT_EN, 70)
-    font_ipa    = ImageFont.truetype(FONT_EN, 45)
-    font_cn     = _load_cn_font(65)
+    font_header = ImageFont.truetype(FONT_EN, 36)
+    font_en     = ImageFont.truetype(FONT_EN, 64)
+    font_cn     = _load_cn_font(56)
 
-    draw.text((80, 80), f"{data['id']}  |  {BRAND_NAME} - Active Recall", font=font_header, fill="white")
+    draw.text((100, 50), f"{data['id']}  |  {BRAND_NAME} - Active Recall", font=font_header, fill="white")
 
-    sx, mw, cy = 100, 880, 450
+    sx, mw, cy = 100, 1720, 220
     cy = draw_text_with_highlight(
         draw, data["sentence_en"], data["word_en"],
         font=font_en, max_width=mw, start_x=sx, start_y=cy,
-        default_color="white", highlight_color="#ffdd00", line_spacing=20,
+        default_color="white", highlight_color="#ffdd00", line_spacing=18,
     )
-    cy += 40
+    cy += 30
 
     hidden_y = cy  # 中文從此處開始 → 模糊遮罩
-    draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 20)
+    draw_text_wrapped(draw, data["sentence_cn"], font_cn, mw, sx, cy, "white", 16)
 
     _apply_frosted_glass(base, hidden_y)
     hint_draw = ImageDraw.Draw(base)
-    font_hint  = _load_cn_font(55)
-    hint_draw.text((sx, hidden_y + 25), "請回想中文意思", font=font_hint, fill="#ffe066")
+    font_hint  = _load_cn_font(48)
+    hint_draw.text((sx, hidden_y + 20), "請回想中文意思", font=font_hint, fill="#ffe066")
     base.save(output_filename)
 
 
@@ -1140,10 +1153,17 @@ def clean_for_tts(text: str) -> str:
 
 async def generate_audio(text: str, voice: str, output_filename: str, retries: int = 3, rate: str = "+0%"):
     """使用 Edge-TTS 生成語音，含自動重試機制。rate: '+0%'=原速, '-20%'=0.8x慢速"""
+    if not text.strip():
+        raise ValueError(f"TTS 文字為空，無法產生音訊：{os.path.basename(output_filename)}")
+
     for attempt in range(retries):
         try:
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
             comm = edge_tts.Communicate(text, voice, rate=rate)
             await asyncio.wait_for(comm.save(output_filename), timeout=30)
+            if not os.path.exists(output_filename) or os.path.getsize(output_filename) == 0:
+                raise RuntimeError(f"TTS 輸出為空檔：{os.path.basename(output_filename)}")
             return
         except Exception as e:
             if attempt == retries - 1:
@@ -1170,39 +1190,80 @@ def _chapter_time(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-def _normalize_prebuilt(src: str) -> str:
+def _probe_media_streams(src: str) -> list[dict]:
     """
-    將 pre-built 影片轉碼為與 chunk 相同規格：1080x1920, 24fps, libx264, aac 48kHz。
-    輸出至 TEMP_DIR，只在規格不符時才轉碼（用 ffprobe 檢查）。
-    回傳正規化後的路徑。
+    取得影片/音訊串流資訊。優先 ffprobe；若系統未安裝 ffprobe（常見於 imageio_ffmpeg），
+    改以 ffmpeg -i 的 stderr 解析，避免正規化被靜默跳過。
     """
+    if shutil.which("ffprobe"):
+        try:
+            result = subprocess.run(
+                [FFPROBE_BIN, "-v", "quiet", "-print_format", "json",
+                 "-show_streams", src],
+                capture_output=True, text=True, check=True,
+            )
+            return json.loads(result.stdout).get("streams", [])
+        except Exception:
+            pass
+
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_streams", src],
-            capture_output=True, text=True, check=True,
+            [FFMPEG_BIN, "-hide_banner", "-i", src],
+            capture_output=True, text=True,
         )
-        streams = json.loads(result.stdout).get("streams", [])
+        streams: list[dict] = []
+        for line in result.stderr.splitlines():
+            if "Video:" in line:
+                res = re.search(r"(?:,\s|\s)(\d{3,4})x(\d{3,4})(?:,|\s)", line)
+                fps = re.search(r"(\d+(?:\.\d+)?)\s*fps", line)
+                streams.append({
+                    "codec_type": "video",
+                    "width": int(res.group(1)) if res else 0,
+                    "height": int(res.group(2)) if res else 0,
+                    "r_frame_rate": f"{fps.group(1)}/1" if fps else "0/1",
+                })
+            elif "Audio:" in line:
+                sr = re.search(r"(\d+)\s*Hz", line)
+                streams.append({
+                    "codec_type": "audio",
+                    "sample_rate": sr.group(1) if sr else "0",
+                })
+        return streams
     except Exception:
-        streams = []
+        return []
 
+
+def _needs_prebuilt_transcode(streams: list[dict]) -> bool:
+    """chunk 規格：1920x1080 橫屏, 24fps, aac 48kHz stereo。"""
+    if not streams:
+        return True
     needs_transcode = False
     for s in streams:
         if s.get("codec_type") == "video":
             w = int(s.get("width", 0))
             h = int(s.get("height", 0))
-            # fps 可能是 "24/1" 或 "24000/1001"
             r_str = s.get("r_frame_rate", "0/1")
             try:
                 num, den = r_str.split("/")
                 fps_val = float(num) / float(den)
             except Exception:
                 fps_val = 0.0
-            if w != 1080 or h != 1920 or abs(fps_val - 24) > 0.5:
+            if w != VIDEO_W or h != VIDEO_H or abs(fps_val - 24) > 0.5:
                 needs_transcode = True
         if s.get("codec_type") == "audio":
             if int(s.get("sample_rate", 0)) != 48000:
                 needs_transcode = True
+    return needs_transcode
+
+
+def _normalize_prebuilt(src: str) -> str:
+    """
+    將 pre-built 影片轉碼為與 chunk 相同規格：1920x1080, 24fps, libx264, aac 48kHz。
+    輸出至 TEMP_DIR，只在規格不符時才轉碼。
+    回傳正規化後的路徑。
+    """
+    streams = _probe_media_streams(src)
+    needs_transcode = _needs_prebuilt_transcode(streams)
 
     if not needs_transcode:
         return src
@@ -1210,33 +1271,24 @@ def _normalize_prebuilt(src: str) -> str:
     basename = os.path.basename(src)
     dst = os.path.join(TEMP_DIR, f"normalized_{basename}")
     if os.path.exists(dst):
-        # 額外檢查快取檔案的解析度是否符合 1080x1920
-        is_correct_res = False
-        try:
-            res = subprocess.run(
-                ["ffprobe", "-v", "quiet", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", dst],
-                capture_output=True, text=True
-            )
-            if res.stdout.strip() == "1080,1920":
-                is_correct_res = True
-        except Exception:
-            pass
-
-        if is_correct_res and os.path.getmtime(src) <= os.path.getmtime(dst):
+        cached_streams = _probe_media_streams(dst)
+        cached_ok = not _needs_prebuilt_transcode(cached_streams)
+        if cached_ok and os.path.getmtime(src) <= os.path.getmtime(dst):
             print(f"♻️  已存在正規化版本：{basename}")
             return dst
         print(f"🔄 快取規格不符或原始檔已更新，重新正規化：{basename}")
 
     print(f"🔄 正在正規化 pre-built 影片規格：{basename} ...")
-    ret = os.system(
-        f'ffmpeg -y -i "{src}" '
-        f'-vf \"scale=1080:1920:force_original_aspect_ratio=increase,'
-        f'crop=1080:1920\" '
-        f'-r 24 -c:v libx264 -preset fast '
-        f'-c:a aac -ar 48000 -ac 2 -b:a 192k '
-        f'"{dst}" -loglevel error'
+    ret = subprocess.run(
+        [
+            FFMPEG_BIN, "-y", "-i", src,
+            "-vf", f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H}",
+            "-r", "24", "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
+            dst, "-loglevel", "error",
+        ]
     )
-    if ret != 0 or not os.path.exists(dst):
+    if ret.returncode != 0 or not os.path.exists(dst):
         print(f"⚠️  正規化失敗，改用原始檔案：{basename}")
         return src
 
@@ -1245,20 +1297,32 @@ def _normalize_prebuilt(src: str) -> str:
 
 
 def _video_duration(path: str) -> float:
-    """用 ffprobe 快速取得影片時長（秒）"""
+    """取得影片時長（秒）；ffprobe 不可用時改以 ffmpeg stderr 解析。"""
+    if shutil.which("ffprobe"):
+        try:
+            result = subprocess.run(
+                [FFPROBE_BIN, "-v", "quiet", "-print_format", "json", "-show_format", path],
+                capture_output=True, text=True, check=True,
+            )
+            info = json.loads(result.stdout)
+            return float(info["format"]["duration"])
+        except Exception:
+            pass
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
-            capture_output=True, text=True, check=True,
+            [FFMPEG_BIN, "-hide_banner", "-i", path],
+            capture_output=True, text=True,
         )
-        info = json.loads(result.stdout)
-        return float(info["format"]["duration"])
+        m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", result.stderr)
+        if m:
+            h, mi, s = m.groups()
+            return int(h) * 3600 + int(mi) * 60 + float(s)
     except Exception:
-        # 備用：用 MoviePy 讀取
-        clip = VideoFileClip(path)
-        dur  = clip.duration
-        clip.close()
-        return dur
+        pass
+    clip = VideoFileClip(path)
+    dur  = clip.duration
+    clip.close()
+    return dur
 
 
 # ================= 批次處理 =================
@@ -1898,7 +1962,17 @@ async def main():
 
     print(f"   實際處理：{len(data_list)} 張\n")
 
-    # ── 4. 下載 Pexels 圖片 ─────────────────────────────
+    # ── 4. 先校驗片頭聲音（確認後才下載圖片，避免白跑）──
+    active_intro = INTRO_VIDEO
+    if intro_text:
+        custom_path = await generate_custom_intro(intro_text)
+        if custom_path:
+            active_intro = custom_path
+            print(f"✅  使用客製片頭：{os.path.basename(custom_path)}")
+        else:
+            print("↩️  取消客製，改用預設 prebuilt intro")
+
+    # ── 5. 下載 Pexels 圖片 ─────────────────────────────
     # <=10 張：下載相同張數；11-20 張：下載 10 張隨機用；>20 張：下載 ceil(count/2) 張
     vocab_count = len(data_list)
     if vocab_count <= 10:
@@ -1917,16 +1991,6 @@ async def main():
     else:
         print("⚠️  未設定 PEXELS_API_KEY，使用 assets/bg/ 本地圖片\n")
 
-    # ── 5. 客製片頭（若有輸入文字）──────────────────────
-    active_intro = INTRO_VIDEO
-    if intro_text:
-        custom_path = await generate_custom_intro(intro_text)
-        if custom_path:
-            active_intro = custom_path
-            print(f"✅  使用客製片頭：{os.path.basename(custom_path)}")
-        else:
-            print("↩️  取消客製，改用預設 prebuilt intro")
-
     # ── 6. 雙階段結構 ───────────────────────────────────
     srt_entries:     list  = []
     chapter_entries: list  = []
@@ -1944,11 +2008,34 @@ async def main():
         data_list, 0, pexels_images, cumulative_time, srt_entries, chapter_entries,
         phase=1,
     )
+    if not chunks_g0:
+        raise RuntimeError(
+            "沒有任何 batch 影片成功產出；請先確認背景圖片、TTS 與 ffmpeg 設定後重新執行。"
+        )
+
+    # ── 7. 中場休息（若有 prebuilt break）────────────────
+    active_break = BREAK_VIDEO if os.path.exists(BREAK_VIDEO) else None
+    if active_break:
+        break_dur = _video_duration(active_break)
+        chapter_entries.append((cumulative_time, "Break"))
+        cumulative_time += break_dur
+        print(f"🎬 Break 已偵測 ({break_dur:.1f}s)")
+
+    # ── 8. Phase 2：主動回憶（重複練習）────────────────
+    print(f"\n▶ Phase 2（主動回憶）：{len(data_list)} 個詞彙")
+    chunks_g1, cumulative_time = await process_group(
+        data_list, 1, pexels_images, cumulative_time, srt_entries, chapter_entries,
+        phase=2,
+    )
+    if not chunks_g1:
+        raise RuntimeError(
+            "Phase 2 沒有任何 batch 影片成功產出；請先確認背景圖片、TTS 與 ffmpeg 設定後重新執行。"
+        )
 
     if os.path.exists(OUTRO_VIDEO):
         chapter_entries.append((cumulative_time, "Outro"))
 
-    # ── 8. FFmpeg 高速合併所有片段 ──────────────────────
+    # ── 9. FFmpeg 高速合併所有片段 ──────────────────────
     print("\n🎬 正在使用 FFmpeg 組裝最終影片...")
 
     safe_topic   = topic.lower().replace(" ", "_")
@@ -1963,19 +2050,24 @@ async def main():
             f.write(f"file '{_normalize_prebuilt(active_intro)}'\n")
         for chunk in chunks_g0:
             f.write(f"file '{chunk}'\n")
+        if active_break:
+            f.write(f"file '{_normalize_prebuilt(active_break)}'\n")
+        for chunk in chunks_g1:
+            f.write(f"file '{chunk}'\n")
         if os.path.exists(OUTRO_VIDEO):
             f.write(f"file '{_normalize_prebuilt(OUTRO_VIDEO)}'\n")
 
-    ret = os.system(
-        f'ffmpeg -y -f concat -safe 0 -i "{concat_path}" '
-        f'-c copy "{merged_path}" -loglevel error'
+    # 統一重新編碼合併，確保 intro/chunk/outro 規格一致（1920x1080、24fps、aac 48kHz）。
+    ret = subprocess.run(
+        [
+            FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0", "-i", concat_path,
+            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
+            merged_path, "-loglevel", "error",
+        ]
     )
-    if ret != 0 or not os.path.exists(merged_path):
-        print("⚠️  FFmpeg concat 失敗，嘗試完整重新編碼...")
-        os.system(
-            f'ffmpeg -y -f concat -safe 0 -i "{concat_path}" '
-            f'-c:v libx264 -preset fast -c:a aac -ar 48000 -ac 2 "{merged_path}" -loglevel error'
-        )
+    if ret.returncode != 0 or not os.path.exists(merged_path):
+        raise RuntimeError("FFmpeg 組裝最終影片失敗，未產生 merged_no_bgm.mp4。")
 
     # ── 9. 輸出（無背景音樂）─────────────────────────────
     shutil.copy(merged_path, output_file)

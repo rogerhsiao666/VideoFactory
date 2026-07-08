@@ -1,12 +1,502 @@
 [
   {
     "id": "01",
-    "word_en": "Nag",
-    "word_ipa": "/næɡ/",
-    "word_cn": "碎碎念；嘮叨",
-    "tips": "Nag someone about something 對某人嘮叨某事",
-    "sentence_en": "I know you nag because you care about me.",
-    "sentence_ipa": "/aɪ noʊ ju næɡ bɪˈkɔz ju kɛr əˈbaʊt mi/",
-    "sentence_cn": "我知道妳愛碎碎念都是因為關心我啦。"
+    "word_en": "Sightseeing",
+    "word_ipa": "/ˈsaɪtˌsiɪŋ/",
+    "word_cn": "觀光",
+    "tips": "海關詢問入境目的時最標準且安全的回答。",
+    "sentence_en": "I'm here for sightseeing.",
+    "sentence_ipa": "",
+    "sentence_cn": "我來這裡是為了觀光。"
+  },
+  {
+    "id": "02",
+    "word_en": "Declare",
+    "word_ipa": "/dɪˈklɛr/",
+    "word_cn": "申報",
+    "tips": "填寫海關申報單或過海關時必懂的動詞。",
+    "sentence_en": "I have nothing to declare.",
+    "sentence_ipa": "",
+    "sentence_cn": "我沒有任何需要申報的物品。"
+  },
+  {
+    "id": "03",
+    "word_en": "Shuttle bus",
+    "word_ipa": "/ˈʃʌtəl bʌs/",
+    "word_cn": "接駁車",
+    "tips": "往返機場與飯店之間最方便的交通工具。",
+    "sentence_en": "Where can I catch the airport shuttle bus?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問我在哪裡可以搭乘機場接駁車？"
+  },
+  {
+    "id": "04",
+    "word_en": "Top up",
+    "word_ipa": "/tɑp ʌp/",
+    "word_cn": "儲值",
+    "tips": "替交通卡充值金額的道地動詞片語。",
+    "sentence_en": "I need to top up my transit card.",
+    "sentence_ipa": "",
+    "sentence_cn": "我需要替我的交通卡儲值。"
+  },
+  {
+    "id": "05",
+    "word_en": "Fare",
+    "word_ipa": "/fɛr/",
+    "word_cn": "票價",
+    "tips": "搭乘計程車或大眾運輸時詢問費用的單字。",
+    "sentence_en": "How much is the bus fare to downtown?",
+    "sentence_ipa": "",
+    "sentence_cn": "到市區的公車票價是多少？"
+  },
+  {
+    "id": "06",
+    "word_en": "Deposit",
+    "word_ipa": "/dɪˈpɑzɪt/",
+    "word_cn": "押金",
+    "tips": "飯店入住時通常會要求刷卡預扣的保證金。",
+    "sentence_en": "Do I need to pay a security deposit?",
+    "sentence_ipa": "",
+    "sentence_cn": "我需要支付押金嗎？"
+  },
+  {
+    "id": "07",
+    "word_en": "Luggage storage",
+    "word_ipa": "/ˈlʌɡɪdʒ ˈstɔrɪdʒ/",
+    "word_cn": "行李寄放",
+    "tips": "退房後想繼續逛街時詢問櫃檯的必備詞。",
+    "sentence_en": "Do you offer luggage storage after check-out?",
+    "sentence_ipa": "",
+    "sentence_cn": "你們退房後有提供行李寄放服務嗎？"
+  },
+  {
+    "id": "08",
+    "word_en": "Housekeeping",
+    "word_ipa": "/ˈhaʊsˌkipɪŋ/",
+    "word_cn": "客房清潔",
+    "tips": "需要補充毛巾或清理房間時呼叫的部門。",
+    "sentence_en": "Could you send housekeeping to my room?",
+    "sentence_ipa": "",
+    "sentence_cn": "可以請客房清潔人員到我的房間嗎？"
+  },
+  {
+    "id": "09",
+    "word_en": "Within walking distance",
+    "word_ipa": "/wɪˈðɪn ˈwɔkɪŋ ˈdɪstəns/",
+    "word_cn": "步行可達的距離",
+    "tips": "詢問景點遠近以決定是否需要搭車的實用片語。",
+    "sentence_en": "Is the museum within walking distance?",
+    "sentence_ipa": "",
+    "sentence_cn": "博物館是走路可以到的距離嗎？"
+  },
+  {
+    "id": "10",
+    "word_en": "Landmark",
+    "word_ipa": "/ˈlændˌmɑrk/",
+    "word_cn": "地標",
+    "tips": "問路時請對方提供明顯建築物作為參考。",
+    "sentence_en": "Are there any landmarks near the station?",
+    "sentence_ipa": "",
+    "sentence_cn": "車站附近有什麼地標嗎？"
+  },
+  {
+    "id": "11",
+    "word_en": "Admission fee",
+    "word_ipa": "/ædˈmɪʃən fi/",
+    "word_cn": "入場費",
+    "tips": "購買景點門票時詢問價格的正式說法。",
+    "sentence_en": "How much is the admission fee for adults?",
+    "sentence_ipa": "",
+    "sentence_cn": "成人的入場費是多少錢？"
+  },
+  {
+    "id": "12",
+    "word_en": "Audio guide",
+    "word_ipa": "/ˈɔdioʊ ɡaɪd/",
+    "word_cn": "語音導覽",
+    "tips": "參觀博物館時租借來聽解說的設備。",
+    "sentence_en": "I'd like to rent an English audio guide.",
+    "sentence_ipa": "",
+    "sentence_cn": "我想要租借一台英文語音導覽機。"
+  },
+  {
+    "id": "13",
+    "word_en": "Hop-on hop-off",
+    "word_ipa": "/hɑp ɑn hɑp ɔf/",
+    "word_cn": "隨上隨下",
+    "tips": "觀光巴士允許乘客在各景點自由上下的模式。",
+    "sentence_en": "We bought tickets for the hop-on hop-off bus.",
+    "sentence_ipa": "",
+    "sentence_cn": "我們買了隨上隨下觀光巴士的車票。"
+  },
+  {
+    "id": "14",
+    "word_en": "Tourist trap",
+    "word_ipa": "/ˈtʊrɪst træp/",
+    "word_cn": "專坑遊客的地方",
+    "tips": "形容價格昂貴且專門敲詐觀光客的景點或餐廳。",
+    "sentence_en": "Don't eat there, it's a total tourist trap.",
+    "sentence_ipa": "",
+    "sentence_cn": "別在那裡吃，那完全是個坑觀光客的地方。"
+  },
+  {
+    "id": "15",
+    "word_en": "Souvenir",
+    "word_ipa": "/ˌsuvəˈnɪr/",
+    "word_cn": "紀念品",
+    "tips": "旅遊結束前買回家送給親友的特色小禮物。",
+    "sentence_en": "I need to buy some souvenirs for my family.",
+    "sentence_ipa": "",
+    "sentence_cn": "我需要買些紀念品給家人。"
+  },
+  {
+    "id": "16",
+    "word_en": "Tap water",
+    "word_ipa": "/tæp ˈwɔtər/",
+    "word_cn": "自來水",
+    "tips": "在歐美餐廳想喝免費水時的指定說法。",
+    "sentence_en": "Just tap water is fine, thank you.",
+    "sentence_ipa": "",
+    "sentence_cn": "給我自來水就可以了，謝謝。"
+  },
+  {
+    "id": "17",
+    "word_en": "Split the bill",
+    "word_ipa": "/splɪt ðə bɪl/",
+    "word_cn": "各付各的",
+    "tips": "與朋友出遊在餐廳結帳時要求分開算錢。",
+    "sentence_en": "Can we split the bill, please?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問我們可以分開結帳嗎？"
+  },
+  {
+    "id": "18",
+    "word_en": "Tax refund",
+    "word_ipa": "/tæks ˈriˌfʌnd/",
+    "word_cn": "退稅",
+    "tips": "購物達一定金額後在機場辦理退還稅金的手續。",
+    "sentence_en": "Where is the tax refund counter?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問退稅櫃檯在哪裡？"
+  },
+  {
+    "id": "19",
+    "word_en": "Local currency",
+    "word_ipa": "/ˈloʊkəl ˈkɜrənsi/",
+    "word_cn": "當地貨幣",
+    "tips": "刷卡時選擇用當地幣值結帳通常匯率較好。",
+    "sentence_en": "I will pay in the local currency.",
+    "sentence_ipa": "",
+    "sentence_cn": "我要用當地貨幣結帳。"
+  },
+  {
+    "id": "20",
+    "word_en": "Pickpocket",
+    "word_ipa": "/ˈpɪkˌpɑkɪt/",
+    "word_cn": "扒手",
+    "tips": "旅遊警示中常出現提醒遊客注意財物的單字。",
+    "sentence_en": "Watch out for pickpockets in crowded areas.",
+    "sentence_ipa": "",
+    "sentence_cn": "在人潮擁擠的地區要小心扒手。"
+  },
+  {
+    "id": "21",
+    "word_en": "Pharmacy",
+    "word_ipa": "/ˈfɑrməsi/",
+    "word_cn": "藥局",
+    "tips": "旅途中突發小感冒或受傷時尋找藥品的地方。",
+    "sentence_en": "Is there a pharmacy nearby?",
+    "sentence_ipa": "",
+    "sentence_cn": "附近有藥局嗎？"
+  },
+  {
+    "id": "22",
+    "word_en": "Itinerary",
+    "word_ipa": "/aɪˈtɪnəˌrɛri/",
+    "word_cn": "行程表",
+    "tips": "規劃旅行時列出每日活動與時間的清單。",
+    "sentence_en": "Let's check our itinerary for tomorrow.",
+    "sentence_ipa": "",
+    "sentence_cn": "我們來看一下明天的行程表吧。"
+  },
+  {
+    "id": "23",
+    "word_en": "Jet lag",
+    "word_ipa": "/dʒɛt læɡ/",
+    "word_cn": "時差",
+    "tips": "跨越時區飛行後產生的疲憊與睡眠障礙。",
+    "sentence_en": "I'm still trying to get over my jet lag.",
+    "sentence_ipa": "",
+    "sentence_cn": "我還在努力克服我的時差。"
+  },
+  {
+    "id": "24",
+    "word_en": "Take a picture",
+    "word_ipa": "/teɪk ə ˈpɪkʧər/",
+    "word_cn": "拍照",
+    "tips": "請路人幫忙留下旅遊回憶的最常用句型。",
+    "sentence_en": "Could you take a picture for us, please?",
+    "sentence_ipa": "",
+    "sentence_cn": "可以請你幫我們拍張照嗎？"
+  },
+  {
+    "id": "25",
+    "word_en": "Get lost",
+    "word_ipa": "/ɡɛt lɔst/",
+    "word_cn": "迷路",
+    "tips": "在陌生城市找不到方向時向人求助的開場白。",
+    "sentence_en": "Excuse me, I think I'm a bit lost.",
+    "sentence_ipa": "",
+    "sentence_cn": "不好意思，我覺得我有點迷路了。"
+  },
+  {
+    "id": "26",
+    "word_en": "Layover",
+    "word_ipa": "/ˈleɪˌoʊvər/",
+    "word_cn": "轉機停留",
+    "tips": "航班之間在轉機機場等待的時間。",
+    "sentence_en": "We have a three-hour layover in Tokyo.",
+    "sentence_ipa": "",
+    "sentence_cn": "我們在東京有三個小時的轉機時間。"
+  },
+  {
+    "id": "27",
+    "word_en": "Round trip",
+    "word_ipa": "/raʊnd trɪp/",
+    "word_cn": "來回票",
+    "tips": "購買包含去程與回程的交通票券。",
+    "sentence_en": "I'd like a round trip ticket to London, please.",
+    "sentence_ipa": "",
+    "sentence_cn": "請給我一張去倫敦的來回票。"
+  },
+  {
+    "id": "28",
+    "word_en": "One-way",
+    "word_ipa": "/wʌn weɪ/",
+    "word_cn": "單程票",
+    "tips": "只買去程不包含回程的票種。",
+    "sentence_en": "A one-way ticket is more expensive than I thought.",
+    "sentence_ipa": "",
+    "sentence_cn": "單程票比我想像的還要貴。"
+  },
+  {
+    "id": "29",
+    "word_en": "Car rental",
+    "word_ipa": "/kɑr ˈrɛntəl/",
+    "word_cn": "租車",
+    "tips": "抵達機場後想自己開車旅遊的必備詞。",
+    "sentence_en": "Where is the car rental counter located?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問租車櫃檯在哪裡？"
+  },
+  {
+    "id": "30",
+    "word_en": "Toll",
+    "word_ipa": "/toʊl/",
+    "word_cn": "過路費",
+    "tips": "自駕行經高速公路或橋樑時需繳納的費用。",
+    "sentence_en": "Do we need to pay a toll on this highway?",
+    "sentence_ipa": "",
+    "sentence_cn": "我們在這條高速公路上需要繳過路費嗎？"
+  },
+  {
+    "id": "31",
+    "word_en": "Amenities",
+    "word_ipa": "/əˈmɛnətiz/",
+    "word_cn": "飯店備品",
+    "tips": "泛指飯店提供的洗髮精或健身房等設施。",
+    "sentence_en": "What kind of amenities are included in the room?",
+    "sentence_ipa": "",
+    "sentence_cn": "房間內包含哪些備品與設施？"
+  },
+  {
+    "id": "32",
+    "word_en": "Concierge",
+    "word_ipa": "/kɑnˈsjɛrʒ/",
+    "word_cn": "禮賓部",
+    "tips": "飯店裡專門幫客人訂位或安排行程的服務台。",
+    "sentence_en": "You can ask the concierge to book a table for you.",
+    "sentence_ipa": "",
+    "sentence_cn": "你可以請禮賓部幫你預訂餐廳。"
+  },
+  {
+    "id": "33",
+    "word_en": "Adapter",
+    "word_ipa": "/əˈdæptər/",
+    "word_cn": "轉接頭",
+    "tips": "解決各國插座形狀不同無法充電的救星。",
+    "sentence_en": "Do you have an international travel adapter I can borrow?",
+    "sentence_ipa": "",
+    "sentence_cn": "你們有萬用轉接頭可以借我嗎？"
+  },
+  {
+    "id": "34",
+    "word_en": "Wake-up call",
+    "word_ipa": "/ˈweɪk ʌp kɔl/",
+    "word_cn": "晨呼服務",
+    "tips": "請飯店櫃檯在指定時間打電話叫你起床。",
+    "sentence_en": "I need a wake-up call at 6 AM tomorrow.",
+    "sentence_ipa": "",
+    "sentence_cn": "我明天早上六點需要晨呼服務。"
+  },
+  {
+    "id": "35",
+    "word_en": "Late check-out",
+    "word_ipa": "/leɪt ˈʧɛkˌaʊt/",
+    "word_cn": "延遲退房",
+    "tips": "班機較晚時向飯店要求晚點離開房間的服務。",
+    "sentence_en": "Is it possible to request a late check-out?",
+    "sentence_ipa": "",
+    "sentence_cn": "請問可以要求延遲退房嗎？"
+  },
+  {
+    "id": "36",
+    "word_en": "Specialty",
+    "word_ipa": "/ˈspɛʃəlti/",
+    "word_cn": "招牌特色",
+    "tips": "詢問當地特產或餐廳拿手菜的精準單字。",
+    "sentence_en": "What is the local specialty in this town?",
+    "sentence_ipa": "",
+    "sentence_cn": "這個小鎮的當地特產是什麼？"
+  },
+  {
+    "id": "37",
+    "word_en": "Food allergy",
+    "word_ipa": "/fud ˈælərdʒi/",
+    "word_cn": "食物過敏",
+    "tips": "點餐時務必先向服務生確認的健康問題。",
+    "sentence_en": "I have a severe food allergy to peanuts.",
+    "sentence_ipa": "",
+    "sentence_cn": "我對花生有嚴重的食物過敏。"
+  },
+  {
+    "id": "38",
+    "word_en": "Gratuity",
+    "word_ipa": "/ɡrəˈtuəti/",
+    "word_cn": "小費",
+    "tips": "帳單上用來替代 tip 的正式收費項目。",
+    "sentence_en": "Is gratuity included in the final bill?",
+    "sentence_ipa": "",
+    "sentence_cn": "最終帳單有包含小費了嗎？"
+  },
+  {
+    "id": "39",
+    "word_en": "To-go",
+    "word_ipa": "/tu ɡoʊ/",
+    "word_cn": "外帶",
+    "tips": "在美式英語中點餐帶走的標準說法。",
+    "sentence_en": "I'll have a cheeseburger and fries to-go.",
+    "sentence_ipa": "",
+    "sentence_cn": "我要外帶一份起司堡和薯條。"
+  },
+  {
+    "id": "40",
+    "word_en": "Fully booked",
+    "word_ipa": "/ˈfʊli bʊkt/",
+    "word_cn": "客滿",
+    "tips": "飯店或餐廳已經沒有任何空位的狀態。",
+    "sentence_en": "I'm sorry, all our tours are fully booked today.",
+    "sentence_ipa": "",
+    "sentence_cn": "很抱歉，我們今天的行程都已經客滿了。"
+  },
+  {
+    "id": "41",
+    "word_en": "Peak season",
+    "word_ipa": "/pik ˈsizən/",
+    "word_cn": "旅遊旺季",
+    "tips": "機票與住宿價格最高且人潮最多的時期。",
+    "sentence_en": "Hotels are twice as expensive during the peak season.",
+    "sentence_ipa": "",
+    "sentence_cn": "旅遊旺季時的飯店價格是平常的兩倍。"
+  },
+  {
+    "id": "42",
+    "word_en": "Off the beaten path",
+    "word_ipa": "/ɔf ðə ˈbitən pæθ/",
+    "word_cn": "私房景點",
+    "tips": "遠離觀光客常去的大眾路線以探索秘境。",
+    "sentence_en": "We prefer places that are off the beaten path.",
+    "sentence_ipa": "",
+    "sentence_cn": "我們比較喜歡遠離大眾路線的私房景點。"
+  },
+  {
+    "id": "43",
+    "word_en": "Breathtaking",
+    "word_ipa": "/ˈbrɛθˌteɪkɪŋ/",
+    "word_cn": "令人屏息的",
+    "tips": "形容風景極度美麗壯觀的最高級形容詞。",
+    "sentence_en": "The view from the top of the mountain is breathtaking.",
+    "sentence_ipa": "",
+    "sentence_cn": "山頂上的景色美得令人屏息。"
+  },
+  {
+    "id": "44",
+    "word_en": "Travel insurance",
+    "word_ipa": "/ˈtrævəl ɪnˈʃʊrəns/",
+    "word_cn": "旅遊保險",
+    "tips": "出國前購買以防突發疾病或意外的保障。",
+    "sentence_en": "Does your travel insurance cover medical emergencies?",
+    "sentence_ipa": "",
+    "sentence_cn": "你的旅遊保險有理賠醫療突發狀況嗎？"
+  },
+  {
+    "id": "45",
+    "word_en": "Embassy",
+    "word_ipa": "/ˈɛmbəsi/",
+    "word_cn": "大使館",
+    "tips": "護照遺失或遇上重大危急事件時的求助機構。",
+    "sentence_en": "I need to contact my embassy immediately.",
+    "sentence_ipa": "",
+    "sentence_cn": "我需要立刻聯繫我的大使館。"
+  },
+  {
+    "id": "46",
+    "word_en": "Exchange rate",
+    "word_ipa": "/ɪksˈʧeɪndʒ reɪt/",
+    "word_cn": "匯率",
+    "tips": "在當地銀行或換匯所兌換外幣時的兌換比值。",
+    "sentence_en": "What is the current exchange rate for US dollars?",
+    "sentence_ipa": "",
+    "sentence_cn": "目前美金的匯率是多少？"
+  },
+  {
+    "id": "47",
+    "word_en": "Valid",
+    "word_ipa": "/ˈvælɪd/",
+    "word_cn": "有效的",
+    "tips": "確認護照或簽證尚未過期且可使用的狀態。",
+    "sentence_en": "Make sure your passport is valid for at least six months.",
+    "sentence_ipa": "",
+    "sentence_cn": "請確保你的護照至少還有六個月的效期。"
+  },
+  {
+    "id": "48",
+    "word_en": "Lost and found",
+    "word_ipa": "/lɔst ænd faʊnd/",
+    "word_cn": "失物招領處",
+    "tips": "在車站或景點遺失物品時尋找的部門。",
+    "sentence_en": "Someone turned your wallet in to the lost and found.",
+    "sentence_ipa": "",
+    "sentence_cn": "有人把你的錢包交到失物招領處了。"
+  },
+  {
+    "id": "49",
+    "word_en": "Authentic",
+    "word_ipa": "/ɔˈθɛntɪk/",
+    "word_cn": "道地的",
+    "tips": "形容食物或體驗保留了最原始的當地風味。",
+    "sentence_en": "I want to try some authentic Mexican food.",
+    "sentence_ipa": "",
+    "sentence_cn": "我想嚐嚐道地的墨西哥菜。"
+  },
+  {
+    "id": "50",
+    "word_en": "Carry-on",
+    "word_ipa": "/ˈkæri ɑn/",
+    "word_cn": "手提行李",
+    "tips": "帶上飛機不託運的隨身行李。",
+    "sentence_en": "You are allowed one carry-on bag and a personal item.",
+    "sentence_ipa": "",
+    "sentence_cn": "您可以攜帶一件手提行李和一件個人物品。"
   }
 ]
