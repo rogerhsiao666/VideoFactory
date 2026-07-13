@@ -1675,24 +1675,33 @@ def write_description(topic: str, chapter_entries: list, output_path: str):
 
 
 def _generate_yt_topic_paragraph(topic: str) -> str:
-    """用 OpenAI 根據主題生成一段 YouTube 影片描述文案（繁體中文、台灣口吻）。"""
+    """用 OpenAI 根據主題生成一段 YouTube 影片描述文案（繁體中文、台灣口吻）。
+
+    第一句必須是以問號結尾的痛點/情境 hook。
+    """
     prompt = (
         f"你是一位台灣 YouTube 英語教學頻道的文案寫手。"
-        f"請為主題「{topic}」寫一段 YouTube 影片描述（約 80-120 字繁體中文），"
-        f"風格活潑、有吸引力，提到學習情境與使用 Rayo 智慧閃卡搭配影子跟讀（Shadowing）練習。"
-        f"不要加標題、不要加 hashtag、不要加連結，只輸出純文字段落。"
+        f"請為主題「{topic}」寫一段 YouTube 影片描述（約 100-150 字繁體中文）。"
+        f"格式要求：**第一句必須是一個以問號結尾的痛點/情境 hook**，"
+        f"例如「暑假馬上就要飛了，卻發現英文還沒準備好？」的風格，"
+        f"貼合「{topic}」情境。"
+        f"接著的 2-3 句延續 hook，介紹本集內容（濃縮的實用情境／金句），"
+        f"並明確提到搭配 Rayo 智慧閃卡與影子跟讀（Shadowing）練習。"
+        f"風格活潑、有吸引力、貼近台灣觀眾口吻。"
+        f"不要加標題、不要加 hashtag、不要加連結、不要換行，全部合成一段。"
     )
     try:
         resp = _call_openai(
             messages=[{"role": "user", "content": prompt}],
             model="gpt-4o-mini",
             temperature=0.9,
-            max_tokens=300,
+            max_tokens=400,
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
         print(f"⚠️  OpenAI 生成 YouTube 描述失敗 ({e})，使用預設模板")
         return (
+            f"想學「{topic}」實用英文卻不知從何開始？"
             f"這集為你準備了最實用的「{topic}」英文懶人包，"
             f"專為沒時間準備的零基礎新手設計。"
             f"搭配 Rayo 智慧閃卡與影子跟讀（Shadowing），"
@@ -1700,39 +1709,147 @@ def _generate_yt_topic_paragraph(topic: str) -> str:
         )
 
 
-def write_youtube_description(
-    topic: str, chapter_entries: list, output_path: str,
-):
-    """產出面向 YouTube 發布的完整描述檔（含進度時間戳、推廣連結、CTA、Hashtags）。"""
+def _generate_yt_title(topic: str) -> str:
+    """用 OpenAI 為主題生成一句吸睛的 YouTube 影片標題。"""
+    prompt = (
+        f"你是台灣 YouTube 英語教學頻道的標題撰稿人。"
+        f"請為主題「{topic}」寫一句 YouTube 影片標題（繁體中文，25-40 字）。"
+        f"風格：吸睛、有痛點、含具體場景與 Rayo 智慧閃卡關鍵字。"
+        f"只輸出標題本身，不要引號、不要 hashtag、不要多行。"
+    )
+    try:
+        resp = _call_openai(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o-mini",
+            temperature=0.9,
+            max_tokens=80,
+        )
+        title = resp.choices[0].message.content.strip()
+        title = title.strip('「」""\'\'')
+        return title.splitlines()[0] if title else ""
+    except Exception as e:
+        print(f"⚠️  OpenAI 生成 YouTube 標題失敗 ({e})，使用預設模板")
+        return f"【日常英文】{topic} 英文懶人包｜Rayo 智慧閃卡陪你 14 天上手"
 
-    phase1_cards = [
-        (t, lbl) for t, lbl in chapter_entries
+
+def _generate_yt_hashtags(topic: str) -> list:
+    """用 OpenAI 生成該主題的多語變體標籤（繁/簡/英 + 同義詞）。"""
+    prompt = (
+        f"為 YouTube 英語教學影片主題「{topic}」生成 8-12 個 SEO 標籤，"
+        f"涵蓋：繁體中文（如「{topic}英文、{topic}單字」等 2-4 個同義詞）、"
+        f"簡體中文（2-3 個）、英文小寫（3-5 個，如「kitchen english、cooking vocabulary」風格）。"
+        f'只輸出 JSON：{{"tags": ["tag1", "tag2", ...]}}，不要多餘文字。'
+    )
+    try:
+        resp = _call_openai(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o-mini",
+            temperature=0.7,
+            max_tokens=300,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(resp.choices[0].message.content)
+        tags = data.get("tags", [])
+        cleaned = [t.strip() for t in tags if isinstance(t, str) and t.strip()]
+        if cleaned:
+            return cleaned
+    except Exception as e:
+        print(f"⚠️  OpenAI 生成主題 hashtags 失敗 ({e})，使用預設 fallback")
+    return [f"{topic}英文", f"{topic} english"]
+
+
+def _patch_yt_timestamps(existing_path: str, ts_25: str, ts_50: str, ts_75: str) -> bool:
+    """就地替換既有 youtube 描述檔的四個進度時間戳行，其他內容保持不變。"""
+    try:
+        with open(existing_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception as e:
+        print(f"⚠️  讀取既有 YouTube 描述失敗 ({e})")
+        return False
+
+    suffix_map = {
+        "開始學習！": "00:00",
+        "25%繼續加油！": ts_25,
+        "50% 再複習一次  GO! GO!": ts_50,
+        "75% 最後衝刺！": ts_75,
+    }
+    patched = False
+    for i, line in enumerate(lines):
+        for suffix, new_ts in suffix_map.items():
+            if line.strip().endswith(suffix) and re.match(r"^\d{2}:\d{2}\s", line):
+                lines[i] = f"{new_ts} {suffix}"
+                patched = True
+                break
+    if not patched:
+        return False
+    with open(existing_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return True
+
+
+def write_youtube_description(
+    topic: str, chapter_entries: list, srt_entries: list, output_path: str,
+):
+    """產出面向 YouTube 發布的完整描述檔（含進度時間戳、推廣連結、CTA、Hashtags）。
+
+    四個進度時間戳直接讀 srt_entries 的秒數：
+      - 25% → 第 26 條字幕（Phase1 第 26 張卡片例句）
+      - 50% → 第 51 條字幕（Phase2 第 1 張，落在 Break 之後）
+      - 75% → 第 76 條字幕（Phase2 第 26 張卡片例句）
+
+    若 output_path 已存在（例如 cards.py 先前預產的版本），只修補四個進度時間戳，
+    保留 AI 已生成的標題／段落／hashtags；否則從零產生完整檔案。
+    """
+
+    def _srt_time(idx: int) -> str:
+        if 0 <= idx < len(srt_entries):
+            return _chapter_time(srt_entries[idx][0])
+        if srt_entries:
+            return _chapter_time(srt_entries[-1][0])
+        return "00:00"
+
+    phase1_count = sum(
+        1 for _, lbl in chapter_entries
         if lbl not in ("Intro", "Break", "Outro") and not lbl.startswith("🔄")
-    ]
-    phase2_cards = [
-        (t, lbl) for t, lbl in chapter_entries
-        if lbl.startswith("🔄")
-    ]
-    break_entry = next(
-        ((t, lbl) for t, lbl in chapter_entries if lbl == "Break"), None
     )
 
     ts_start = "00:00"
-    ts_25 = _chapter_time(phase1_cards[25][0]) if len(phase1_cards) > 25 else (
-        _chapter_time(phase1_cards[-1][0]) if phase1_cards else "00:00"
-    )
-    ts_50 = _chapter_time(break_entry[0]) if break_entry else "00:00"
-    ts_75 = _chapter_time(phase2_cards[25][0]) if len(phase2_cards) > 25 else (
-        _chapter_time(phase2_cards[-1][0]) if phase2_cards else "00:00"
-    )
+    ts_25 = _srt_time(25)
+    ts_50 = _srt_time(phase1_count)
+    ts_75 = _srt_time(phase1_count + 25)
 
+    if os.path.exists(output_path) and _patch_yt_timestamps(output_path, ts_25, ts_50, ts_75):
+        print(f"✅ YouTube 描述時間戳已更新: {output_path}")
+        return
+
+    title = _generate_yt_title(topic)
     paragraph = _generate_yt_topic_paragraph(topic)
+    topic_tags = _generate_yt_hashtags(topic)
 
-    hashtags = ["英文學習", "日常對話", "14天挑戰", "英文口說", "影子跟讀", "英語教學"]
-    hashtag_line = " ".join(f"#{t}" for t in hashtags)
-    comma_line = ", ".join(hashtags)
+    fixed_hashtags = ["英文學習", "日常對話", "14天挑戰", "英文口說", "影子跟讀", "英語教學"]
+    hashtag_line = " ".join(f"#{t}" for t in fixed_hashtags)
+
+    extended_tags = [
+        "Rayo智慧閃卡", "間隔重複", "Shadowing",
+        "英文學習", "英语学习", "learn english",
+        "零基礎英文", "生活英文", "daily english", "english speaking practice",
+    ]
+    seen = set()
+    combined_tags = []
+    for t in extended_tags + list(topic_tags):
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        combined_tags.append(t)
+    comma_line = ", ".join(combined_tags)
+
+    divider = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    chapter_lines = [f"{_chapter_time(t)} {lbl}" for t, lbl in chapter_entries]
 
     lines = [
+        title,
+        "",
         paragraph,
         "",
         "👇 搭配 Rayo 智慧閃卡，學習效率翻倍 👇",
@@ -1744,6 +1861,11 @@ def write_youtube_description(
         f"{ts_25} 25%繼續加油！",
         f"{ts_50} 50% 再複習一次  GO! GO!",
         f"{ts_75} 75% 最後衝刺！",
+        "",
+        divider,
+        "📑 完整章節",
+        *chapter_lines,
+        divider,
         "",
         "✅ 訂閱頻道並開啟小鈴鐺",
         "💬 在下方留言告訴我：你覺得最難開口的一句英文是什麼？",
@@ -2171,7 +2293,8 @@ async def main():
     output_file  = os.path.join(OUTPUT_DIR, f"final_{safe_topic}.mp4")
     srt_path     = os.path.join(OUTPUT_DIR, f"final_{safe_topic}.srt")
     desc_path    = os.path.join(OUTPUT_DIR, f"description_{safe_topic}.txt")
-    yt_desc_path = os.path.join(OUTPUT_DIR, f"youtube_{safe_topic}.txt")
+    topic_slug   = topic.strip().replace(" ", "_").replace("-", "_")
+    yt_desc_path = os.path.join(CARDS_DIR, f"youtube_{topic_slug}.txt")
 
     with open(concat_path, "w", encoding="utf-8") as f:
         if os.path.exists(active_intro):
@@ -2203,7 +2326,7 @@ async def main():
     # ── 10. 輸出 SRT + 影片描述 ────────────────────────
     write_srt(srt_entries, srt_path)
     write_description(topic, chapter_entries, desc_path)
-    write_youtube_description(topic, chapter_entries, yt_desc_path)
+    write_youtube_description(topic, chapter_entries, srt_entries, yt_desc_path)
 
     # ── 11. 格式 3：發布至 Firestore（分類由來源決定）──
     if fmt == 3:
