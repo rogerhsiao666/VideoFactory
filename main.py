@@ -119,7 +119,13 @@ async def generate_custom_intro(text: str, voice: str = "zh-TW-HsiaoChenNeural")
             if sys.platform == "win32":
                 os.startfile(tts_path)
             elif sys.platform == "darwin":
-                subprocess.run(["open", tts_path], check=True)
+                # 使用 macOS Quick Look（Finder 按空白鍵的預覽），避免交給 Apple Music。
+                subprocess.run(
+                    ["qlmanage", "-p", tts_path],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             else:
                 subprocess.run(["xdg-open", tts_path], check=True)
         except Exception:
@@ -213,7 +219,7 @@ RECALL_THINK_TIME = 2.0  # 遮中文卡念完後的靜音思考秒數（Phase 2�
 FPS = 24
 VIDEO_W = 1920
 VIDEO_H = 1080
-INTRO_SPEED = 1.3        # 片頭播放速度倍率
+INTRO_SPEED = 1.15       # 片頭播放速度倍率
 
 
 def _load_audio(path: str) -> AudioFileClip:
@@ -1303,7 +1309,7 @@ def _speedup_intro(src: str) -> str:
         return src
 
     basename = os.path.basename(src)
-    dst = os.path.join(TEMP_DIR, f"sped_{INTRO_SPEED:.1f}x_{basename}")
+    dst = os.path.join(TEMP_DIR, f"sped_{INTRO_SPEED:g}x_{basename}")
     if os.path.exists(dst) and os.path.getmtime(src) <= os.path.getmtime(dst):
         return dst
 
