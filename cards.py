@@ -6,6 +6,10 @@ cards.py — 詞彙卡片語料前置生成工具
 
 第二集可指定一個或多個參考牌組，讓痛點規劃、生成與審稿都避開舊內容：
 python3 cards.py --topic "主題_02" --focus "本集痛點" --avoid "主題_01"
+
+可先輸出結構化策劃檔供人工調整，再以同一份策劃生成：
+python3 cards.py --topic "主題" --plan-only
+python3 cards.py --topic "主題" --plan-file "cards/主題.plan.json"
 """
 
 from __future__ import annotations
@@ -18,6 +22,8 @@ import os
 import re
 import sys
 import time
+from collections import Counter
+from datetime import datetime
 from difflib import SequenceMatcher
 
 import openpyxl
@@ -41,6 +47,11 @@ MAX_REVIEW_REPLACEMENTS = 8
 REFERENCE_WORD_SIMILARITY = 0.88
 REFERENCE_SENTENCE_SIMILARITY = 0.90
 MAX_REFERENCE_CARDS_IN_PROMPT = 200
+PLAN_VERSION = 2
+PLAN_CANDIDATE_RATIO = 1.5
+PLAN_MIN_EXTRA_CANDIDATES = 20
+PLAN_MAX_CATEGORY_SHARE = 0.35
+PLAN_MIN_CATEGORIES = 5
 
 os.makedirs(CARDS_DIR,  exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -51,7 +62,7 @@ CARD_MODEL = os.getenv("OPENAI_CARD_MODEL", "gpt-4o-mini")
 PLAN_MODEL = os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini")
 REVIEW_MODEL = os.getenv("OPENAI_REVIEW_MODEL", "gpt-4o-mini")
 DUPLICATE_REVIEW_MODEL = os.getenv("OPENAI_DUPLICATE_REVIEW_MODEL", REVIEW_MODEL)
-REVIEW_MODE = os.getenv("CARD_REVIEW_MODE", "local").strip().lower()
+REVIEW_MODE = os.getenv("CARD_REVIEW_MODE", "hybrid").strip().lower()
 if REVIEW_MODE not in {"local", "hybrid", "ai", "off"}:
     raise ValueError("CARD_REVIEW_MODE 必須是 local、hybrid、ai 或 off")
 ENABLE_PAIN_POINT_PLAN = os.getenv("OPENAI_PAIN_POINT_PLAN", "1").lower() not in {"0", "false", "no"}
@@ -170,6 +181,285 @@ def _similarity_text(text: str) -> str:
     return " ".join(re.findall(r"[^\W_]+", (text or "").casefold(), flags=re.UNICODE))
 
 
+def _score_value(value, default: int = 3) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return min(max(number, 1), 5)
+
+
+def _normalize_pain_point(value, index: int = 0) -> dict | None:
+    """Normalize legacy text and structured planner output to one schema."""
+    if isinstance(value, str):
+        value = {"task": value}
+    if not isinstance(value, dict):
+        return None
+
+    task = ""
+    for key in ("task", "purpose", "pain_point", "description", "痛點"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            task = candidate.strip()
+            break
+    if not task:
+        return None
+
+    def clean(key: str, fallback: str = "") -> str:
+        raw = value.get(key, fallback)
+        return str(raw).strip() if raw is not None else fallback
+
+    priority = _score_value(value.get("priority"))
+    frequency = _score_value(value.get("frequency"))
+    friction = _score_value(value.get("friction"))
+    try:
+        sequence = int(value.get("sequence", index + 1))
+    except (TypeError, ValueError):
+        sequence = index + 1
+
+    point = {
+        "category": clean("category", "未分類") or "未分類",
+        "scenario": clean("scenario"),
+        "speaker": clean("speaker", "使用者") or "使用者",
+        "intent": clean("intent"),
+        "task": task,
+        "failure_mode": clean("failure_mode"),
+        "priority": priority,
+        "frequency": frequency,
+        "friction": friction,
+        "sequence": max(sequence, 1),
+        "score": priority * 7 + frequency * 7 + friction * 6,
+        "_source_index": index,
+    }
+    required_terms = value.get("required_terms", [])
+    if isinstance(required_terms, str):
+        required_terms = [required_terms]
+    point["required_terms"] = (
+        [str(term).strip() for term in required_terms if str(term).strip()][:6]
+        if isinstance(required_terms, list)
+        else []
+    )
+    return point
+
+
+def _pain_point_task(point) -> str:
+    normalized = _normalize_pain_point(point)
+    return normalized["task"] if normalized else ""
+
+
+def _pain_point_text(point) -> str:
+    normalized = _normalize_pain_point(point)
+    if not normalized:
+        return ""
+    parts = [
+        f"分類={normalized['category']}",
+        f"場景={normalized['scenario']}" if normalized["scenario"] else "",
+        f"角色={normalized['speaker']}",
+        f"意圖={normalized['intent']}" if normalized["intent"] else "",
+        f"任務={normalized['task']}",
+        f"失敗情況={normalized['failure_mode']}" if normalized["failure_mode"] else "",
+    ]
+    return "；".join(part for part in parts if part)
+
+
+def _pain_point_semantic_key(point) -> tuple[str, ...]:
+    normalized = _normalize_pain_point(point)
+    if not normalized:
+        return ()
+    return tuple(
+        _similarity_text(normalized[field])
+        for field in ("category", "scenario", "speaker", "intent", "failure_mode")
+    )
+
+
+def _pain_points_semantically_duplicate(left, right) -> bool:
+    left_point = _normalize_pain_point(left)
+    right_point = _normalize_pain_point(right)
+    if not left_point or not right_point:
+        return False
+
+    left_task = _similarity_text(left_point["task"])
+    right_task = _similarity_text(right_point["task"])
+    negative_markers = (
+        "不", "不要", "拒絕", "取消", "無法", "不能", "沒有",
+        " no ", " not ", " don't ", " without ", " refuse ", " cancel ",
+    )
+    left_padded = f" {left_task} "
+    right_padded = f" {right_task} "
+    left_negative = any(marker in left_padded for marker in negative_markers)
+    right_negative = any(marker in right_padded for marker in negative_markers)
+    if left_negative != right_negative:
+        return False
+    task_ratio = SequenceMatcher(None, left_task, right_task).ratio()
+    left_key = _pain_point_semantic_key(left_point)
+    right_key = _pain_point_semantic_key(right_point)
+    comparable = [(a, b) for a, b in zip(left_key[1:], right_key[1:]) if a and b]
+    matching_dimensions = sum(a == b for a, b in comparable)
+    same_speaker = bool(left_key[2] and left_key[2] == right_key[2])
+    same_intent = bool(left_key[3] and left_key[3] == right_key[3])
+    same_core = (
+        same_speaker
+        and same_intent
+        and bool(comparable)
+        and matching_dimensions >= min(3, len(comparable))
+    )
+    scenario_speaker_intent = list(zip(left_key[1:4], right_key[1:4]))
+    exact_core = all(a and b and a == b for a, b in scenario_speaker_intent)
+    return (
+        exact_core
+        or (same_speaker and task_ratio >= 0.93)
+        or (same_core and task_ratio >= 0.78)
+    )
+
+
+def _flatten_pain_point_candidates(value):
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, list):
+        for child in value:
+            yield from _flatten_pain_point_candidates(child)
+        return
+    if not isinstance(value, dict):
+        return
+
+    if any(key in value for key in ("task", "purpose", "pain_point", "description", "痛點")):
+        yield value
+        return
+    for key in ("candidates", "pain_points", "items", "points", "tasks", "entries"):
+        if key in value:
+            yield from _flatten_pain_point_candidates(value[key])
+
+
+def _select_pain_points(raw_points, count: int, require_categories: bool = False) -> list[dict]:
+    """Deduplicate, rank, cap category dominance, then restore journey order."""
+    candidates: list[dict] = []
+    generic_intents = {
+        "詢問", "回答", "要求", "拒絕", "確認", "補救", "選擇", "聽懂問句",
+    }
+    for index, raw in enumerate(_flatten_pain_point_candidates(raw_points)):
+        point = _normalize_pain_point(raw, index)
+        if not point:
+            continue
+        if require_categories and (
+            point["category"] == "未分類"
+            or not point["scenario"]
+            or not point["intent"]
+            or _similarity_text(point["intent"]) in generic_intents
+        ):
+            continue
+        if any(_pain_points_semantically_duplicate(point, old) for old in candidates):
+            continue
+        candidates.append(point)
+
+    if len(candidates) < count:
+        raise RuntimeError(f"痛點候選去重後僅有 {len(candidates)}/{count} 項")
+
+    categories = {
+        _similarity_text(point["category"])
+        for point in candidates
+        if point["category"] != "未分類"
+    }
+    required_categories = min(PLAN_MIN_CATEGORIES, count)
+    if require_categories and len(categories) < required_categories:
+        raise RuntimeError(
+            f"痛點候選只有 {len(categories)} 個有效分類，至少需要 {required_categories} 個"
+        )
+
+    ranked = sorted(
+        candidates,
+        key=lambda point: (-point["score"], point["sequence"], point["_source_index"]),
+    )
+    category_groups: dict[str, list[dict]] = {}
+    for point in ranked:
+        category_groups.setdefault(point["category"], []).append(point)
+
+    selected: list[dict] = []
+    selected_ids: set[int] = set()
+    for group in sorted(category_groups.values(), key=lambda values: -values[0]["score"]):
+        if len(selected) >= count:
+            break
+        point = group[0]
+        selected.append(point)
+        selected_ids.add(id(point))
+
+    category_limit = max(1, math.ceil(count * PLAN_MAX_CATEGORY_SHARE))
+    category_capacity = sum(
+        min(len(group), category_limit) for group in category_groups.values()
+    )
+    if require_categories and len(category_groups) >= 3 and category_capacity < count:
+        raise RuntimeError(
+            "分類分布過度集中，無法在每類不超過 "
+            f"{category_limit}/{count} 項的條件下完成策劃"
+        )
+    selected_counts = Counter(point["category"] for point in selected)
+    for point in ranked:
+        if len(selected) >= count:
+            break
+        if id(point) in selected_ids:
+            continue
+        if len(category_groups) >= 3 and selected_counts[point["category"]] >= category_limit:
+            continue
+        selected.append(point)
+        selected_ids.add(id(point))
+        selected_counts[point["category"]] += 1
+
+    for point in ranked:
+        if len(selected) >= count:
+            break
+        if id(point) not in selected_ids:
+            selected.append(point)
+            selected_ids.add(id(point))
+
+    selected.sort(key=lambda point: (point["sequence"], point["_source_index"]))
+    cleaned: list[dict] = []
+    for index, point in enumerate(selected[:count], start=1):
+        result = {key: value for key, value in point.items() if not key.startswith("_")}
+        result["id"] = index
+        cleaned.append(result)
+    return cleaned
+
+
+def _plan_summary(pain_points: list[dict]) -> dict:
+    normalized = [_normalize_pain_point(point) for point in pain_points]
+    counts = Counter(point["category"] for point in normalized if point)
+    return {
+        "categories": dict(sorted(counts.items())),
+        "average_score": round(
+            sum(point["score"] for point in normalized if point) / max(len(normalized), 1),
+            1,
+        ),
+    }
+
+
+def _save_pain_point_plan(topic: str, pain_points: list[dict], path: str) -> None:
+    payload = {
+        "version": PLAN_VERSION,
+        "topic": topic,
+        "count": len(pain_points),
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "summary": _plan_summary(pain_points),
+        "pain_points": pain_points,
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _load_pain_point_plan(path: str, expected_count: int | None = None) -> list[dict]:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    raw_points = payload.get("pain_points", payload) if isinstance(payload, dict) else payload
+    raw_count = len(list(_flatten_pain_point_candidates(raw_points)))
+    count = expected_count if expected_count is not None else raw_count
+    points = _select_pain_points(raw_points, count)
+    if expected_count is not None and len(points) != expected_count:
+        raise ValueError(f"策劃檔必須剛好有 {expected_count} 項痛點")
+    return points
+
+
 def _is_near_duplicate(candidate: dict, existing_items: list[dict]) -> bool:
     candidate_word = _similarity_text(candidate.get("word_en", ""))
     candidate_sentence = _similarity_text(candidate.get("sentence_en", ""))
@@ -190,6 +480,7 @@ def _is_near_duplicate(candidate: dict, existing_items: list[dict]) -> bool:
 def _reference_duplicate_reason(
     candidate: dict,
     reference_items: list[dict] | None,
+    candidate_point=None,
 ) -> str | None:
     """Return a reason when a card is too close to a previous deck."""
     if not reference_items:
@@ -198,11 +489,23 @@ def _reference_duplicate_reason(
     candidate_word = _similarity_text(candidate.get("word_en", ""))
     candidate_sentence = _similarity_text(candidate.get("sentence_en", ""))
     candidate_key = _normalize_key(candidate.get("word_en", ""))
+    candidate_point = candidate_point or candidate.get("_pain_point")
     for reference in reference_items:
         reference_word = _similarity_text(reference.get("word_en", ""))
         reference_sentence = _similarity_text(reference.get("sentence_en", ""))
         reference_key = _normalize_key(reference.get("word_en", ""))
         source = reference.get("_source_deck", "上一集")
+
+        reference_point = reference.get("_pain_point")
+        if (
+            candidate_point
+            and reference_point
+            and _pain_points_semantically_duplicate(candidate_point, reference_point)
+        ):
+            return (
+                f"與 {source} 的場景、角色與意圖重複: "
+                f"{_pain_point_task(reference_point)}"
+            )
 
         if candidate_key and candidate_key == reference_key:
             return f"與 {source} 的短句重複: {reference.get('word_en', '')}"
@@ -242,7 +545,9 @@ def _reference_prompt_note(reference_items: list[dict] | None) -> str:
             continue
         seen.add(key)
         source = item.get("_source_deck", "上一集")
-        lines.append(f"- [{source}] {word} | {sentence}")
+        pain_point = _pain_point_text(item.get("_pain_point"))
+        purpose_note = f" | 策劃={pain_point}" if pain_point else ""
+        lines.append(f"- [{source}] {word} | {sentence}{purpose_note}")
         if len(lines) >= MAX_REFERENCE_CARDS_IN_PROMPT:
             break
 
@@ -260,7 +565,7 @@ def _reference_prompt_note(reference_items: list[dict] | None) -> str:
 def _local_review_deck(
     topic: str,
     items: list[dict],
-    pain_points: list[str] | None = None,
+    pain_points: list | None = None,
     reference_items: list[dict] | None = None,
 ) -> dict[int, str]:
     """Fast deterministic checks for rules that do not need model judgment."""
@@ -302,7 +607,17 @@ def _local_review_deck(
             rejected[idx] = "與前面卡片近乎逐字重複"
             continue
 
-        reference_reason = _reference_duplicate_reason(item, reference_items)
+        candidate_point = item.get("_pain_point")
+        if pain_points:
+            try:
+                candidate_purpose_id = int(item.get("_purpose_id"))
+            except (TypeError, ValueError):
+                candidate_purpose_id = 0
+            if 1 <= candidate_purpose_id <= len(pain_points):
+                candidate_point = pain_points[candidate_purpose_id - 1]
+        reference_reason = _reference_duplicate_reason(
+            item, reference_items, candidate_point
+        )
         if reference_reason:
             rejected[idx] = reference_reason
             continue
@@ -324,8 +639,13 @@ def _local_review_deck(
                 continue
             seen_purpose_ids.add(purpose_id)
             assigned_point = pain_points[purpose_id - 1]
+            assigned_point_text = _pain_point_text(assigned_point)
+            assigned_point_task = _pain_point_task(assigned_point)
 
-            if any(marker in assigned_point for marker in staff_question_markers):
+            if any(
+                marker in f"{assigned_point_task} {assigned_point_text}"
+                for marker in staff_question_markers
+            ):
                 if (
                     "?" not in item.get("word_en", "")
                     or "?" not in item.get("sentence_en", "")
@@ -333,11 +653,15 @@ def _local_review_deck(
                     rejected[idx] = "指定為對方問句，但 word_en 與 sentence_en 未同時使用直接問句"
                     continue
 
-            required_tokens = [
-                token.casefold()
-                for token in re.findall(r"[A-Za-z][A-Za-z-]+", assigned_point)
-                if token.casefold() not in english_stopwords
-            ]
+            normalized_point = _normalize_pain_point(assigned_point)
+            explicit_terms = normalized_point.get("required_terms", []) if normalized_point else []
+            required_tokens = [term.casefold() for term in explicit_terms]
+            if not required_tokens:
+                required_tokens = [
+                    token.casefold()
+                    for token in re.findall(r"[A-Za-z][A-Za-z-]+", assigned_point_task)
+                    if token.casefold() not in english_stopwords
+                ]
             if required_tokens:
                 matched = sum(token in combined for token in required_tokens)
                 if matched < math.ceil(len(required_tokens) / 2):
@@ -346,7 +670,7 @@ def _local_review_deck(
                     )
                     continue
 
-        context = f"{topic_text} {_similarity_text(assigned_point)}"
+        context = f"{topic_text} {_similarity_text(_pain_point_text(assigned_point))}"
         for pattern, reason in low_value_patterns.items():
             match = re.search(pattern, combined)
             if match and _similarity_text(match.group(0)) not in context:
@@ -367,14 +691,18 @@ def _plan_pain_points(
     topic: str,
     count: int,
     reference_items: list[dict] | None = None,
-) -> list[str]:
-    """Create a fixed content blueprint before wording any flashcards."""
+) -> list[dict]:
+    """Create and rank an oversized content blueprint before writing cards."""
     if not ENABLE_PAIN_POINT_PLAN:
         return []
 
+    candidate_count = max(
+        count + PLAN_MIN_EXTRA_CANDIDATES,
+        math.ceil(count * PLAN_CANDIDATE_RATIO),
+    )
     reference_note = _reference_prompt_note(reference_items)
     prompt = f"""你是台灣成人情境英語課程的內容企劃。主題是「{topic}」。
-先不要寫英文詞卡，請規劃剛好 {count} 個真正值得教的「溝通痛點」。
+先不要寫英文詞卡。請建立 {candidate_count} 個候選「溝通痛點」，系統會評分選出 {count} 個。
 {reference_note}
 
 每個痛點必須：
@@ -385,79 +713,90 @@ def _plan_pain_points(
 4. 優先處理高頻、高摩擦、容易說錯或聽不懂的情境，不要用寒暄、餐具、包裝小事等內容湊數。
 5. 品牌品項或規定若可能因地區而異，痛點必須設計為「現場確認」，不可預設一定有。
 6. 使用者在主題中明確點名的例子、疑問或需求必須優先納入。
+7. 放入 5 至 8 個貼合主題的 category，涵蓋完整流程、主要決策及出錯補救；不可用「其他」湊分類。
 
-必須輸出剛好 {count} 個。可把完整流程拆成不同決策、店員問句與顧客回答，
+必須輸出剛好 {candidate_count} 個候選。可把完整流程拆成不同決策、對方問句與使用者回答，
 但不得用同一句型替換品項來湊數。若主題文字已列出必教項目，必須逐一保留。
 同一步驟中「對方會怎麼問」和「使用者怎麼回答」可以分成兩個痛點，因為學習任務不同。
 禁止用詢問是否新鮮、季節限定飲料、泛稱健康／快速／經典選擇、寒暄或道謝補足數量。
-只輸出 JSON：{{"pain_points": ["痛點一", "痛點二"]}}。
+
+每個候選輸出以下欄位：
+- category：主題專屬分類，例如開始、選擇、確認、補救等更具體的名稱。
+- scenario：發生地點或流程節點，必須具體。
+- speaker：真正說話的人，例如使用者、店員、路人、醫師。
+- intent：單一但具體的溝通意圖，必須寫明答案、要求或結果，例如「回答使用信用卡付款」；禁止只填「詢問」「回答」「要求」。
+- task：繁體中文的一句精確任務，足以指導編輯寫出現場原話。
+- failure_mode：不會這句時最可能發生的具體問題；沒有則填空字串。
+- priority、frequency、friction：各給 1 至 5 整數，5 代表最高價值、最高頻或最高摩擦。
+- sequence：真實使用流程中的排序數字，越早發生數字越小。
+- required_terms：只有英文必須包含特定關鍵詞時才填陣列，否則空陣列。
+
+只輸出 JSON：{{"candidates": [{{"category": "...", "scenario": "...", "speaker": "...", "intent": "...", "task": "...", "failure_mode": "...", "priority": 5, "frequency": 5, "friction": 4, "sequence": 1, "required_terms": []}}]}}。
 """
-    try:
+    points: list[dict] | None = None
+    raw_count = 0
+    last_error: Exception | None = None
+    retry_note = ""
+    for attempt in range(3):
         kwargs = {
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": prompt + retry_note}],
             "model": PLAN_MODEL,
             "response_format": {"type": "json_object"},
         }
-        if not PLAN_MODEL.startswith("gpt-5"):
+        if PLAN_MODEL.startswith("gpt-5"):
+            kwargs["max_completion_tokens"] = 16000
+        else:
+            kwargs["max_tokens"] = 16000
             kwargs["temperature"] = 0.1
-        response = _call_openai(**kwargs)
-        raw_points = json.loads(response.choices[0].message.content).get("pain_points", [])
-    except Exception as e:
-        raise RuntimeError(f"痛點規劃失敗，拒絕在沒有內容藍圖時生成: {e}") from e
-
-    def _flatten_points(value):
-        if isinstance(value, str):
-            yield value
-            return
-        if isinstance(value, list):
-            for child in value:
-                yield from _flatten_points(child)
-            return
-        if not isinstance(value, dict):
-            return
-
-        nested_keys = ("pain_points", "items", "points", "tasks", "entries")
-        nested = [value[key] for key in nested_keys if key in value]
-        if nested:
-            for child in nested:
-                yield from _flatten_points(child)
-            return
-        for key in ("purpose", "pain_point", "task", "description", "痛點"):
-            text = value.get(key)
-            if isinstance(text, str) and text.strip():
-                yield text
-                return
-
-    points: list[str] = []
-    seen: set[str] = set()
-    for point in _flatten_points(raw_points):
-        clean = point.strip()
-        key = _similarity_text(clean)
-        if key and key not in seen:
-            points.append(clean)
-            seen.add(key)
-        if len(points) >= count:
+        try:
+            response = _call_openai(**kwargs)
+            payload = json.loads(response.choices[0].message.content)
+            raw_points = payload.get("candidates", payload.get("pain_points", []))
+            raw_count = len(list(_flatten_pain_point_candidates(raw_points)))
+            if raw_count < candidate_count:
+                raise RuntimeError(
+                    f"僅產生 {raw_count}/{candidate_count} 個候選"
+                )
+            points = _select_pain_points(
+                raw_points, count, require_categories=True
+            )
             break
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                print(f"   ⚠️  痛點策劃未通過（第 {attempt + 1} 次）：{exc}，重新規劃...")
+                retry_note = (
+                    "\n前次輸出未通過程式篩選。這次務必輸出完整數量、至少五個有效分類，"
+                    "並避免相同場景、角色與意圖的同義改寫。\n"
+                )
 
-    if not points:
-        raise RuntimeError("痛點規劃沒有產生任何可用項目，拒絕輸出")
-    if len(points) < count:
-        preview = json.dumps(raw_points, ensure_ascii=False)[:1200]
+    if points is None:
         raise RuntimeError(
-            f"痛點規劃僅產生 {len(points)}/{count} 項，拒絕在藍圖不完整時生成。"
-            f"回傳結構摘要: {preview}"
-        )
-    print(f"   🧭 已建立 {len(points)} 個不重複痛點的內容藍圖")
+            f"痛點規劃連續 3 次失敗，拒絕生成未經策劃的牌組: {last_error}"
+        ) from last_error
+
+    summary = _plan_summary(points)
+    category_text = "、".join(
+        f"{category} {amount} 項"
+        for category, amount in summary["categories"].items()
+    )
+    print(
+        f"   🧭 已從 {raw_count} 個候選選出 {len(points)} 個痛點"
+        f"（平均 {summary['average_score']} 分；{category_text}）"
+    )
     return points
 
 
-def _build_prompt(topic: str, count: int, pain_points: list[str] | None = None) -> str:
+def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> str:
     blueprint = ""
     if pain_points:
         blueprint = (
             "\n以下是已核定的內容藍圖。每個痛點只能對應一張卡，必須全部涵蓋，"
             "並依此順序輸出；不得自行增加藍圖外內容：\n"
-            + "\n".join(f"{idx + 1}. {point}" for idx, point in enumerate(pain_points))
+            + "\n".join(
+                f"{idx + 1}. {_pain_point_text(point)}"
+                for idx, point in enumerate(pain_points)
+            )
             + "\n"
         )
     return f"""你是為台灣成人設計情境英語內容的資深編輯。這副牌的精確主題是：
@@ -514,7 +853,7 @@ def _build_prompt(topic: str, count: int, pain_points: list[str] | None = None) 
 def _ai_review_deck(
     topic: str,
     items: list[dict],
-    pain_points: list[str] | None = None,
+    pain_points: list | None = None,
     reference_items: list[dict] | None = None,
 ) -> dict[int, str]:
     """Use a separate model as a conservative editorial quality gate."""
@@ -526,7 +865,7 @@ def _ai_review_deck(
             "id": f"{idx + 1:02d}",
             "purpose_id": item.get("_purpose_id", idx + 1),
             "assigned_pain_point": (
-                pain_points[item.get("_purpose_id", idx + 1) - 1]
+                _pain_point_text(pain_points[item.get("_purpose_id", idx + 1) - 1])
                 if pain_points
                 and isinstance(item.get("_purpose_id", idx + 1), int)
                 and 1 <= item.get("_purpose_id", idx + 1) <= len(pain_points)
@@ -540,7 +879,8 @@ def _ai_review_deck(
         for idx, item in enumerate(items)
     ]
     blueprint = "\n".join(
-        f"{idx + 1}. {point}" for idx, point in enumerate(pain_points or [])
+        f"{idx + 1}. {_pain_point_text(point)}"
+        for idx, point in enumerate(pain_points or [])
     )
     blueprint_rule = ""
     if blueprint:
@@ -635,7 +975,7 @@ def _ai_review_deck(
 def _review_deck(
     topic: str,
     items: list[dict],
-    pain_points: list[str] | None = None,
+    pain_points: list | None = None,
     reference_items: list[dict] | None = None,
 ) -> dict[int, str]:
     """Run the configured local, AI, or hybrid deck review."""
@@ -682,16 +1022,16 @@ def generate(
     topic: str,
     count: int = DEFAULT_CARD_COUNT,
     seed_items: list | None = None,
-    pain_points: list[str] | None = None,
+    pain_points: list | None = None,
     reference_items: list[dict] | None = None,
 ) -> list[dict]:
     reference_items = list(reference_items or [])
     if pain_points is None:
         pain_points = _plan_pain_points(topic, count, reference_items)
-    else:
-        pain_points = [point.strip() for point in pain_points if point and point.strip()]
-        if len(pain_points) != count:
-            raise ValueError(f"指定的痛點藍圖必須剛好有 {count} 項，目前為 {len(pain_points)} 項")
+    elif pain_points:
+        pain_points = _select_pain_points(pain_points, count)
+    if pain_points and len(pain_points) != count:
+        raise ValueError(f"指定的痛點藍圖必須剛好有 {count} 項，目前為 {len(pain_points)} 項")
     # Each generation call receives only its missing blueprint slice below.
     # The complete blueprint is reserved for the final reviewer.
     prompt = _build_prompt(topic, count) + _reference_prompt_note(reference_items)
@@ -709,7 +1049,10 @@ def generate(
         if _is_near_duplicate(item, all_items):
             print(f"   ⚠️  移除近似重複的既有卡片: {item.get('word_en', 'Unknown')}")
             continue
-        reference_reason = _reference_duplicate_reason(item, reference_items)
+        seed_point = pain_points[seed_idx] if pain_points and seed_idx < len(pain_points) else None
+        reference_reason = _reference_duplicate_reason(
+            item, reference_items, seed_point
+        )
         if reference_reason:
             print(
                 f"   ⚠️  移除與參考牌組重複的既有卡片 "
@@ -721,6 +1064,8 @@ def generate(
             seeded_item = dict(item)
             if pain_points:
                 seeded_item["_purpose_id"] = seed_idx + 1
+                if seed_point:
+                    seeded_item["_pain_point"] = seed_point
             all_items.append(seeded_item)
         if key:
             seen_normalized.add(key)
@@ -814,7 +1159,10 @@ def generate(
             purpose_note = (
                 "\nGenerate cards ONLY for these missing blueprint entries. "
                 "Copy each number exactly into purpose_id and output one card per entry:\n"
-                + "\n".join(f"{idx}. {point}" for idx, point in remaining[:chunk_size])
+                + "\n".join(
+                    f"{idx}. {_pain_point_text(point)}"
+                    for idx, point in remaining[:chunk_size]
+                )
                 + "\n"
             )
 
@@ -871,6 +1219,7 @@ def generate(
                     print(f"      ⚠️ 跳過重複或越界 purpose_id={purpose_id}: {item.get('word_en', 'Unknown')}")
                     continue
                 item["_purpose_id"] = purpose_id
+                item["_pain_point"] = pain_points[purpose_id - 1]
 
             raw_word = item.get("word_en", "")
             key = _normalize_key(raw_word)
@@ -879,7 +1228,7 @@ def generate(
                     print(f"      ⚠️ 跳過近似重複項目: {raw_word}")
                     continue
                 reference_reason = _reference_duplicate_reason(
-                    item, reference_items
+                    item, reference_items, item.get("_pain_point")
                 )
                 if reference_reason:
                     print(f"      ⚠️ 跳過跨集重複項目 {raw_word}: {reference_reason}")
@@ -984,6 +1333,10 @@ def _resolve_deck_path(value: str) -> str:
     )
 
 
+def _default_plan_path(xlsx_path: str) -> str:
+    return os.path.splitext(os.path.abspath(xlsx_path))[0] + ".plan.json"
+
+
 def _load_reference_decks(values: list[str]) -> tuple[list[dict], list[str]]:
     items: list[dict] = []
     paths: list[str] = []
@@ -995,9 +1348,21 @@ def _load_reference_decks(values: list[str]) -> tuple[list[dict], list[str]]:
         seen_paths.add(path)
         paths.append(path)
         source = os.path.splitext(os.path.basename(path))[0]
-        for item in load_xlsx_items(path):
+        deck_items = load_xlsx_items(path)
+        plan_path = _default_plan_path(path)
+        reference_plan: list[dict] = []
+        if os.path.isfile(plan_path):
+            try:
+                reference_plan = _load_pain_point_plan(
+                    plan_path, expected_count=len(deck_items)
+                )
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"參考牌組策劃檔無法讀取：{plan_path}: {exc}") from exc
+        for index, item in enumerate(deck_items):
             reference = dict(item)
             reference["_source_deck"] = source
+            if index < len(reference_plan):
+                reference["_pain_point"] = reference_plan[index]
             items.append(reference)
     return items, paths
 
@@ -1021,6 +1386,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     --focus "只教剪髮中要求暫停、確認與修正的現場溝通" \\
     --avoid "美髮沙龍" --avoid "美髮沙龍_02_剪髮溝通" \\
     --review hybrid
+
+  # 先只產生策劃檔，人工檢查後再生成卡片
+  python3 cards.py --topic "租車英文" --focus "取車、驗車、事故與還車" --plan-only
+  python3 cards.py --topic "租車英文" --plan-file "cards/租車英文.plan.json"
 
 不帶參數執行時，仍會進入原本的互動模式。
 """,
@@ -1055,6 +1424,15 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         "--review",
         choices=("local", "hybrid", "ai", "off"),
         help=f"審稿模式（預設沿用環境設定，目前為 {REVIEW_MODE}）",
+    )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="只建立並保存痛點策劃 JSON，不生成卡片或 YouTube 描述",
+    )
+    parser.add_argument(
+        "--plan-file",
+        help="讀取人工審核或修改過的策劃 JSON；未指定時使用輸出檔旁的 .plan.json",
     )
     parser.add_argument(
         "--no-youtube",
@@ -1326,7 +1704,7 @@ def main(argv: list[str] | None = None):
 
     try:
         reference_items, reference_paths = _load_reference_decks(args.avoid)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, RuntimeError) as exc:
         parser.error(str(exc))
     if os.path.abspath(xlsx_path) in reference_paths:
         parser.error("輸出牌組不能同時列在 --avoid 中")
@@ -1348,14 +1726,47 @@ def main(argv: list[str] | None = None):
         raw_count = input(f"🔢 卡片數量（留空={DEFAULT_CARD_COUNT}）: ").strip()
         count = int(raw_count) if raw_count.isdigit() and int(raw_count) > 0 else DEFAULT_CARD_COUNT
 
+    plan_path = (
+        os.path.abspath(os.path.expanduser(args.plan_file))
+        if args.plan_file
+        else _default_plan_path(xlsx_path)
+    )
+    pain_points: list[dict] | None = None
+    if os.path.isfile(plan_path):
+        try:
+            pain_points = _load_pain_point_plan(plan_path, expected_count=count)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            parser.error(f"策劃檔無法讀取：{plan_path}: {exc}")
+        print(f"🗺️  已載入痛點策劃：{plan_path}")
+    elif args.plan_file:
+        parser.error(f"找不到 --plan-file：{plan_path}")
+    elif args.plan_only or not xlsx_exists:
+        pain_points = _plan_pain_points(generation_topic, count, reference_items)
+        if not pain_points:
+            parser.error("痛點策劃已停用，無法建立 plan 檔")
+        _save_pain_point_plan(generation_topic, pain_points, plan_path)
+        print(f"🗺️  已保存痛點策劃：{plan_path}")
+
+    if args.plan_only:
+        if pain_points is None:
+            pain_points = _plan_pain_points(generation_topic, count, reference_items)
+            _save_pain_point_plan(generation_topic, pain_points, plan_path)
+        print(f"✅ 策劃完成，共 {len(pain_points)} 個痛點；依 --plan-only 停止")
+        return
+
     if xlsx_exists:
         existing_items = load_xlsx_items(xlsx_path)
         have = len(existing_items)
         items = existing_items[:count]
+        if pain_points:
+            for index, item in enumerate(items):
+                item["_purpose_id"] = index + 1
+                item["_pain_point"] = pain_points[index]
         existing_rejected = (
             _review_deck(
                 generation_topic,
                 items,
+                pain_points=pain_points,
                 reference_items=reference_items,
             )
             if have >= count
@@ -1365,11 +1776,18 @@ def main(argv: list[str] | None = None):
             print(f"📄 「{topic}」已有 {have} 張且通過 {REVIEW_MODE} 審稿，跳過生成")
         else:
             print(f"📄 「{topic}」已有 {have} 張，開始補寫未通過項目...")
+            if pain_points is None:
+                pain_points = _plan_pain_points(
+                    generation_topic, count, reference_items
+                )
+                _save_pain_point_plan(generation_topic, pain_points, plan_path)
+                print(f"🗺️  已保存痛點策劃：{plan_path}")
             used_before = len(_load_used_words())
             items = generate(
                 generation_topic,
                 count,
                 seed_items=items,
+                pain_points=pain_points,
                 reference_items=reference_items,
             )
             write_xlsx(items, xlsx_path)
@@ -1390,6 +1808,7 @@ def main(argv: list[str] | None = None):
     items = generate(
         generation_topic,
         count,
+        pain_points=pain_points,
         reference_items=reference_items,
     )
 
