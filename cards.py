@@ -3,15 +3,20 @@
 cards.py — 詞彙卡片語料前置生成工具
 輸入主題 → OpenAI 生成 → 輸出 cards/{topic}.xlsx
 已做過的主題自動跳過，同一副牌內自動去重。
+
+第二集可指定一個或多個參考牌組，讓痛點規劃、生成與審稿都避開舊內容：
+python3 cards.py --topic "主題_02" --focus "本集痛點" --avoid "主題_01"
 """
 
 from __future__ import annotations
 
+import argparse
 import glob
 import json
 import math
 import os
 import re
+import sys
 import time
 from difflib import SequenceMatcher
 
@@ -33,6 +38,9 @@ MAX_SENTENCE_EN_WORDS = 14
 MAX_TIPS_CHARS = 36
 MAX_SENTENCE_CN_CHARS = 52
 MAX_REVIEW_REPLACEMENTS = 8
+REFERENCE_WORD_SIMILARITY = 0.88
+REFERENCE_SENTENCE_SIMILARITY = 0.90
+MAX_REFERENCE_CARDS_IN_PROMPT = 200
 
 os.makedirs(CARDS_DIR,  exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -125,7 +133,8 @@ def _validation_issues(item: dict) -> list[str]:
         issues.append("generic gratitude is filler, not a topic-specific pain point")
     meta_text = f'{item["word_en"]} {item["sentence_en"]}'.lower()
     if re.search(
-        r"\b(?:i understand you asked|are you asking if|could you ask me if)\b",
+        r"\b(?:i understand you asked|are you asking if|could you ask me if|"
+        r"i need to mention|i should mention|i need to ask|i should ask)\b",
         meta_text,
     ):
         issues.append("meta-learning narration must be replaced with the actual spoken line")
@@ -178,10 +187,81 @@ def _is_near_duplicate(candidate: dict, existing_items: list[dict]) -> bool:
     return False
 
 
+def _reference_duplicate_reason(
+    candidate: dict,
+    reference_items: list[dict] | None,
+) -> str | None:
+    """Return a reason when a card is too close to a previous deck."""
+    if not reference_items:
+        return None
+
+    candidate_word = _similarity_text(candidate.get("word_en", ""))
+    candidate_sentence = _similarity_text(candidate.get("sentence_en", ""))
+    candidate_key = _normalize_key(candidate.get("word_en", ""))
+    for reference in reference_items:
+        reference_word = _similarity_text(reference.get("word_en", ""))
+        reference_sentence = _similarity_text(reference.get("sentence_en", ""))
+        reference_key = _normalize_key(reference.get("word_en", ""))
+        source = reference.get("_source_deck", "上一集")
+
+        if candidate_key and candidate_key == reference_key:
+            return f"與 {source} 的短句重複: {reference.get('word_en', '')}"
+
+        word_ratio = SequenceMatcher(None, candidate_word, reference_word).ratio()
+        sentence_ratio = SequenceMatcher(
+            None, candidate_sentence, reference_sentence
+        ).ratio()
+        similar_word = (
+            min(len(candidate_word), len(reference_word)) >= 8
+            and word_ratio >= REFERENCE_WORD_SIMILARITY
+        )
+        similar_sentence = (
+            min(len(candidate_sentence), len(reference_sentence)) >= 12
+            and sentence_ratio >= REFERENCE_SENTENCE_SIMILARITY
+        )
+        if similar_word or similar_sentence:
+            return (
+                f"與 {source} 的卡片過度相似: "
+                f"{reference.get('word_en', '')}"
+            )
+    return None
+
+
+def _reference_prompt_note(reference_items: list[dict] | None) -> str:
+    """Build a bounded prior-deck summary for planning and generation prompts."""
+    if not reference_items:
+        return ""
+
+    lines: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for item in reference_items:
+        word = str(item.get("word_en", "")).strip()
+        sentence = str(item.get("sentence_en", "")).strip()
+        key = (_normalize_key(word), _similarity_text(sentence))
+        if not word or key in seen:
+            continue
+        seen.add(key)
+        source = item.get("_source_deck", "上一集")
+        lines.append(f"- [{source}] {word} | {sentence}")
+        if len(lines) >= MAX_REFERENCE_CARDS_IN_PROMPT:
+            break
+
+    if not lines:
+        return ""
+    return (
+        "\n以下是上一集或指定參考牌組已教過的內容。"
+        "不得重出相同短句、同義改寫，或說話角色、意圖、答案都相同的卡片；"
+        "只有確實解決不同現場任務時才能沿用相關領域詞彙：\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def _local_review_deck(
     topic: str,
     items: list[dict],
     pain_points: list[str] | None = None,
+    reference_items: list[dict] | None = None,
 ) -> dict[int, str]:
     """Fast deterministic checks for rules that do not need model judgment."""
     rejected: dict[int, str] = {}
@@ -196,6 +276,8 @@ def _local_review_deck(
     }
     staff_question_markers = (
         "聽懂店員問", "聽懂店員詢問", "聽懂對方問", "店員會問", "對方會問",
+        "聽懂髮型師問", "聽懂髮型師詢問", "髮型師會問",
+        "聽懂服務人員問", "聽懂服務人員詢問", "服務人員會問",
     )
     low_value_patterns = {
         r"\bfresh ingredients?\b": "詢問食材是否新鮮屬低資訊填充",
@@ -219,6 +301,11 @@ def _local_review_deck(
         if _is_near_duplicate(item, seen_items):
             rejected[idx] = "與前面卡片近乎逐字重複"
             continue
+
+        reference_reason = _reference_duplicate_reason(item, reference_items)
+        if reference_reason:
+            rejected[idx] = reference_reason
+            continue
         seen_items.append(item)
 
         combined = f'{item.get("word_en", "")} {item.get("sentence_en", "")}'.lower()
@@ -239,8 +326,11 @@ def _local_review_deck(
             assigned_point = pain_points[purpose_id - 1]
 
             if any(marker in assigned_point for marker in staff_question_markers):
-                if "?" not in item.get("word_en", "") and "?" not in item.get("sentence_en", ""):
-                    rejected[idx] = "指定為店員問句，但英文不是直接問句"
+                if (
+                    "?" not in item.get("word_en", "")
+                    or "?" not in item.get("sentence_en", "")
+                ):
+                    rejected[idx] = "指定為對方問句，但 word_en 與 sentence_en 未同時使用直接問句"
                     continue
 
             required_tokens = [
@@ -273,13 +363,19 @@ def _local_review_deck(
     return rejected
 
 
-def _plan_pain_points(topic: str, count: int) -> list[str]:
+def _plan_pain_points(
+    topic: str,
+    count: int,
+    reference_items: list[dict] | None = None,
+) -> list[str]:
     """Create a fixed content blueprint before wording any flashcards."""
     if not ENABLE_PAIN_POINT_PLAN:
         return []
 
+    reference_note = _reference_prompt_note(reference_items)
     prompt = f"""你是台灣成人情境英語課程的內容企劃。主題是「{topic}」。
 先不要寫英文詞卡，請規劃剛好 {count} 個真正值得教的「溝通痛點」。
+{reference_note}
 
 每個痛點必須：
 1. 描述使用者在現場某一刻需要聽懂、回答、詢問、選擇或補救的單一任務。
@@ -419,6 +515,7 @@ def _ai_review_deck(
     topic: str,
     items: list[dict],
     pain_points: list[str] | None = None,
+    reference_items: list[dict] | None = None,
 ) -> dict[int, str]:
     """Use a separate model as a conservative editorial quality gate."""
     if not items:
@@ -452,10 +549,12 @@ def _ai_review_deck(
 {blueprint}
 若有卡片偏離藍圖、重複佔用同一痛點，或造成另一痛點缺漏，退回偏離或較低價值的卡片。
 """
+    reference_rule = _reference_prompt_note(reference_items)
 
     prompt = f"""你是獨立的情境英語牌組審稿人。主題是「{topic}」。
 請只退回明顯不合格的卡片，不要因為初學、句型相似或措辭可微調就退回。
 {blueprint_rule}
+{reference_rule}
 
 明顯不合格的定義：
 1. 套用主題的其他同名含義、偏離核心任務，或是泛用填充內容。
@@ -492,7 +591,7 @@ def _ai_review_deck(
         response = _call_openai(**request_kwargs)
         raw_rejects = json.loads(response.choices[0].message.content).get("reject", [])
 
-        duplicate_prompt = f"""你只負責檢查同一副英語牌組內的語意重複。主題是「{topic}」。
+        duplicate_prompt = f"""你只負責檢查英語牌組內及其與參考牌組之間的語意重複。主題是「{topic}」。
 只有在兩張卡的「說話角色、當下意圖、實際答案」三者都相同，只是換同義詞或改寫措辭時，才退回其中一張。
 例如「分開包裝」與「兩份分開包」、「外帶切半」與「切半方便分享」算重複。
 以下都不算重複，必須保留：
@@ -503,6 +602,8 @@ def _ai_review_deck(
 - 一般選擇與少量、不要、另外裝等結果不同的客製要求。
 不同步驟、不同回答方向或解決不同錯誤也不算重複。
 每組只保留較具體、較實用或編號較前的一張，退回真正的改寫複本。
+參考牌組已經發布，不能退回參考牌組；若新卡與參考牌組重複，只退回新卡。
+{reference_rule}
 只輸出 JSON：{{"reject": [{{"id": "02", "reason": "與 01 溝通目的重複"}}]}}；沒有重複則輸出空陣列。
 卡片：{json.dumps(compact_items, ensure_ascii=False)}
 """
@@ -535,17 +636,20 @@ def _review_deck(
     topic: str,
     items: list[dict],
     pain_points: list[str] | None = None,
+    reference_items: list[dict] | None = None,
 ) -> dict[int, str]:
     """Run the configured local, AI, or hybrid deck review."""
     if REVIEW_MODE == "off" or not items:
         return {}
     if REVIEW_MODE == "ai":
-        return _ai_review_deck(topic, items, pain_points)
+        return _ai_review_deck(topic, items, pain_points, reference_items)
 
-    local_rejected = _local_review_deck(topic, items, pain_points)
+    local_rejected = _local_review_deck(
+        topic, items, pain_points, reference_items
+    )
     if local_rejected or REVIEW_MODE == "local":
         return local_rejected
-    return _ai_review_deck(topic, items, pain_points)
+    return _ai_review_deck(topic, items, pain_points, reference_items)
 
 
 def _load_used_words() -> set[str]:
@@ -579,16 +683,18 @@ def generate(
     count: int = DEFAULT_CARD_COUNT,
     seed_items: list | None = None,
     pain_points: list[str] | None = None,
+    reference_items: list[dict] | None = None,
 ) -> list[dict]:
+    reference_items = list(reference_items or [])
     if pain_points is None:
-        pain_points = _plan_pain_points(topic, count)
+        pain_points = _plan_pain_points(topic, count, reference_items)
     else:
         pain_points = [point.strip() for point in pain_points if point and point.strip()]
         if len(pain_points) != count:
             raise ValueError(f"指定的痛點藍圖必須剛好有 {count} 項，目前為 {len(pain_points)} 項")
     # Each generation call receives only its missing blueprint slice below.
     # The complete blueprint is reserved for the final reviewer.
-    prompt = _build_prompt(topic, count)
+    prompt = _build_prompt(topic, count) + _reference_prompt_note(reference_items)
     used_words = _load_used_words()
     # Reusing a genuinely useful phrase across different topics is preferable to
     # filling a deck with obscure alternatives. Only dedupe within this deck.
@@ -602,6 +708,13 @@ def generate(
             continue
         if _is_near_duplicate(item, all_items):
             print(f"   ⚠️  移除近似重複的既有卡片: {item.get('word_en', 'Unknown')}")
+            continue
+        reference_reason = _reference_duplicate_reason(item, reference_items)
+        if reference_reason:
+            print(
+                f"   ⚠️  移除與參考牌組重複的既有卡片 "
+                f"{item.get('word_en', 'Unknown')}: {reference_reason}"
+            )
             continue
         key = _normalize_key(item.get("word_en", ""))
         if item.get("word_en"):
@@ -630,7 +743,9 @@ def generate(
                 f"   🔎 {REVIEW_MODE} 審稿 #{review_replacements + 1}"
                 f"（{len(all_items)} 張）..."
             )
-            rejected = _review_deck(topic, all_items, pain_points)
+            rejected = _review_deck(
+                topic, all_items, pain_points, reference_items
+            )
             if not rejected:
                 print("      ✅ 自動審稿通過")
                 review_passed = True
@@ -763,6 +878,12 @@ def generate(
                 if _is_near_duplicate(item, all_items):
                     print(f"      ⚠️ 跳過近似重複項目: {raw_word}")
                     continue
+                reference_reason = _reference_duplicate_reason(
+                    item, reference_items
+                )
+                if reference_reason:
+                    print(f"      ⚠️ 跳過跨集重複項目 {raw_word}: {reference_reason}")
+                    continue
                 w = raw_word.strip()
                 item["word_en"] = w[0].upper() + w[1:] if w else w
 
@@ -794,7 +915,9 @@ def generate(
         raise RuntimeError(f"僅生成 {len(all_items)}/{count} 張，未達數量與品質要求，拒絕輸出")
 
     if not review_passed:
-        final_rejected = _review_deck(topic, all_items[:count], pain_points)
+        final_rejected = _review_deck(
+            topic, all_items[:count], pain_points, reference_items
+        )
         if final_rejected:
             details = "; ".join(
                 f"{idx + 1:02d}: {reason}" for idx, reason in sorted(final_rejected.items())
@@ -834,6 +957,118 @@ def load_xlsx_items(path: str) -> list[dict]:
         if item.get("word_en"):
             items.append(item)
     return items
+
+
+def _resolve_deck_path(value: str) -> str:
+    """Resolve an --avoid value as a path or a deck name in cards/."""
+    raw = os.path.expanduser(value.strip())
+    candidates = [raw]
+    if not os.path.isabs(raw):
+        candidates.extend([
+            os.path.join(BASE_DIR, raw),
+            os.path.join(CARDS_DIR, raw),
+        ])
+
+    expanded: list[str] = []
+    for candidate in candidates:
+        expanded.append(candidate)
+        if not candidate.lower().endswith(".xlsx"):
+            expanded.append(candidate + ".xlsx")
+
+    for candidate in expanded:
+        path = os.path.abspath(candidate)
+        if os.path.isfile(path):
+            return path
+    raise FileNotFoundError(
+        f"找不到參考牌組「{value}」。請提供 cards/ 內的牌組名稱或 XLSX 路徑"
+    )
+
+
+def _load_reference_decks(values: list[str]) -> tuple[list[dict], list[str]]:
+    items: list[dict] = []
+    paths: list[str] = []
+    seen_paths: set[str] = set()
+    for value in values:
+        path = _resolve_deck_path(value)
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        paths.append(path)
+        source = os.path.splitext(os.path.basename(path))[0]
+        for item in load_xlsx_items(path):
+            reference = dict(item)
+            reference["_source_deck"] = source
+            items.append(reference)
+    return items, paths
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("必須是正整數") from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError("必須是正整數")
+    return number
+
+
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="生成痛點導向情境英語 XLSX 牌組",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""範例：
+  python3 cards.py --topic "美髮沙龍_03_剪壞補救" \\
+    --focus "只教剪髮中要求暫停、確認與修正的現場溝通" \\
+    --avoid "美髮沙龍" --avoid "美髮沙龍_02_剪髮溝通" \\
+    --review hybrid
+
+不帶參數執行時，仍會進入原本的互動模式。
+""",
+    )
+    parser.add_argument(
+        "--topic",
+        help="牌組名稱，也是預設輸出檔名（不含 .xlsx）",
+    )
+    parser.add_argument(
+        "--focus",
+        default="",
+        help="本集內容焦點、使用者痛點與禁止範圍",
+    )
+    parser.add_argument(
+        "--avoid",
+        action="append",
+        default=[],
+        metavar="DECK",
+        help="要避開的上一集牌組名稱或 XLSX 路徑，可重複使用",
+    )
+    parser.add_argument(
+        "--count",
+        type=_positive_int,
+        default=DEFAULT_CARD_COUNT,
+        help=f"卡片數量（預設 {DEFAULT_CARD_COUNT}）",
+    )
+    parser.add_argument(
+        "--output",
+        help="自訂 XLSX 輸出路徑；預設為 cards/{topic}.xlsx",
+    )
+    parser.add_argument(
+        "--review",
+        choices=("local", "hybrid", "ai", "off"),
+        help=f"審稿模式（預設沿用環境設定，目前為 {REVIEW_MODE}）",
+    )
+    parser.add_argument(
+        "--no-youtube",
+        action="store_true",
+        help="不要生成 youtube_{topic}.txt",
+    )
+    return parser
+
+
+def _generation_topic(topic: str, focus: str = "") -> str:
+    clean_focus = focus.strip()
+    if not clean_focus:
+        return topic
+    return f"{topic}\n本集內容焦點與邊界：{clean_focus}"
 
 
 def _chapter_time(seconds: float) -> str:
@@ -1054,44 +1289,97 @@ def write_xlsx(items: list[dict], path: str):
     wb.save(path)
 
 
-def main():
+def main(argv: list[str] | None = None):
+    global REVIEW_MODE
+
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    cli_mode = bool(raw_argv)
+    parser = _build_cli_parser()
+    args = parser.parse_args(raw_argv)
+    if cli_mode and not args.topic:
+        parser.error("非互動模式必須提供 --topic")
+    if args.review:
+        REVIEW_MODE = args.review
+
     existing = _existing_topics()
     if existing:
         print(f"✅ 已有主題: {', '.join(existing)}")
     print(f"🔎 牌組審稿模式: {REVIEW_MODE}")
 
-    topic = input("\n📌 請輸入主題名稱: ").strip()
+    topic = (args.topic or input("\n📌 請輸入主題名稱: ")).strip()
     if not topic:
         print("⛔ 主題不能為空")
         return
 
     slug = _topic_to_slug(topic)
-    xlsx_path    = os.path.join(CARDS_DIR, f"{slug}.xlsx")
-    yt_desc_path = os.path.join(CARDS_DIR, f"youtube_{slug}.txt")
+    if args.output:
+        xlsx_path = os.path.abspath(os.path.expanduser(args.output))
+        if not xlsx_path.lower().endswith(".xlsx"):
+            xlsx_path += ".xlsx"
+    else:
+        xlsx_path = os.path.join(CARDS_DIR, f"{slug}.xlsx")
+    os.makedirs(os.path.dirname(xlsx_path), exist_ok=True)
+    yt_desc_path = os.path.join(
+        os.path.dirname(xlsx_path),
+        f"youtube_{os.path.splitext(os.path.basename(xlsx_path))[0]}.txt",
+    )
+
+    try:
+        reference_items, reference_paths = _load_reference_decks(args.avoid)
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    if os.path.abspath(xlsx_path) in reference_paths:
+        parser.error("輸出牌組不能同時列在 --avoid 中")
+    if reference_paths:
+        names = ", ".join(
+            os.path.splitext(os.path.basename(path))[0]
+            for path in reference_paths
+        )
+        print(f"🚫 跨集排除: {names}（共 {len(reference_items)} 張）")
+
+    generation_topic = _generation_topic(topic, args.focus)
 
     xlsx_exists    = os.path.exists(xlsx_path)
     yt_desc_exists = os.path.exists(yt_desc_path)
 
-    raw_count = input(f"🔢 卡片數量（留空={DEFAULT_CARD_COUNT}）: ").strip()
-    count = int(raw_count) if raw_count.isdigit() and int(raw_count) > 0 else DEFAULT_CARD_COUNT
+    if cli_mode:
+        count = args.count
+    else:
+        raw_count = input(f"🔢 卡片數量（留空={DEFAULT_CARD_COUNT}）: ").strip()
+        count = int(raw_count) if raw_count.isdigit() and int(raw_count) > 0 else DEFAULT_CARD_COUNT
 
     if xlsx_exists:
         existing_items = load_xlsx_items(xlsx_path)
         have = len(existing_items)
         items = existing_items[:count]
-        existing_rejected = _review_deck(topic, items) if have >= count else {0: "數量不足"}
+        existing_rejected = (
+            _review_deck(
+                generation_topic,
+                items,
+                reference_items=reference_items,
+            )
+            if have >= count
+            else {0: "數量不足"}
+        )
         if have >= count and not existing_rejected:
             print(f"📄 「{topic}」已有 {have} 張且通過 {REVIEW_MODE} 審稿，跳過生成")
         else:
             print(f"📄 「{topic}」已有 {have} 張，開始補寫未通過項目...")
             used_before = len(_load_used_words())
-            items = generate(topic, count, seed_items=items)
+            items = generate(
+                generation_topic,
+                count,
+                seed_items=items,
+                reference_items=reference_items,
+            )
             write_xlsx(items, xlsx_path)
             used_after = len(_load_used_words())
             print(f"\n✅ 已校驗並輸出 {len(items)} 個詞彙 → {xlsx_path}")
             print(f"📝 used_words.json 已更新（{used_before} → {used_after}）")
 
-        if not yt_desc_exists:
+        if args.no_youtube:
+            print("ℹ️  已依 --no-youtube 跳過 YouTube 描述")
+        elif not yt_desc_exists:
             write_youtube_description(topic, len(items), yt_desc_path)
         else:
             print(f"⚠️  YouTube 描述已存在，跳過：{yt_desc_path}")
@@ -1099,7 +1387,11 @@ def main():
 
     used_before = len(_load_used_words())
     print(f"\n🆕 開始生成「{topic}」({count} 個詞彙)...")
-    items = generate(topic, count)
+    items = generate(
+        generation_topic,
+        count,
+        reference_items=reference_items,
+    )
 
     if not items:
         print("❌ 未生成任何詞彙")
@@ -1110,7 +1402,10 @@ def main():
     print(f"\n✅ 已生成 {len(items)} 個詞彙 → {xlsx_path}")
     print(f"📝 used_words.json 已更新（{used_before} → {used_after}）")
 
-    write_youtube_description(topic, len(items), yt_desc_path)
+    if args.no_youtube:
+        print("ℹ️  已依 --no-youtube 跳過 YouTube 描述")
+    else:
+        write_youtube_description(topic, len(items), yt_desc_path)
 
 
 if __name__ == "__main__":
