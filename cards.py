@@ -53,6 +53,7 @@ PLAN_CANDIDATE_RATIO = 1.5
 PLAN_MIN_EXTRA_CANDIDATES = 20
 PLAN_MAX_CATEGORY_SHARE = 0.35
 PLAN_MIN_CATEGORIES = 5
+PLAN_FALLBACK_MIN_CATEGORIES = 3
 
 os.makedirs(CARDS_DIR,  exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -353,7 +354,12 @@ def _flatten_pain_point_candidates(value):
             yield from _flatten_pain_point_candidates(value[key])
 
 
-def _select_pain_points(raw_points, count: int, require_categories: bool = False) -> list[dict]:
+def _select_pain_points(
+    raw_points,
+    count: int,
+    require_categories: bool = False,
+    minimum_categories: int | None = None,
+) -> list[dict]:
     """Deduplicate, rank, cap category dominance, then restore journey order."""
     candidates: list[dict] = []
     generic_intents = {
@@ -382,7 +388,10 @@ def _select_pain_points(raw_points, count: int, require_categories: bool = False
         for point in candidates
         if point["category"] != "未分類"
     }
-    required_categories = min(PLAN_MIN_CATEGORIES, count)
+    category_target = (
+        PLAN_MIN_CATEGORIES if minimum_categories is None else minimum_categories
+    )
+    required_categories = min(category_target, count)
     if require_categories and len(categories) < required_categories:
         raise RuntimeError(
             f"痛點候選只有 {len(categories)} 個有效分類，至少需要 {required_categories} 個"
@@ -756,10 +765,14 @@ def _plan_pain_points(
 只輸出 JSON：{{"candidates": [{{"category": "...", "scenario": "...", "speaker": "...", "intent": "...", "task": "...", "failure_mode": "...", "priority": 5, "frequency": 5, "friction": 4, "sequence": 1, "required_terms": []}}]}}。
 """
     points: list[dict] | None = None
+    fallback_points: list[dict] | None = None
+    fallback_category_count = 0
+    fallback_raw_count = 0
     raw_count = 0
     last_error: Exception | None = None
     retry_note = ""
     for attempt in range(3):
+        raw_points = None
         kwargs = {
             "messages": [{"role": "user", "content": prompt + retry_note}],
             "model": PLAN_MODEL,
@@ -785,13 +798,42 @@ def _plan_pain_points(
             break
         except Exception as exc:
             last_error = exc
+            if raw_points is not None:
+                try:
+                    relaxed_points = _select_pain_points(
+                        raw_points,
+                        count,
+                        require_categories=True,
+                        minimum_categories=PLAN_FALLBACK_MIN_CATEGORIES,
+                    )
+                    relaxed_category_count = len(
+                        _plan_summary(relaxed_points)["categories"]
+                    )
+                    if relaxed_category_count > fallback_category_count:
+                        fallback_points = relaxed_points
+                        fallback_category_count = relaxed_category_count
+                        fallback_raw_count = raw_count
+                except Exception:
+                    pass
             if attempt < 2:
                 print(f"   ⚠️  痛點策劃未通過（第 {attempt + 1} 次）：{exc}，重新規劃...")
                 retry_note = (
-                    "\n前次輸出未通過程式篩選。這次務必輸出完整數量、至少五個有效分類，"
+                    f"\n前次輸出未通過程式篩選：{exc}。"
+                    "這次務必輸出完整數量、至少五個實質不同的有效分類，"
                     "並避免相同場景、角色與意圖的同義改寫。\n"
                 )
 
+    if points is None:
+        if fallback_points is not None:
+            points = fallback_points
+            raw_count = fallback_raw_count
+            print(
+                f"   ⚠️  五類品質門檻連續 3 次未通過；已採用最佳備選"
+                f"（{fallback_category_count} 類），且仍符合每類最多 "
+                f"{math.ceil(count * PLAN_MAX_CATEGORY_SHARE)}/{count} 項的分布限制。"
+            )
+        else:
+            print(f"   ❌ 痛點策劃未通過（第 3 次）：{last_error}")
     if points is None:
         raise RuntimeError(
             f"痛點規劃連續 3 次失敗，拒絕生成未經策劃的牌組: {last_error}"

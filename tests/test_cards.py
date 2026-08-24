@@ -1,7 +1,9 @@
 import json
+import math
 import os
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -269,6 +271,64 @@ class PainPointPlanningTests(unittest.TestCase):
         self.assertEqual(len(selected), 5)
         self.assertEqual(len({point["category"] for point in selected}), 5)
         self.assertEqual(call.call_args.kwargs["max_tokens"], 16000)
+
+    def test_planner_uses_best_safe_fallback_after_three_four_category_plans(self):
+        candidates = [
+            _pain_point(
+                f"流程任務{index}",
+                f"分類{index % 4}",
+                index + 1,
+                priority=5 - (index % 3),
+            )
+            for index in range(26)
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {"candidates": candidates}, ensure_ascii=False
+                        )
+                    )
+                )
+            ]
+        )
+
+        with patch.object(cards, "_call_openai", return_value=response) as call:
+            selected = cards._plan_pain_points("測試主題", 6)
+
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual(len(selected), 6)
+        self.assertEqual(len({point["category"] for point in selected}), 4)
+        self.assertLessEqual(
+            max(Counter(point["category"] for point in selected).values()),
+            math.ceil(6 * cards.PLAN_MAX_CATEGORY_SHARE),
+        )
+
+    def test_planner_still_rejects_fallback_with_too_few_categories(self):
+        candidates = [
+            _pain_point(f"流程任務{index}", f"分類{index % 2}", index + 1)
+            for index in range(25)
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {"candidates": candidates}, ensure_ascii=False
+                        )
+                    )
+                )
+            ]
+        )
+
+        with (
+            patch.object(cards, "_call_openai", return_value=response) as call,
+            self.assertRaisesRegex(RuntimeError, "痛點規劃連續 3 次失敗"),
+        ):
+            cards._plan_pain_points("測試主題", 5)
+
+        self.assertEqual(call.call_count, 3)
 
     def test_selection_keeps_category_coverage_and_journey_order(self):
         candidates = []
