@@ -38,6 +38,7 @@ CARDS_DIR       = os.path.join(BASE_DIR, "cards")
 OUTPUT_DIR      = os.path.join(BASE_DIR, "output")
 USED_WORDS_FILE = os.path.join(BASE_DIR, "used_words.json")
 GENERATE_CHUNK  = 10
+REFILL_CANDIDATE_MULTIPLIER = 3
 DEFAULT_CARD_COUNT = 50
 MAX_WORD_EN_WORDS = 8
 MAX_SENTENCE_EN_WORDS = 14
@@ -173,6 +174,27 @@ def _validation_issues(item: dict) -> list[str]:
 
 def _is_valid_item(item: dict) -> bool:
     return not _validation_issues(item)
+
+
+def _extract_generated_items(content: str) -> list[dict]:
+    """Normalize the occasional singular response used for one-card requests."""
+    payload = json.loads(content)
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("items")
+    if raw is None:
+        raw = payload.get("item", [])
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _generation_request_size(target_size: int, is_refill: bool) -> int:
+    """Overproduce after a short batch so each missing card gets alternatives."""
+    multiplier = REFILL_CANDIDATE_MULTIPLIER if is_refill else 1
+    return target_size * multiplier
 
 
 def _similarity_text(text: str) -> str:
@@ -1078,6 +1100,7 @@ def generate(
     review_replacements = 0
     rejected_examples: list[str] = []
     review_passed = False
+    overgenerate_next_round = False
 
     while rounds < max_rounds:
         if len(all_items) >= count:
@@ -1114,11 +1137,21 @@ def generate(
                 _normalize_key(item.get("word_en", "")) for item in all_items if item.get("word_en")
             }
             review_replacements += 1
+            overgenerate_next_round = True
             continue
 
         need = count - len(all_items)
         chunk_size = min(GENERATE_CHUNK, need)
-        print(f"   🔄 OpenAI #{rounds + 1}（目標 {chunk_size} 個，已有 {len(all_items)}/{count}）...")
+        request_size = _generation_request_size(
+            chunk_size, overgenerate_next_round
+        )
+        candidate_note = (
+            f"，請求 {request_size} 個候選" if overgenerate_next_round else ""
+        )
+        print(
+            f"   🔄 OpenAI #{rounds + 1}（目標 {chunk_size} 個{candidate_note}，"
+            f"已有 {len(all_items)}/{count}）..."
+        )
 
         # Prevent duplicates in the current deck. Historical decks are not hard
         # exclusions because common real-world phrases naturally cross topics.
@@ -1147,6 +1180,7 @@ def generate(
             )
 
         purpose_note = ""
+        remaining: list[tuple[int, dict]] = []
         if pain_points:
             completed_purpose_ids = {
                 item.get("_purpose_id") for item in all_items if item.get("_purpose_id")
@@ -1156,21 +1190,45 @@ def generate(
                 for idx, point in enumerate(pain_points)
                 if idx + 1 not in completed_purpose_ids
             ]
-            purpose_note = (
-                "\nGenerate cards ONLY for these missing blueprint entries. "
-                "Copy each number exactly into purpose_id and output one card per entry:\n"
-                + "\n".join(
-                    f"{idx}. {_pain_point_text(point)}"
-                    for idx, point in remaining[:chunk_size]
+            if overgenerate_next_round:
+                purpose_note = (
+                    "\nGenerate alternative cards ONLY for these missing blueprint entries:\n"
+                    + "\n".join(
+                        f"{idx}. {_pain_point_text(point)}"
+                        for idx, point in remaining[:chunk_size]
+                    )
+                    + f"\nReturn {REFILL_CANDIDATE_MULTIPLIER} materially different candidates "
+                    "for EACH entry. Copy the entry number exactly into purpose_id for every "
+                    "candidate. The system will validate them and keep one per entry.\n"
                 )
-                + "\n"
+            else:
+                purpose_note = (
+                    "\nGenerate cards ONLY for these missing blueprint entries. "
+                    "Copy each number exactly into purpose_id and output one card per entry:\n"
+                    + "\n".join(
+                        f"{idx}. {_pain_point_text(point)}"
+                        for idx, point in remaining[:chunk_size]
+                    )
+                    + "\n"
+                )
+
+        if overgenerate_next_round:
+            generation_note = (
+                f"\nReturn exactly {request_size} alternative candidate items in the items array. "
+                f"Provide exactly {REFILL_CANDIDATE_MULTIPLIER} candidates for EACH of the "
+                f"{chunk_size} missing purposes. Make every alternative a genuinely different "
+                "natural line; the system will keep the first one per purpose that passes validation.\n"
+            )
+        else:
+            generation_note = (
+                f"\nGenerate exactly {request_size} NEW items with distinct communicative purposes.\n"
             )
 
         full_prompt = (
             prompt
             + exclusion_note
             + purpose_note
-            + f"\nGenerate exactly {chunk_size} NEW items with distinct communicative purposes.\n"
+            + generation_note
             + FIELD_SPEC
         )
         try:
@@ -1183,7 +1241,9 @@ def generate(
                 # GPT-5 models currently only support their default temperature.
                 request_kwargs["temperature"] = 0.55 if len(all_items) > 0 else 0.4
             resp = _call_openai(**request_kwargs)
-            raw = json.loads(resp.choices[0].message.content).get("items", [])
+            raw = _extract_generated_items(resp.choices[0].message.content)
+            if not raw:
+                print("      ⚠️ 模型未回傳可解析的 items 候選陣列")
         except Exception as e:
             print(f"      ⚠️ API 呼召失敗，等待 2 秒後重試: {e}")
             time.sleep(2)
@@ -1215,8 +1275,13 @@ def generate(
                 completed_purpose_ids = {
                     existing.get("_purpose_id") for existing in all_items
                 }
-                if not 1 <= purpose_id <= len(pain_points) or purpose_id in completed_purpose_ids:
+                if not 1 <= purpose_id <= len(pain_points):
                     print(f"      ⚠️ 跳過重複或越界 purpose_id={purpose_id}: {item.get('word_en', 'Unknown')}")
+                    continue
+                if purpose_id in completed_purpose_ids:
+                    # 補寫模式本來就會為每個痛點回傳多個候選，其餘備選無須當作異常輸出。
+                    if not overgenerate_next_round:
+                        print(f"      ⚠️ 跳過重複 purpose_id={purpose_id}: {item.get('word_en', 'Unknown')}")
                     continue
                 item["_purpose_id"] = purpose_id
                 item["_pain_point"] = pain_points[purpose_id - 1]
@@ -1250,6 +1315,7 @@ def generate(
                 added += 1
 
         rounds += 1
+        overgenerate_next_round = added < chunk_size
         if added == 0:
             empty_streak += 1
             print(f"      ⚠️ 本輪 0 個新詞（連續空輪 {empty_streak}）")

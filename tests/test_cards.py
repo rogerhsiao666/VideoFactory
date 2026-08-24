@@ -68,6 +68,15 @@ class ReferenceDeckTests(unittest.TestCase):
 
 
 class ContentGateTests(unittest.TestCase):
+    def test_singular_generated_item_is_normalized_to_a_list(self):
+        item = _item("Could you repeat that?", "Could you say that one more time?")
+
+        result = cards._extract_generated_items(
+            json.dumps({"item": item}, ensure_ascii=False)
+        )
+
+        self.assertEqual(result, [item])
+
     def test_stylist_pain_point_requires_both_fields_to_be_questions(self):
         item = _item(
             "How much would you like off?",
@@ -127,6 +136,65 @@ def _pain_point(
 
 
 class PainPointPlanningTests(unittest.TestCase):
+    def test_refill_request_size_scales_any_gap_by_three(self):
+        for gap in (1, 2, 3, 4, 10):
+            with self.subTest(gap=gap):
+                self.assertEqual(cards._generation_request_size(gap, True), gap * 3)
+                self.assertEqual(cards._generation_request_size(gap, False), gap)
+
+    def test_four_missing_cards_request_twelve_candidates(self):
+        points = [
+            _pain_point(f"溝通任務{purpose_id}", f"分類{purpose_id}", purpose_id)
+            for purpose_id in range(1, 6)
+        ]
+        first_item = dict(
+            _item("Purpose one", "Use the first purpose now."),
+            purpose_id=1,
+        )
+        refill_items = [
+            dict(
+                _item(
+                    f"Purpose {purpose_id} option {variant}",
+                    f"Use purpose {purpose_id} option {variant} now.",
+                    purpose_id=purpose_id,
+                ),
+                purpose_id=purpose_id,
+            )
+            for purpose_id in range(2, 6)
+            for variant in range(1, 4)
+        ]
+        prompts = []
+
+        def fake_call(**kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            items = [first_item] if len(prompts) == 1 else refill_items
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps({"items": items}, ensure_ascii=False)
+                        )
+                    )
+                ]
+            )
+
+        with (
+            patch.object(cards, "_call_openai", side_effect=fake_call),
+            patch.object(cards, "_review_deck", return_value={}),
+            patch.object(cards, "_load_used_words", return_value=set()),
+            patch.object(cards, "_save_used_words"),
+        ):
+            result = cards.generate("動態補齊測試", 5, pain_points=points)
+
+        self.assertEqual(len(result), 5)
+        self.assertEqual([item["_purpose_id"] for item in result], [1, 2, 3, 4, 5])
+        self.assertEqual(len(prompts), 2)
+        self.assertIn(
+            "Return exactly 12 alternative candidate items in the items array",
+            prompts[1],
+        )
+        self.assertIn("Return 3 materially different candidates for EACH entry", prompts[1])
+
     def test_structured_plan_flows_through_generation_and_review(self):
         points = [
             _pain_point("請對方拍多張供挑選", "請人幫拍", 1),
