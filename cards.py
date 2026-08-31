@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 cards.py — 詞彙卡片語料前置生成工具
-輸入主題 → OpenAI 生成 → 輸出 cards/{topic}.xlsx
+輸入主題與主題描述 → OpenAI 生成 → 輸出 output/{topic}.xlsx
 已做過的主題自動跳過，同一副牌內自動去重。
 
 第二集可指定一個或多個參考牌組，讓痛點規劃、生成與審稿都避開舊內容：
-python3 cards.py --topic "主題_02" --focus "本集痛點" --avoid "主題_01"
+python3 cards.py --topic "主題_02" --description "本集痛點" --avoid "主題_01"
 
 可先輸出結構化策劃檔供人工調整，再以同一份策劃生成：
 python3 cards.py --topic "主題" --plan-only
-python3 cards.py --topic "主題" --plan-file "cards/主題.plan.json"
+python3 cards.py --topic "主題" --plan-file "output/主題.plan.json"
 """
 
 from __future__ import annotations
@@ -57,7 +57,6 @@ PLAN_FALLBACK_MIN_CATEGORIES = 3
 PLAN_MIN_COUNTERPART_SHARE = 0.20
 PLAN_GENERATE_BATCH = 8
 
-os.makedirs(CARDS_DIR,  exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 OPENAI_KEYS = [k for k in [os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_API_KEY_2")] if k]
@@ -213,6 +212,86 @@ def _generation_request_size(target_size: int, is_refill: bool) -> int:
     return target_size * multiplier
 
 
+def _required_focus_phrases(topic: str) -> list[str]:
+    """Extract English lines from common 必教金句 description formats."""
+    match = re.search(
+        r"必教金句[：:]\s*(.*?)(?=。?內容邊界[：:]|$)",
+        topic,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return []
+    section = match.group(1)
+    parenthesized = [
+        raw.strip()
+        for raw in re.findall(r"[（(]([^()（）]*[A-Za-z][^()（）]*)[)）]", section)
+    ]
+    if parenthesized:
+        return parenthesized
+    phrases: list[str] = []
+    for raw in re.split(r"[；;\n]+", section):
+        phrase = raw.strip().strip("「」『』\"。 ")
+        if re.search(r"[A-Za-z]", phrase):
+            phrases.append(phrase)
+    return phrases
+
+
+def _short_locked_phrase(sentence: str) -> str:
+    if _english_word_count(sentence) <= MAX_WORD_EN_WORDS:
+        return sentence
+    clauses = re.split(r"\bbut\b", sentence, flags=re.IGNORECASE)
+    for clause in reversed(clauses):
+        candidate = clause.strip(" ,;:-")
+        if candidate and _english_word_count(candidate) <= MAX_WORD_EN_WORDS:
+            return candidate
+    return sentence
+
+
+def _apply_focus_phrase_locks(topic: str, pain_points: list[dict]) -> int:
+    """Lock explicit must-teach lines onto their matching planned purposes."""
+    locked = 0
+    used_indexes: set[int] = set()
+    for phrase in _required_focus_phrases(topic):
+        phrase_key = _similarity_text(phrase)
+        matched_index: int | None = None
+        for index, point in enumerate(pain_points):
+            task_key = _similarity_text(_pain_point_task(point))
+            if phrase_key and phrase_key in task_key:
+                matched_index = index
+                break
+        if matched_index is None:
+            matched_index = next(
+                (
+                    index
+                    for index, point in enumerate(pain_points)
+                    if index not in used_indexes
+                    and _normalize_pain_point(point).get("role_type") == "learner_line"
+                ),
+                None,
+            )
+        if matched_index is None:
+            continue
+        point = pain_points[matched_index]
+        point["intent"] = f"逐字使用必教金句：{phrase}"
+        point["job_key"] = f"必教金句：{phrase}"
+        point["task"] = f"逐字說出必教金句：“{phrase}”"
+        point["target_phrase"] = _short_locked_phrase(phrase)
+        point["target_sentence"] = phrase
+        used_indexes.add(matched_index)
+        locked += 1
+    return locked
+
+
+def _topic_requests_learner_only(topic: str) -> bool:
+    focus = topic.split("本集內容焦點與邊界：", 1)[-1].casefold()
+    learner_marker = any(marker in focus for marker in ("學習者", "自己開口", "learner_line"))
+    exclusion_marker = any(
+        marker in focus
+        for marker in ("不要收錄對方", "不教對方原話", "全部是", "全部由")
+    )
+    return learner_marker and exclusion_marker
+
+
 def _similarity_text(text: str) -> str:
     # Keep Unicode letters/numbers so Chinese pain-point plans do not collapse
     # into the same empty key during deduplication.
@@ -251,6 +330,7 @@ def _normalize_topic_contract(value) -> dict:
         "out_of_scope": clean_list("out_of_scope"),
         "required_moments": clean_list("required_moments"),
         "pain_categories": clean_list("pain_categories"),
+        "learner_only": bool(value.get("learner_only", False)),
     }
 
 
@@ -690,8 +770,6 @@ def _plan_quality_issues(pain_points: list[dict], count: int) -> list[str]:
     ]
     locked_points = [point for point in normalized_points if point["target_phrase"]]
     if locked_points:
-        if len(locked_points) != count:
-            issues.append("鎖定牌組的每個痛點都必須提供 target_phrase 與 target_sentence")
         if any(not point["target_sentence"] or not point["job_key"] for point in locked_points):
             issues.append("鎖定牌組缺少 target_sentence 或 job_key")
         for field, label in (
@@ -728,13 +806,16 @@ def _plan_quality_issues(pain_points: list[dict], count: int) -> list[str]:
         for point in pain_points
         if _normalize_pain_point(point)
     )
-    if count >= 4:
+    if contract.get("learner_only") and counterpart_count:
+        issues.append(f"learner_only 牌組不可包含對方原話，目前有 {counterpart_count} 項")
+    if count >= 4 and not contract.get("learner_only"):
         minimum_counterpart = max(1, math.ceil(count * PLAN_MIN_COUNTERPART_SHARE))
         if counterpart_count < minimum_counterpart:
             issues.append(
                 f"對方原話僅 {counterpart_count}/{count} 項，至少需要 {minimum_counterpart} 項"
             )
 
+    if count >= 4:
         learner_count = count - counterpart_count
         if learner_count < math.ceil(count * 0.5):
             issues.append("使用者可直接開口的內容不足一半")
@@ -922,6 +1003,28 @@ def _ai_review_pain_point_plan(
     pain_points: list[dict],
 ) -> list[str]:
     """Review the blueprint against the title promise before cards are written."""
+    topic_key = topic.splitlines()[0].strip().casefold()
+    topic_specific_rules: list[str] = []
+    if any(marker in topic_key for marker in ("phone call phobia", "電話恐懼")):
+        topic_specific_rules.append(
+            "只因為可以透過電話完成，不代表符合 Phone Call Phobia；請對方重複或放慢、"
+            "拼字、回讀姓名／數字／日期／地址、爭取思考時間、處理斷線／轉接／留言／回撥，"
+            "才是直接降低通話失控與焦慮的核心技能。"
+        )
+    if any(marker in topic_key for marker in ("complaint", "抱怨", "客訴")):
+        topic_specific_rules.append(
+            "只因為用了 could/please，不代表符合 Polite Complaints；例行詢價、問 Wi-Fi、"
+            "問折扣等若沒有已發生的問題或補救需求，一律退回。委婉指出問題、描述影響與證據、"
+            "提出補救、回應推託、拒絕不合理方案、要求主管或留下書面紀錄才是核心。"
+        )
+    topic_specific_note = "\n".join(
+        f"{index}. {rule}" for index, rule in enumerate(topic_specific_rules, start=10)
+    )
+    role_mix_rule = (
+        "5. learner_only=true：每項都必須是 learner_line，禁止加入只是讓學習者聽懂的對方原話。"
+        if _normalize_topic_contract(contract).get("learner_only")
+        else "5. role_type=counterpart_line 時，task 必須是學習者需要立即聽懂的對方原話；整副牌要同時訓練聽懂與開口。"
+    )
     prompt = f"""你是獨立的課程總編。請審核「{topic}」的內容契約與痛點藍圖。
 
 題名契約：
@@ -932,12 +1035,12 @@ def _ai_review_pain_point_plan(
 2. pain_trigger 是否是可觀察的當下觸發；user_stakes 是否是使用者真正在怕的後果；desired_outcome 是否是這張卡能促成的具體結果。
 3. task 是否能直接指導一句現場原話，且和其他項目有不同的觸發、理解需求、回答、補救或升級結果。
 4. category 必須描述痛點機制，不可只用開始、詢問、選擇、確認、補救等流程標籤，也不可用換餐廳、醫院、飯店等場所製造假多樣性。
-5. role_type=counterpart_line 時，task 必須是學習者需要立即聽懂的對方原話；整副牌要同時訓練聽懂與開口。
-6. out_of_scope 中的內容一律退回。只因為可以透過電話完成，不代表符合 Phone Call Phobia；只因為用了 could/please，不代表符合 Polite Complaints。
+{role_mix_rule}
+6. out_of_scope 中的內容一律退回。
 7. 例行詢價、問營業時間、問 Wi-Fi、問折扣、問課程時間等，若沒有問題、焦慮、誤解、風險或補救需求，不能算痛點。
 8. failure_mode 不得只是「無法獲得資訊」等同義反述；必須呈現具體代價。
-9. 主題若含「本集內容焦點與邊界」，其中明確點名的項目是硬需求，不得判為偏題。對 Phone Call Phobia 而言，請對方重複或放慢、拼字、回讀姓名／數字／日期／地址、爭取思考時間、處理斷線／轉接／留言／回撥，都是直接降低通話失控與焦慮的核心技能；不能只因非焦慮者也可能使用就退回。只有與理解、確認或補救無關的例行業務內容才算偏題。
-10. 對 Polite Complaints 而言，委婉指出已發生的問題、描述影響與證據、提出具體補救、回應推託、拒絕不合理方案、要求主管或留下書面紀錄都屬核心；這些句子可跨餐廳、飯店與購物場景，但不能退化成尚未發生問題的普通詢問。
+9. 主題若含「本集內容焦點與邊界」，該段描述是最高優先的內容 brief：明確點名的項目是硬需求，不得判為偏題，也不得擴張到描述未涵蓋的受眾、場合或相鄰任務。
+{topic_specific_note}
 
 每個 issues 與 reject.reason 都必須指出具體違反哪一條、哪個 out_of_scope 或哪個內容缺口；禁止只寫「偏離核心痛點」「偏題」「整副牌問題」等無法採取行動的籠統理由。使用者明確列入 focus 的項目若要退回，必須說明它為何沒有完成該焦點，而不能只宣告偏離。
 
@@ -1048,6 +1151,7 @@ def _topic_specific_plan_violation(topic: str, point: dict) -> str | None:
 
 
 def _save_pain_point_plan(topic: str, pain_points: list[dict], path: str) -> None:
+    _apply_focus_phrase_locks(topic, pain_points)
     contract = _normalize_topic_contract(getattr(pain_points, "contract", {}))
     contract_issues = _topic_contract_issues(contract)
     contract_issues.extend(_topic_specific_contract_issues(topic, contract))
@@ -1073,13 +1177,23 @@ def _save_pain_point_plan(topic: str, pain_points: list[dict], path: str) -> Non
     os.replace(tmp, path)
 
 
-def _load_pain_point_plan(path: str, expected_count: int | None = None) -> list[dict]:
+def _load_pain_point_plan(
+    path: str,
+    expected_count: int | None = None,
+    expected_topic: str | None = None,
+) -> list[dict]:
     with open(path, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict) or payload.get("version") != PLAN_VERSION:
         found_version = payload.get("version", "legacy") if isinstance(payload, dict) else "legacy"
         raise PlanVersionError(
             f"策劃格式 v{found_version} 已過期，目前需要 v{PLAN_VERSION}；請重新規劃"
+        )
+    saved_topic = str(payload.get("topic", "")).strip()
+    if expected_topic is not None and saved_topic != expected_topic.strip():
+        raise ValueError(
+            "策劃檔的主題描述與本次輸入不一致；"
+            f"檔案為「{saved_topic}」，本次為「{expected_topic.strip()}」"
         )
     contract = _normalize_topic_contract(payload.get("topic_contract"))
     contract_issues = _topic_contract_issues(contract)
@@ -1098,6 +1212,7 @@ def _load_pain_point_plan(path: str, expected_count: int | None = None) -> list[
         require_pain_evidence=True,
         contract=contract,
     )
+    _apply_focus_phrase_locks(saved_topic, points)
     if expected_count is not None and len(points) != expected_count:
         raise ValueError(f"策劃檔必須剛好有 {expected_count} 項痛點")
     quality_issues = _plan_quality_issues(points, count)
@@ -1222,6 +1337,9 @@ def _local_review_deck(
     seen_items: list[dict] = []
     seen_purpose_ids: set[int] = set()
     topic_text = _similarity_text(topic)
+    learner_only = _normalize_topic_contract(
+        getattr(pain_points, "contract", {})
+    ).get("learner_only", False)
     english_stopwords = {
         "a", "an", "and", "are", "be", "can", "could", "do", "does",
         "for", "get", "have", "how", "i", "if", "in", "is", "it",
@@ -1273,6 +1391,12 @@ def _local_review_deck(
         seen_items.append(item)
 
         combined = f'{item.get("word_en", "")} {item.get("sentence_en", "")}'.lower()
+        if learner_only and (
+            "?" in item.get("word_en", "")
+            or "?" in item.get("sentence_en", "")
+        ):
+            rejected[idx] = "learner_only 牌組只能收錄學習者的離場原話，不可使用問句或對方開場句"
+            continue
         assigned_point = ""
         if pain_points:
             try:
@@ -1392,16 +1516,35 @@ def _local_review_deck(
 
 
 def _request_topic_contract(topic: str, reference_note: str, retry_note: str = "") -> dict:
+    topic_key = topic.splitlines()[0].strip().casefold()
+    topic_specific_rules: list[str] = []
+    if any(marker in topic_key for marker in ("phone call phobia", "電話恐懼")):
+        topic_specific_rules.append(
+            "題名含 phobia、fear、anxiety、焦慮或恐懼，核心是焦慮觸發、聽不懂、"
+            "腦袋空白、怕失禮、資訊確認與失控補救；不是所有可透過該媒介完成的例行任務。"
+        )
+    if any(marker in topic_key for marker in ("complaint", "抱怨", "客訴")):
+        topic_specific_rules.append(
+            "題名含 complaint、抱怨或客訴，核心是指出已發生的問題、降低指責感、提出補救、"
+            "面對推託、拒絕不合理方案與升級；一般詢價、問 Wi-Fi、問折扣等例行禮貌詢問不是抱怨。"
+        )
+    if "polite complaints" in topic_key:
+        topic_specific_rules.append(
+            "Polite Complaints 的 pain_categories 必須逐字包含「拒絕不合理補救方案」以及"
+            "「要求主管升級與書面留存」；禁止寫成「拒絕不合理要求」，因為那會變成"
+            "拒絕加班、借錢等另一個主題。"
+        )
+    topic_specific_note = "\n".join(f"- {rule}" for rule in topic_specific_rules)
     prompt = f"""你是台灣成人情境英語課程的內容總編。主題是「{topic}」。
 先不要寫詞卡或痛點清單，只定義這個題名對學習者的內容承諾。
 {reference_note}
 
 重要邊界：
-- 題名含 phobia、fear、anxiety 時，核心是焦慮觸發、聽不懂、腦袋空白、怕失禮、資訊確認與失控補救；不是所有可透過該媒介完成的例行任務。
-- 題名含 complaint、抱怨、客訴時，核心是指出已發生的問題、降低指責感、提出補救、面對推託、拒絕不合理方案與升級；一般詢價、問 Wi-Fi、問折扣等例行禮貌詢問不是抱怨。
+- 若主題包含「本集內容焦點與邊界」，該段描述是最高優先的內容 brief。audience、場景、core_pain、in_scope 與 required_moments 不得擴張到描述之外；只有完成描述中任務不可缺少的相鄰步驟才能合理推導。
+- 若描述明確要求全部都是學習者自己開口、並排除對方原話，learner_only 必須為 true；否則為 false。
 - pain_categories 每一類都必須能產生電話或現場直接說出、聽到的英文原話；禁止呼吸、放鬆、寫講稿、心理建設、學習技巧等非語言建議。
 - 若主題包含「本集內容焦點與邊界」，其中逐項點名的技能都是硬需求；必須全部寫入 in_scope 或 required_moments，不得濃縮到遺漏任何一項。
-- Polite Complaints 的 pain_categories 必須逐字包含「拒絕不合理補救方案」以及「要求主管升級與書面留存」；禁止寫成「拒絕不合理要求」，因為那會變成拒絕加班、借錢等另一個主題。
+{topic_specific_note}
 
 只輸出 JSON：
 {{"topic_contract": {{
@@ -1411,7 +1554,8 @@ def _request_topic_contract(topic: str, reference_note: str, retry_note: str = "
   "in_scope": ["至少三項直接服務核心痛點的範圍"],
   "out_of_scope": ["至少三項看似相關但偏題的內容"],
   "required_moments": ["至少三個不教就無法兌現承諾的高摩擦時刻"],
-  "pain_categories": ["剛好七個以痛點機制命名的分類；禁止開始、詢問、選擇、確認、補救、結束或場所名稱"]
+  "pain_categories": ["剛好七個以痛點機制命名的分類；禁止開始、詢問、選擇、確認、補救、結束或場所名稱"],
+  "learner_only": false
 }}}}
 {retry_note}
 """
@@ -1428,6 +1572,8 @@ def _request_topic_contract(topic: str, reference_note: str, retry_note: str = "
     response = _call_openai(**kwargs)
     payload = json.loads(response.choices[0].message.content)
     contract = _normalize_topic_contract(payload.get("topic_contract"))
+    if _topic_requests_learner_only(topic):
+        contract["learner_only"] = True
     issues = _topic_contract_issues(contract)
     issues.extend(_topic_specific_contract_issues(topic, contract))
     if issues:
@@ -1444,7 +1590,9 @@ def _request_pain_point_candidates(
 ) -> list[dict]:
     """Generate a large blueprint through bounded requests to avoid JSON timeouts."""
     candidates: list[dict] = []
-    pain_categories = _normalize_topic_contract(contract)["pain_categories"]
+    normalized_contract = _normalize_topic_contract(contract)
+    pain_categories = normalized_contract["pain_categories"]
+    learner_only = normalized_contract["learner_only"]
     rounds = 0
     successful_batches = 0
     max_rounds = math.ceil(candidate_count / PLAN_GENERATE_BATCH) + len(pain_categories) + 4
@@ -1466,7 +1614,9 @@ def _request_pain_point_candidates(
                 for marker in ("推託", "不合理補救", "主管", "升級", "書面", "留存", "紀錄")
             )
         )
-        if "polite complaints" in topic.casefold():
+        if learner_only:
+            target_role = "learner_line"
+        elif "polite complaints" in topic.casefold():
             counterpart_candidates = sum(
                 point["role_type"] == "counterpart_line" for point in candidates
             )
@@ -1489,7 +1639,7 @@ def _request_pain_point_candidates(
             )
         elif target_role == "counterpart_line":
             role_instruction = (
-                "本批全部是 counterpart_line：speaker 必須是電話另一端的人；task 必須逐字使用格式"
+                "本批全部是 counterpart_line：speaker 必須是對話中的另一個人；task 必須逐字使用格式"
                 "「聽懂對方原話：“[一個完整英文句子]”」，引號內必須是對方真的會直接說出的英文，"
                 "禁止放入學習者自己的要求。"
             )
@@ -1536,7 +1686,7 @@ def _request_pain_point_candidates(
 {existing_note}
 
 規則：
-1. 每項都必須直接服務 core_pain；out_of_scope 一律禁止。
+1. 每項都必須直接服務 core_pain；out_of_scope 一律禁止。若主題附有「本集內容焦點與邊界」，不得加入描述未涵蓋的受眾、場合或相鄰任務。
 2. 本批只負責痛點機制「{category_focus}」。每項 category 必須逐字填「{category_focus}」，不得新增分類或用換場所製造多樣性。
    {category_action_instruction}
 3. 每項是不同的觸發、理解需求、回答、補救或升級結果，不得只替換商品、場所或名詞。
@@ -1811,6 +1961,7 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 {blueprint}
 
 整副牌預計 {count} 張。先在心中完成以下判斷，再生成內容，不要輸出分析過程：
+- 若主題附有「本集內容焦點與邊界」，它是最高優先的內容 brief；不得自行加入描述之外的受眾、場合或相鄰任務。
 - 鎖定這個主題唯一、最具體的場景與使用者身分；品牌、場所或專有名詞不得套用其他同名含義。
 - 找出使用者為了完成這件事，最常遇到、最容易卡住、最怕聽不懂或說錯的具體時刻。
 - 按真實流程排序思考：開始、關鍵選擇、店員/對方追問、客製需求、確認、付款或收尾、出錯補救。
@@ -1903,6 +2054,12 @@ def _ai_review_deck(
             "核心痛點或落入禁止範圍，仍必須退回：\n" + contract_rule + "\n"
         )
     reference_rule = _reference_prompt_note(reference_items)
+    duplicate_review_rule = (
+        "3. 此牌組已由 pain-point plan 保證每個 purpose 不同。purpose_id 不同時，"
+        "不可只因都是同一主題或都在結束對話就判為重複；只審查是否完成各自 assigned_pain_point。"
+        if pain_points
+        else "3. 與另一張卡的說話角色、意圖和答案都實質相同，只是改寫措辭。"
+    )
 
     prompt = f"""你是獨立的情境英語牌組審稿人。主題是「{topic}」。
 請只退回明顯不合格的卡片，不要因為初學、句型相似或措辭可微調就退回。
@@ -1911,9 +2068,9 @@ def _ai_review_deck(
 {reference_rule}
 
 明顯不合格的定義：
-1. 套用主題的其他同名含義、偏離核心任務，或是泛用填充內容。
+1. 套用主題的其他同名含義、偏離核心任務、擴張到主題描述未涵蓋的受眾或場合，或是泛用填充內容。
 2. 現場幾乎不會說、無法幫助使用者完成核心任務，或只是孤立品名教學。
-3. 與另一張卡的說話角色、意圖和答案都實質相同，只是改寫措辭。
+{duplicate_review_rule}
 4. 一張卡塞入超過兩個選擇／條件，應拆成多張短卡。
 5. 明顯捏造品項、規定或事實；不確定的供應內容應使用詢問句。
 6. 為了湊數加入低資訊邊角需求，例如泛用道謝、餐巾、餐具、切麵包邊、兒童份量、聯絡取餐等；除非主題明確指定。
@@ -1945,7 +2102,8 @@ def _ai_review_deck(
         response = _call_openai(**request_kwargs)
         raw_rejects = json.loads(response.choices[0].message.content).get("reject", [])
 
-        duplicate_prompt = f"""你只負責檢查英語牌組內及其與參考牌組之間的語意重複。主題是「{topic}」。
+        if not pain_points:
+            duplicate_prompt = f"""你只負責檢查英語牌組內及其與參考牌組之間的語意重複。主題是「{topic}」。
 只有在兩張卡的「說話角色、當下意圖、實際答案」三者都相同，只是換同義詞或改寫措辭時，才退回其中一張。
 例如「分開包裝」與「兩份分開包」、「外帶切半」與「切半方便分享」算重複。
 以下都不算重複，必須保留：
@@ -1961,17 +2119,17 @@ def _ai_review_deck(
 只輸出 JSON：{{"reject": [{{"id": "02", "reason": "與 01 溝通目的重複"}}]}}；沒有重複則輸出空陣列。
 卡片：{json.dumps(compact_items, ensure_ascii=False)}
 """
-        duplicate_kwargs = {
-            "messages": [{"role": "user", "content": duplicate_prompt}],
-            "model": DUPLICATE_REVIEW_MODEL,
-            "response_format": {"type": "json_object"},
-        }
-        if not DUPLICATE_REVIEW_MODEL.startswith("gpt-5"):
-            duplicate_kwargs["temperature"] = 0.1
-        duplicate_response = _call_openai(**duplicate_kwargs)
-        raw_rejects.extend(
-            json.loads(duplicate_response.choices[0].message.content).get("reject", [])
-        )
+            duplicate_kwargs = {
+                "messages": [{"role": "user", "content": duplicate_prompt}],
+                "model": DUPLICATE_REVIEW_MODEL,
+                "response_format": {"type": "json_object"},
+            }
+            if not DUPLICATE_REVIEW_MODEL.startswith("gpt-5"):
+                duplicate_kwargs["temperature"] = 0.1
+            duplicate_response = _call_openai(**duplicate_kwargs)
+            raw_rejects.extend(
+                json.loads(duplicate_response.choices[0].message.content).get("reject", [])
+            )
     except Exception as e:
         raise RuntimeError(f"自動審稿失敗，拒絕輸出未審核牌組: {e}") from e
 
@@ -1982,7 +2140,10 @@ def _ai_review_deck(
         except (TypeError, ValueError):
             continue
         if 0 <= idx < len(items):
-            rejected[idx] = str(entry.get("reason", "未通過內容審查")).strip()
+            reason = str(entry.get("reason", "未通過內容審查")).strip()
+            if pain_points and "重複" in reason:
+                continue
+            rejected[idx] = reason
     return rejected
 
 
@@ -2028,8 +2189,17 @@ def _save_used_words(words: set[str]):
 
 
 def _existing_topics() -> list[str]:
-    files = glob.glob(os.path.join(CARDS_DIR, "*.xlsx"))
-    return [os.path.splitext(os.path.basename(f))[0] for f in sorted(files)]
+    files = [
+        path
+        for directory in (OUTPUT_DIR, CARDS_DIR)
+        for path in glob.glob(os.path.join(directory, "*.xlsx"))
+        if not os.path.basename(path).startswith("review_")
+    ]
+    topics = {
+        os.path.splitext(os.path.basename(path))[0]
+        for path in files
+    }
+    return sorted(topics)
 
 
 def _topic_to_slug(topic: str) -> str:
@@ -2228,7 +2398,17 @@ def generate(
             )
 
         role_note = ""
-        if pain_points and "polite complaints" in topic.casefold():
+        learner_only = _normalize_topic_contract(
+            getattr(pain_points, "contract", {})
+        ).get("learner_only", False)
+        if pain_points and learner_only:
+            role_note = (
+                "\nLEARNER-ONLY IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en: "
+                "every field must be something the learner directly says to end the conversation "
+                "and leave. Never write a question, conversation opener, or the counterpart's line. "
+                "word_en must be a short reusable part of the same learner exit line.\n"
+            )
+        elif pain_points and "polite complaints" in topic.casefold():
             role_note = (
                 "\nROLE IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en:\n"
                 "- counterpart_line means a store employee, customer-service agent, or manager "
@@ -2244,6 +2424,15 @@ def generate(
                 "counterpart_line is what the person on the other end says and the learner must "
                 "understand; learner_line is what the anxious learner says. Never switch speakers.\n"
             )
+        elif pain_points:
+            role_note = (
+                "\nROLE IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en:\n"
+                "- For counterpart_line, copy the complete English quote inside the assigned task "
+                "exactly into sentence_en. word_en must be a useful phrase or question spoken by "
+                "that same counterpart. Never write the learner's answer or reaction.\n"
+                "- For learner_line, write what the learner says to complete the assigned task.\n"
+                "Never switch speaker perspective between word_en and sentence_en.\n"
+            )
 
         locked_note = ""
         if remaining and any(
@@ -2251,7 +2440,8 @@ def generate(
             for _, point in remaining[:chunk_size]
         ):
             locked_note = (
-                "\nLOCKED ENGLISH IS NON-NEGOTIABLE: for every blueprint entry, copy "
+                "\nLOCKED ENGLISH IS NON-NEGOTIABLE: for every blueprint entry that includes "
+                "a locked phrase and sentence, copy "
                 "target_phrase exactly into word_en and target_sentence exactly into sentence_en. "
                 "Do not paraphrase, shorten, expand, or switch pronouns. Only generate IPA, "
                 "Traditional Chinese translations, and a concrete usage tip around those exact lines.\n"
@@ -2411,12 +2601,13 @@ def load_xlsx_items(path: str) -> list[dict]:
 
 
 def _resolve_deck_path(value: str) -> str:
-    """Resolve an --avoid value as a path or a deck name in cards/."""
+    """Resolve an --avoid value as a path or a deck name in output/ or cards/."""
     raw = os.path.expanduser(value.strip())
     candidates = [raw]
     if not os.path.isabs(raw):
         candidates.extend([
             os.path.join(BASE_DIR, raw),
+            os.path.join(OUTPUT_DIR, raw),
             os.path.join(CARDS_DIR, raw),
         ])
 
@@ -2431,7 +2622,7 @@ def _resolve_deck_path(value: str) -> str:
         if os.path.isfile(path):
             return path
     raise FileNotFoundError(
-        f"找不到參考牌組「{value}」。請提供 cards/ 內的牌組名稱或 XLSX 路徑"
+        f"找不到參考牌組「{value}」。請提供 output/ 或 cards/ 內的牌組名稱，或 XLSX 路徑"
     )
 
 
@@ -2487,13 +2678,13 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""範例：
   python3 cards.py --topic "美髮沙龍_03_剪壞補救" \\
-    --focus "只教剪髮中要求暫停、確認與修正的現場溝通" \\
+    --description "只教剪髮中要求暫停、確認與修正的現場溝通" \\
     --avoid "美髮沙龍" --avoid "美髮沙龍_02_剪髮溝通" \\
     --review hybrid
 
   # 先只產生策劃檔，人工檢查後再生成卡片
-  python3 cards.py --topic "租車英文" --focus "取車、驗車、事故與還車" --plan-only
-  python3 cards.py --topic "租車英文" --plan-file "cards/租車英文.plan.json"
+  python3 cards.py --topic "租車英文" --description "取車、驗車、事故與還車" --plan-only
+  python3 cards.py --topic "租車英文" --plan-file "output/租車英文.plan.json"
 
 不帶參數執行時，仍會進入原本的互動模式。
 """,
@@ -2503,9 +2694,11 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         help="牌組名稱，也是預設輸出檔名（不含 .xlsx）",
     )
     parser.add_argument(
+        "--description",
         "--focus",
+        dest="focus",
         default="",
-        help="本集內容焦點、使用者痛點與禁止範圍",
+        help="主題描述：目標對象、具體情境、核心痛點、必教內容與禁止範圍",
     )
     parser.add_argument(
         "--avoid",
@@ -2522,7 +2715,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output",
-        help="自訂 XLSX 輸出路徑；預設為 cards/{topic}.xlsx",
+        help="自訂 XLSX 輸出路徑；預設為 output/{topic}.xlsx",
     )
     parser.add_argument(
         "--review",
@@ -2543,6 +2736,11 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="不要生成 youtube_{topic}.txt",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="即使 XLSX 已存在也不沿用舊卡，依目前主題描述與 plan 整副重新生成",
+    )
     return parser
 
 
@@ -2551,6 +2749,21 @@ def _generation_topic(topic: str, focus: str = "") -> str:
     if not clean_focus:
         return topic
     return f"{topic}\n本集內容焦點與邊界：{clean_focus}"
+
+
+def _prompt_topic_description() -> str:
+    print(
+        "\n📝 請補充主題描述（建議填寫目標對象、具體情境、核心痛點、"
+        "必教內容與不要包含的內容）"
+    )
+    print("   可輸入多行，輸入空白行完成；直接 Enter 略過。")
+    lines: list[str] = []
+    while True:
+        line = input("> " if not lines else "| ").strip()
+        if not line:
+            break
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _chapter_time(seconds: float) -> str:
@@ -2574,10 +2787,12 @@ def _parse_srt_starts(srt_path: str) -> list[float]:
 
 
 def _generate_yt_title(topic: str) -> str:
+    fallback_title = f"【日常英文】{topic} 英文懶人包｜14 天上手"
     prompt = (
         f"你是台灣 YouTube 英語教學頻道的標題撰稿人。"
         f"請為主題「{topic}」寫一句 YouTube 影片標題（繁體中文，25-40 字）。"
-        f"風格：吸睛、有痛點、含具體場景與 Rayo 智慧閃卡關鍵字。"
+        f"風格：吸睛、有痛點、含具體場景。"
+        f"標題禁止出現 Rayo、智慧閃卡、Rayo 智慧閃卡、用 Rayo 智慧閃卡。"
         f"只輸出標題本身，不要引號、不要 hashtag、不要多行。"
     )
     try:
@@ -2588,10 +2803,13 @@ def _generate_yt_title(topic: str) -> str:
             max_tokens=80,
         )
         title = resp.choices[0].message.content.strip().strip('「」""\'\'')
-        return title.splitlines()[0] if title else ""
+        if title:
+            title = re.sub(r"\s*[\|｜-]?\s*用?\s*Rayo\s*智慧閃卡.*$", "", title).strip()
+            title = re.sub(r"\s*[\|｜-]?\s*Rayo\s*智慧閃卡.*$", "", title).strip()
+        return title.splitlines()[0] if title else fallback_title
     except Exception as e:
         print(f"⚠️  OpenAI 生成 YouTube 標題失敗 ({e})，使用預設模板")
-        return f"【日常英文】{topic} 英文懶人包｜Rayo 智慧閃卡陪你 14 天上手"
+        return fallback_title
 
 
 def _generate_yt_topic_paragraph(topic: str) -> str:
@@ -2793,13 +3011,18 @@ def main(argv: list[str] | None = None):
         print("⛔ 主題不能為空")
         return
 
+    topic_description = args.focus.strip() if cli_mode else _prompt_topic_description()
+    generation_topic = _generation_topic(topic, topic_description)
+    if topic_description:
+        print("🎯 已套用主題描述，痛點策劃、生成與審稿都會依此限制範圍")
+
     slug = _topic_to_slug(topic)
     if args.output:
         xlsx_path = os.path.abspath(os.path.expanduser(args.output))
         if not xlsx_path.lower().endswith(".xlsx"):
             xlsx_path += ".xlsx"
     else:
-        xlsx_path = os.path.join(CARDS_DIR, f"{slug}.xlsx")
+        xlsx_path = os.path.join(OUTPUT_DIR, f"{slug}.xlsx")
     os.makedirs(os.path.dirname(xlsx_path), exist_ok=True)
     yt_desc_path = os.path.join(
         os.path.dirname(xlsx_path),
@@ -2819,8 +3042,6 @@ def main(argv: list[str] | None = None):
         )
         print(f"🚫 跨集排除: {names}（共 {len(reference_items)} 張）")
 
-    generation_topic = _generation_topic(topic, args.focus)
-
     xlsx_exists    = os.path.exists(xlsx_path)
     yt_desc_exists = os.path.exists(yt_desc_path)
 
@@ -2839,7 +3060,13 @@ def main(argv: list[str] | None = None):
     plan_was_created = False
     if os.path.isfile(plan_path):
         try:
-            pain_points = _load_pain_point_plan(plan_path, expected_count=count)
+            pain_points = _load_pain_point_plan(
+                plan_path,
+                expected_count=count,
+                # A newly entered description must never reuse a stale plan.
+                # With no description, keep supporting existing --plan-file flows.
+                expected_topic=generation_topic if topic_description else None,
+            )
         except PlanVersionError as exc:
             if args.plan_file:
                 parser.error(f"策劃檔無法讀取：{plan_path}: {exc}")
@@ -2880,9 +3107,11 @@ def main(argv: list[str] | None = None):
     if xlsx_exists:
         existing_items = load_xlsx_items(xlsx_path)
         have = len(existing_items)
-        items = [] if plan_was_created else existing_items[:count]
-        if plan_was_created:
-            print("♻️  新版痛點藍圖已建立；不沿用舊卡片，將整副重新生成")
+        rebuild_all = plan_was_created or args.force
+        items = [] if rebuild_all else existing_items[:count]
+        if rebuild_all:
+            reason = "已指定 --force" if args.force else "新版痛點藍圖已建立"
+            print(f"♻️  {reason}；不沿用舊卡片，將整副重新生成")
             have = 0
         if pain_points:
             for index, item in enumerate(items):

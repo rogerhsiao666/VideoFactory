@@ -67,6 +67,26 @@ class ReferenceDeckTests(unittest.TestCase):
             os.path.abspath(handle.name),
         )
 
+    def test_deck_name_prefers_output_before_legacy_cards_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "output"
+            cards_dir = Path(directory) / "cards"
+            output_dir.mkdir()
+            cards_dir.mkdir()
+            output_path = output_dir / "結束話題.xlsx"
+            legacy_path = cards_dir / "結束話題.xlsx"
+            output_path.touch()
+            legacy_path.touch()
+
+            with (
+                patch.object(cards, "OUTPUT_DIR", str(output_dir)),
+                patch.object(cards, "CARDS_DIR", str(cards_dir)),
+            ):
+                self.assertEqual(
+                    cards._resolve_deck_path("結束話題"),
+                    str(output_path),
+                )
+
 
 class ContentGateTests(unittest.TestCase):
     def test_singular_generated_item_is_normalized_to_a_list(self):
@@ -111,6 +131,67 @@ class ContentGateTests(unittest.TestCase):
             result,
             "美髮沙龍_03\n本集內容焦點與邊界：只教剪壞補救",
         )
+
+    def test_description_cli_alias_populates_existing_focus_field(self):
+        args = cards._build_cli_parser().parse_args([
+            "--topic", "結束話題",
+            "--description", "只教社交場合優雅離開，不含商務會議",
+        ])
+
+        self.assertEqual(
+            args.focus,
+            "只教社交場合優雅離開，不含商務會議",
+        )
+
+    def test_force_cli_option_requests_full_regeneration(self):
+        args = cards._build_cli_parser().parse_args([
+            "--topic", "結束話題", "--force",
+        ])
+
+        self.assertTrue(args.force)
+
+    def test_interactive_topic_description_accepts_multiple_trimmed_lines(self):
+        with patch(
+            "builtins.input",
+            side_effect=[
+                "  電梯與派對的社交脫身  ",
+                "  排除商務會議  ",
+                "",
+            ],
+        ):
+            result = cards._prompt_topic_description()
+
+        self.assertEqual(result, "電梯與派對的社交脫身\n排除商務會議")
+
+    def test_generated_youtube_title_removes_rayo_flashcard_suffix(self):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="結束話題自然收尾｜用 Rayo 智慧閃卡"
+                    )
+                )
+            ]
+        )
+
+        with patch.object(cards, "_call_openai", return_value=response):
+            title = cards._generate_yt_title("結束話題")
+
+        self.assertEqual(title, "結束話題自然收尾")
+
+    def test_generated_youtube_title_uses_clean_fallback_when_only_rayo_remains(self):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="用 Rayo 智慧閃卡")
+                )
+            ]
+        )
+
+        with patch.object(cards, "_call_openai", return_value=response):
+            title = cards._generate_yt_title("結束話題")
+
+        self.assertEqual(title, "【日常英文】結束話題 英文懶人包｜14 天上手")
 
     def test_long_plan_task_requires_two_fallback_keywords_not_verbatim_copy(self):
         item = _item(
@@ -248,6 +329,33 @@ class ContentGateTests(unittest.TestCase):
             self.assertEqual(rejected, {})
             ai_review.assert_not_called()
 
+    def test_planned_deck_ignores_ai_duplicate_rejection(self):
+        points = [
+            _pain_point("用工作理由離開", "離開理由", 1),
+            _pain_point("去拿飲料並離開", "離開理由", 2),
+        ]
+        items = [
+            dict(_item("I need to get back.", "I need to get back to work."), _purpose_id=1),
+            dict(_item("I'll grab a drink.", "I'm going to go grab a drink."), _purpose_id=2),
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps({
+                            "reject": [{"id": "02", "reason": "與 01 溝通目的重複"}],
+                        })
+                    )
+                )
+            ]
+        )
+
+        with patch.object(cards, "_call_openai", return_value=response) as call:
+            rejected = cards._ai_review_deck("結束話題", items, points)
+
+        self.assertEqual(rejected, {})
+        self.assertEqual(call.call_count, 1)
+
 
 def _pain_point(
     task: str,
@@ -299,6 +407,85 @@ def _pain_point_plan(points: list[dict]) -> cards.PainPointPlan:
 
 
 class PainPointPlanningTests(unittest.TestCase):
+    def test_explicit_learner_only_focus_disables_counterpart_quota(self):
+        topic = cards._generation_topic(
+            "結束話題",
+            "50 張全部是學習者自己開口的句子，不要收錄對方延伸話題的原話。",
+        )
+        points = [
+            dict(
+                _pain_point(f"離場任務{index}", f"分類{index}", index),
+                role_type="learner_line",
+                speaker="學習者",
+            )
+            for index in range(1, 6)
+        ]
+        contract = _topic_contract()
+        contract["pain_categories"] = [point["category"] for point in points]
+        contract["learner_only"] = True
+        plan = cards.PainPointPlan(points, contract=contract)
+
+        issues = cards._plan_quality_issues(plan, 5)
+        question_item = _item(
+            "What do you think?",
+            "I need to get back to work now.",
+        )
+        question_item["_purpose_id"] = 1
+        rejected = cards._local_review_deck("結束話題", [question_item], plan)
+
+        self.assertTrue(cards._topic_requests_learner_only(topic))
+        self.assertFalse(any("對方原話僅" in issue for issue in issues))
+        self.assertIn(0, rejected)
+        self.assertIn("learner_only", rejected[0])
+
+    def test_focus_must_teach_phrases_become_partial_plan_locks(self):
+        phrases = [
+            "It was great talking to you, but I should get going.",
+            "I'm going to go grab a drink.",
+            "I'll let you get back to your day.",
+        ]
+        topic = cards._generation_topic(
+            "結束話題",
+            "必教金句：" + "；".join(phrases) + "。內容邊界：只教社交脫身。",
+        )
+        points = [
+            dict(
+                _pain_point(f"離場任務{index}", f"分類{index}", index),
+                role_type="learner_line",
+                speaker="學習者",
+            )
+            for index in range(1, 4)
+        ]
+
+        locked = cards._apply_focus_phrase_locks(topic, points)
+
+        self.assertEqual(locked, 3)
+        self.assertEqual(points[0]["target_phrase"], "I should get going.")
+        self.assertEqual(
+            [point["target_sentence"] for point in points],
+            phrases,
+        )
+        self.assertNotIn(
+            "鎖定牌組的每個痛點都必須提供 target_phrase 與 target_sentence",
+            cards._plan_quality_issues(points, 3),
+        )
+
+    def test_focus_must_teach_phrases_support_translations_and_list_commas(self):
+        topic = cards._generation_topic(
+            "高情商的明確拒絕",
+            "必教金句：我目前不需要，謝謝 (I'm good for now, thanks.)、"
+            "我很想去，但我已經有安排了 (I'd love to, but I have plans.)。"
+            "內容須自然、口語，不要把 Maybe 當成推薦答案。",
+        )
+
+        self.assertEqual(
+            cards._required_focus_phrases(topic),
+            [
+                "I'm good for now, thanks.",
+                "I'd love to, but I have plans.",
+            ],
+        )
+
     def test_curated_topics_have_fifty_unique_jobs_and_locked_lines(self):
         for topic in ("Phone Call Phobia", "Polite Complaints"):
             with self.subTest(topic=topic):
@@ -428,6 +615,42 @@ class PainPointPlanningTests(unittest.TestCase):
             [item["_pain_point"]["task"] for item in result],
             [point["task"] for point in points],
         )
+
+    def test_generic_generation_prompt_locks_counterpart_quote_and_role(self):
+        point = _pain_point(
+            '聽懂對方原話：“What do you do for fun?”',
+            "對方延伸話題",
+            1,
+        )
+        point["role_type"] = "counterpart_line"
+        generated = dict(
+            _item(
+                "What do you do for fun?",
+                "What do you do for fun?",
+            ),
+            purpose_id=1,
+        )
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps({"items": [generated]}, ensure_ascii=False)
+                    )
+                )
+            ]
+        )
+
+        with (
+            patch.object(cards, "_call_openai", return_value=response) as call,
+            patch.object(cards, "_review_deck", return_value={}),
+            patch.object(cards, "_load_used_words", return_value=set()),
+            patch.object(cards, "_save_used_words"),
+        ):
+            cards.generate("結束話題", 1, pain_points=[point])
+
+        prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("copy the complete English quote", prompt)
+        self.assertIn("Never write the learner's answer or reaction", prompt)
 
     def test_planner_overproduces_candidates_then_selects_requested_count(self):
         candidates = [
@@ -616,7 +839,7 @@ class PainPointPlanningTests(unittest.TestCase):
 
         self.assertTrue(any("對方原話" in issue for issue in issues))
 
-    def test_plan_reviewer_calls_out_phone_and_complaint_false_positives(self):
+    def test_plan_reviewer_includes_only_matching_topic_rules(self):
         response = SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -638,8 +861,36 @@ class PainPointPlanningTests(unittest.TestCase):
         prompt = call.call_args.kwargs["messages"][0]["content"]
         self.assertEqual(issues, [])
         self.assertIn("只因為可以透過電話完成", prompt)
-        self.assertIn("不代表符合 Polite Complaints", prompt)
-        self.assertIn("問 Wi-Fi", prompt)
+        self.assertNotIn("不代表符合 Polite Complaints", prompt)
+        self.assertNotIn("問 Wi-Fi、問折扣等若沒有已發生的問題", prompt)
+
+    def test_generic_topic_contract_prompt_omits_other_topic_rules(self):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {"topic_contract": _topic_contract()},
+                            ensure_ascii=False,
+                        )
+                    )
+                )
+            ]
+        )
+
+        with patch.object(cards, "_call_openai", return_value=response) as call:
+            cards._request_topic_contract(
+                cards._generation_topic(
+                    "結束話題",
+                    "只教社交脫身，不含客訴或電話恐懼",
+                ),
+                "",
+            )
+
+        prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertNotIn("題名含 phobia", prompt)
+        self.assertNotIn("Polite Complaints 的 pain_categories", prompt)
+        self.assertNotIn("拒絕不合理補救方案", prompt)
 
     def test_non_actionable_plan_review_rejection_is_ignored(self):
         response = SimpleNamespace(
@@ -866,6 +1117,24 @@ class PainPointPlanningTests(unittest.TestCase):
         self.assertTrue(all("score" in point for point in loaded))
         self.assertTrue(all("category" in point for point in loaded))
         self.assertEqual(loaded.contract["core_pain"], _topic_contract()["core_pain"])
+
+    def test_saved_plan_is_rejected_when_topic_description_changes(self):
+        points = _pain_point_plan([
+            _pain_point(f"任務{index}", f"分類{index}", index)
+            for index in range(1, 5)
+        ])
+        original_topic = cards._generation_topic("結束話題", "只教商務會議收尾")
+        requested_topic = cards._generation_topic("結束話題", "只教派對社交脫身")
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "結束話題.plan.json")
+            cards._save_pain_point_plan(original_topic, points, path)
+
+            with self.assertRaisesRegex(ValueError, "主題描述與本次輸入不一致"):
+                cards._load_pain_point_plan(
+                    path,
+                    expected_count=4,
+                    expected_topic=requested_topic,
+                )
 
     def test_reference_deck_loads_matching_plan_sidecar(self):
         card = _item("Could you retake it?", "Could we try that one more time?")
