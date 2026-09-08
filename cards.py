@@ -256,7 +256,30 @@ def _short_locked_phrase(sentence: str) -> str:
         candidate = clause.strip(" ,;:-")
         if candidate and _english_word_count(candidate) <= MAX_WORD_EN_WORDS:
             return candidate
+    words = list(
+        re.finditer(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", sentence or "")
+    )
+    if len(words) > MAX_WORD_EN_WORDS:
+        candidate = sentence[words[-MAX_WORD_EN_WORDS].start():].strip(" ,;:-")
+        return candidate[0].upper() + candidate[1:] if candidate else candidate
     return sentence
+
+
+def _exact_generation_point(point) -> dict | None:
+    """Return a point with code-owned English when its wording is explicit."""
+    normalized = _normalize_pain_point(point)
+    if not normalized:
+        return None
+    if normalized.get("target_phrase") and normalized.get("target_sentence"):
+        return normalized
+    if normalized.get("role_type") != "counterpart_line":
+        return None
+    quote = _quoted_english_line(normalized.get("task", ""))
+    if not quote:
+        return None
+    normalized["target_phrase"] = _short_locked_phrase(quote)
+    normalized["target_sentence"] = quote
+    return normalized
 
 
 def _apply_focus_phrase_locks(topic: str, pain_points: list[dict]) -> int:
@@ -2478,36 +2501,40 @@ def generate(
     review_passed = False
     overgenerate_next_round = False
 
-    locked_targets = [
-        (idx + 1, point)
-        for idx, point in enumerate(pain_points or [])
-        if _normalize_pain_point(point).get("target_phrase")
-        and idx + 1 not in {
-            item.get("_purpose_id") for item in all_items
-        }
-    ]
+    completed_ids = {item.get("_purpose_id") for item in all_items}
+    locked_targets = []
+    for idx, point in enumerate(pain_points or []):
+        purpose_id = idx + 1
+        exact_point = _exact_generation_point(point)
+        if exact_point and purpose_id not in completed_ids:
+            locked_targets.append((purpose_id, exact_point))
     if locked_targets:
-        print(f"   🔒 先生成 {len(locked_targets)} 張鎖定金句卡...")
-        for item in _generate_locked_blueprint_items(topic, locked_targets):
-            purpose_id = int(item["purpose_id"])
-            item["_purpose_id"] = purpose_id
-            item["_pain_point"] = pain_points[purpose_id - 1]
-            key = _normalize_key(item.get("word_en", ""))
-            if not key or key in seen_normalized or _is_near_duplicate(item, all_items):
-                raise RuntimeError(
-                    f"鎖定金句與牌組內既有內容重複: {item.get('word_en', '')}"
+        print(f"   🔒 先生成 {len(locked_targets)} 張固定英文卡...")
+        for start in range(0, len(locked_targets), 5):
+            batch = locked_targets[start:start + 5]
+            for item in _generate_locked_blueprint_items(topic, batch):
+                purpose_id = int(item["purpose_id"])
+                item["_purpose_id"] = purpose_id
+                item["_pain_point"] = pain_points[purpose_id - 1]
+                key = _normalize_key(item.get("word_en", ""))
+                if not key or key in seen_normalized or _is_near_duplicate(item, all_items):
+                    raise RuntimeError(
+                        f"固定英文與牌組內既有內容重複: {item.get('word_en', '')}"
+                    )
+                reference_reason = _reference_duplicate_reason(
+                    item, reference_items, item["_pain_point"]
                 )
-            reference_reason = _reference_duplicate_reason(
-                item, reference_items, item["_pain_point"]
+                if reference_reason:
+                    raise RuntimeError(
+                        f"固定英文與參考牌組重複: {item.get('word_en', '')}: "
+                        + reference_reason
+                    )
+                all_items.append(item)
+                seen_normalized.add(key)
+            print(
+                f"      ✅ 固定英文批次 {start // 5 + 1} 完成"
+                f"（累計 {len(all_items)}/{count}）"
             )
-            if reference_reason:
-                raise RuntimeError(
-                    f"鎖定金句與參考牌組重複: {item.get('word_en', '')}: "
-                    + reference_reason
-                )
-            all_items.append(item)
-            seen_normalized.add(key)
-        print(f"      ✅ 鎖定金句卡完成（累計 {len(all_items)}/{count}）")
 
     while rounds < max_rounds:
         if len(all_items) >= count:

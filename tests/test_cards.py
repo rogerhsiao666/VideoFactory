@@ -636,6 +636,35 @@ class PainPointPlanningTests(unittest.TestCase):
             ],
         )
 
+    def test_counterpart_quote_becomes_code_owned_english(self):
+        point = _pain_point(
+            '聽懂對方原話：“I think we should focus on the budget first.”',
+            "會議參與感低",
+            1,
+        )
+        point["role_type"] = "counterpart_line"
+
+        exact = cards._exact_generation_point(point)
+
+        self.assertEqual(
+            exact["target_sentence"],
+            "I think we should focus on the budget first.",
+        )
+        self.assertEqual(
+            exact["target_phrase"],
+            "Think we should focus on the budget first.",
+        )
+        self.assertLessEqual(
+            cards._english_word_count(exact["target_phrase"]),
+            cards.MAX_WORD_EN_WORDS,
+        )
+
+    def test_learner_point_without_lock_stays_in_general_generation(self):
+        point = _pain_point("我想補充自己的觀點", "插話困難", 1)
+        point["role_type"] = "learner_line"
+
+        self.assertIsNone(cards._exact_generation_point(point))
+
     def test_curated_topics_have_fifty_unique_jobs_and_locked_lines(self):
         for topic in ("Phone Call Phobia", "Polite Complaints"):
             with self.subTest(topic=topic):
@@ -780,6 +809,8 @@ class PainPointPlanningTests(unittest.TestCase):
             ),
             purpose_id=1,
         )
+        generated["word_ipa"] = "/wʌt du ju du fɔr fʌn/"
+        generated["sentence_ipa"] = "/wʌt du ju du fɔr fʌn/"
         response = SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -799,8 +830,8 @@ class PainPointPlanningTests(unittest.TestCase):
             cards.generate("結束話題", 1, pain_points=[point])
 
         prompt = call.call_args.kwargs["messages"][0]["content"]
-        self.assertIn("copy the complete English quote", prompt)
-        self.assertIn("Never write the learner's answer or reaction", prompt)
+        self.assertIn("word_en 必須逐字等於 target_phrase", prompt)
+        self.assertIn("sentence_en 必須逐字等於 target_sentence", prompt)
 
     def test_generation_skips_misaligned_counterpart_candidate(self):
         point = _pain_point(
@@ -818,11 +849,13 @@ class PainPointPlanningTests(unittest.TestCase):
         )
         valid = dict(
             _item(
-                "Let’s move on",
+                "Let’s move on to the next point.",
                 "Let’s move on to the next point.",
             ),
             purpose_id=1,
         )
+        valid["word_ipa"] = "/lɛts muv ɑn tə ðə nɛkst pɔɪnt/"
+        valid["sentence_ipa"] = "/lɛts muv ɑn tə ðə nɛkst pɔɪnt/"
         response = SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -843,7 +876,10 @@ class PainPointPlanningTests(unittest.TestCase):
         ):
             result = cards.generate("插話藝術", 1, pain_points=[point])
 
-        self.assertEqual(result[0]["word_en"], "Let’s move on")
+        self.assertEqual(
+            result[0]["word_en"],
+            "Let’s move on to the next point.",
+        )
         self.assertEqual(
             result[0]["sentence_en"],
             "Let’s move on to the next point.",
