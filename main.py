@@ -1665,31 +1665,6 @@ def write_srt(srt_entries: list, output_path: str):
     print(f"✅ 字幕檔: {output_path}")
 
 
-def write_description(topic: str, chapter_entries: list, output_path: str):
-    """寫出含 YouTube 章節時間戳的影片描述"""
-    lines = [
-        f"🎓 {topic} - English Vocabulary Practice",
-        f"Powered by {BRAND_NAME}",
-        "",
-        f"📚 Master essential {topic} vocabulary with IPA pronunciation,",
-        "Chinese translation, and real-world example sentences.",
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "📑 CHAPTERS",
-    ]
-    for time_s, label in chapter_entries:
-        lines.append(f"{_chapter_time(time_s)} {label}")
-    lines += [
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "#EnglishLearning #Vocabulary #ESL #English #LearnEnglish",
-        f"#{topic.replace(' ', '')}English",
-    ]
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    print(f"✅ 影片描述: {output_path}")
-
-
 def _generate_yt_topic_paragraph(topic: str) -> str:
     """用 OpenAI 根據主題生成一段 YouTube 影片描述文案（繁體中文、台灣口吻）。
 
@@ -2308,7 +2283,6 @@ async def main():
     merged_path  = os.path.join(TEMP_DIR, "merged_no_bgm.mp4")
     output_file  = os.path.join(OUTPUT_DIR, f"final_{safe_topic}.mp4")
     srt_path     = os.path.join(OUTPUT_DIR, f"final_{safe_topic}.srt")
-    desc_path    = os.path.join(OUTPUT_DIR, f"description_{safe_topic}.txt")
     topic_slug   = topic.strip().replace(" ", "_").replace("-", "_")
     yt_desc_path = os.path.join(OUTPUT_DIR, f"youtube_{topic_slug}.txt")
 
@@ -2339,9 +2313,8 @@ async def main():
     # ── 9. 輸出（無背景音樂）─────────────────────────────
     shutil.copy(merged_path, output_file)
 
-    # ── 10. 輸出 SRT + 影片描述 ────────────────────────
+    # ── 10. 輸出 SRT + YouTube 發布內容 ────────────────
     write_srt(srt_entries, srt_path)
-    write_description(topic, chapter_entries, desc_path)
     write_youtube_description(topic, chapter_entries, srt_entries, yt_desc_path)
 
     # ── 11. 格式 3：發布至 Firestore（分類由來源決定）──
@@ -2354,7 +2327,7 @@ async def main():
 {'=' * 55}
   🎬 影片  : {output_file}
   📝 字幕  : {srt_path}
-  📄 描述  : {desc_path}
+  📄 YouTube: {yt_desc_path}
 {'=' * 55}
 """)
 
