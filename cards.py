@@ -3098,11 +3098,31 @@ def _parse_srt_starts(srt_path: str) -> list[float]:
     return starts
 
 
-def _generate_yt_title(topic: str) -> str:
+def _youtube_scope_note(content_context: str) -> str:
+    context = content_context.strip()
+    if not context:
+        return ""
+    return (
+        f"\n本集實際內容焦點如下：\n{context}\n"
+        "標題、描述與 SEO 必須精確反映這個焦點，不得擴寫成泛用或相鄰主題。\n"
+    )
+
+
+def _youtube_content_context(
+    topic_description: str,
+    pain_points: list[dict] | None,
+) -> str:
+    if topic_description.strip():
+        return topic_description.strip()
+    return _topic_contract_text(pain_points)
+
+
+def _generate_yt_title(topic: str, content_context: str = "") -> str:
     fallback_title = f"【日常英文】{topic} 英文懶人包｜14 天上手"
     prompt = (
         f"你是台灣 YouTube 英語教學頻道的標題撰稿人。"
         f"請為主題「{topic}」寫一句 YouTube 影片標題（繁體中文，25-40 字）。"
+        f"{_youtube_scope_note(content_context)}"
         f"風格：吸睛、有痛點、含具體場景。"
         f"標題禁止出現 Rayo、智慧閃卡、Rayo 智慧閃卡、用 Rayo 智慧閃卡。"
         f"只輸出標題本身，不要引號、不要 hashtag、不要多行。"
@@ -3124,10 +3144,11 @@ def _generate_yt_title(topic: str) -> str:
         return fallback_title
 
 
-def _generate_yt_topic_paragraph(topic: str) -> str:
+def _generate_yt_topic_paragraph(topic: str, content_context: str = "") -> str:
     prompt = (
         f"你是一位台灣 YouTube 英語教學頻道的文案寫手。"
         f"請為主題「{topic}」寫一段 YouTube 影片描述（約 100-150 字繁體中文）。"
+        f"{_youtube_scope_note(content_context)}"
         f"格式要求：**第一句必須是一個以問號結尾的痛點/情境 hook**，"
         f"例如「暑假馬上就要飛了，卻發現英文還沒準備好？」的風格，"
         f"貼合「{topic}」情境。"
@@ -3155,9 +3176,10 @@ def _generate_yt_topic_paragraph(topic: str) -> str:
         )
 
 
-def _generate_yt_hashtags(topic: str) -> list[str]:
+def _generate_yt_hashtags(topic: str, content_context: str = "") -> list[str]:
     prompt = (
         f"為 YouTube 英語教學影片主題「{topic}」生成 8-12 個 SEO 標籤，"
+        f"{_youtube_scope_note(content_context)}"
         f"涵蓋：繁體中文（如「{topic}英文、{topic}單字」等 2-4 個同義詞）、"
         f"簡體中文（2-3 個）、英文小寫（3-5 個，如「kitchen english、cooking vocabulary」風格）。"
         f'只輸出 JSON：{{"tags": ["tag1", "tag2", ...]}}，不要多餘文字。'
@@ -3190,7 +3212,12 @@ def _count_xlsx_rows(xlsx_path: str) -> int:
         return 0
 
 
-def write_youtube_description(topic: str, card_count: int, output_path: str):
+def write_youtube_description(
+    topic: str,
+    card_count: int,
+    output_path: str,
+    content_context: str = "",
+):
     """產出 youtube_{topic}.txt。若對應的 SRT 已存在，四個進度時間戳從中讀取；否則用 00:00。"""
     slug = _topic_to_slug(topic)
     srt_path = os.path.join(OUTPUT_DIR, f"final_{slug.lower()}.srt")
@@ -3211,9 +3238,9 @@ def write_youtube_description(topic: str, card_count: int, output_path: str):
         ts_25 = ts_50 = ts_75 = "00:00"
         print(f"ℹ️  未找到 {srt_path}，時間戳先用 00:00 佔位（跑完影片後可重新產生）")
 
-    title = _generate_yt_title(topic)
-    paragraph = _generate_yt_topic_paragraph(topic)
-    topic_tags = _generate_yt_hashtags(topic)
+    title = _generate_yt_title(topic, content_context)
+    paragraph = _generate_yt_topic_paragraph(topic, content_context)
+    topic_tags = _generate_yt_hashtags(topic, content_context)
 
     fixed_hashtags = ["英文學習", "日常對話", "14天挑戰", "英文口說", "影子跟讀", "英語教學"]
     hashtag_line = " ".join(f"#{t}" for t in fixed_hashtags)
@@ -3446,6 +3473,8 @@ def main(argv: list[str] | None = None):
         plan_was_created = True
         print(f"🗺️  已保存痛點策劃：{plan_path}")
 
+    youtube_context = _youtube_content_context(topic_description, pain_points)
+
     if args.plan_only:
         if pain_points is None:
             pain_points = _plan_pain_points(generation_topic, count, reference_items)
@@ -3502,7 +3531,12 @@ def main(argv: list[str] | None = None):
         if args.no_youtube:
             print("ℹ️  已依 --no-youtube 跳過 YouTube 描述")
         elif not yt_desc_exists:
-            write_youtube_description(topic, len(items), yt_desc_path)
+            write_youtube_description(
+                topic,
+                len(items),
+                yt_desc_path,
+                content_context=youtube_context,
+            )
         else:
             print(f"⚠️  YouTube 描述已存在，跳過：{yt_desc_path}")
         return
@@ -3528,7 +3562,12 @@ def main(argv: list[str] | None = None):
     if args.no_youtube:
         print("ℹ️  已依 --no-youtube 跳過 YouTube 描述")
     else:
-        write_youtube_description(topic, len(items), yt_desc_path)
+        write_youtube_description(
+            topic,
+            len(items),
+            yt_desc_path,
+            content_context=youtube_context,
+        )
 
 
 if __name__ == "__main__":

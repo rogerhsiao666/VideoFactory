@@ -243,6 +243,39 @@ class ContentGateTests(unittest.TestCase):
 
         self.assertEqual(title, "【日常英文】結束話題 英文懶人包｜14 天上手")
 
+    def test_youtube_generators_receive_the_specific_content_context(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="測試輸出"))]
+        )
+        context = "海外租屋時向房東報修，並交涉不合理的押金扣款"
+
+        with patch.object(cards, "_call_openai", return_value=response) as call:
+            cards._generate_yt_title("捍衛權益", context)
+
+        prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertIn(context, prompt)
+        self.assertIn("不得擴寫成泛用或相鄰主題", prompt)
+
+    def test_youtube_context_falls_back_to_the_saved_plan_contract(self):
+        points = cards.PainPointPlan(
+            [],
+            contract={
+                "audience": "在海外租屋的亞洲租客",
+                "core_pain": "房東不修繕或不合理扣押金",
+                "promised_transformation": "能用英文報修與交涉",
+                "in_scope": ["向房東報修", "押金爭議"],
+                "out_of_scope": ["泛用人權議題"],
+                "required_moments": ["暖氣故障", "退租扣押金"],
+                "pain_categories": ["報修", "押金"],
+                "learner_only": False,
+            },
+        )
+
+        context = cards._youtube_content_context("", points)
+
+        self.assertIn("在海外租屋的亞洲租客", context)
+        self.assertIn("房東不修繕或不合理扣押金", context)
+
     def test_long_plan_task_requires_two_fallback_keywords_not_verbatim_copy(self):
         item = _item(
             "I need a clear answer.",
