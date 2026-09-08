@@ -473,6 +473,43 @@ def _pain_point_text(point) -> str:
     return "；".join(part for part in parts if part)
 
 
+def _quoted_english_line(text: str) -> str:
+    """Extract the authoritative counterpart quote from a planned task."""
+    matches = re.findall(r'[“"]([^”"]*[A-Za-z][^”"]*)[”"]', text or "")
+    return matches[-1].strip() if matches else ""
+
+
+def _spoken_line_key(text: str) -> str:
+    """Normalize a spoken English line while keeping token boundaries."""
+    return " ".join(
+        re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", text or "")
+    ).casefold().replace("’", "'")
+
+
+def _pain_point_alignment_issue(item: dict, point) -> str | None:
+    """Return a deterministic role-alignment issue when one is provable."""
+    normalized = _normalize_pain_point(point)
+    if not normalized or normalized.get("role_type") != "counterpart_line":
+        return None
+
+    target_sentence = (
+        normalized.get("target_sentence")
+        or _quoted_english_line(normalized.get("task", ""))
+    )
+    if not target_sentence:
+        return None
+
+    sentence_key = _spoken_line_key(item.get("sentence_en", ""))
+    target_key = _spoken_line_key(target_sentence)
+    if sentence_key != target_key:
+        return "counterpart_line 的 sentence_en 必須逐字使用對方原話"
+
+    word_key = _spoken_line_key(item.get("word_en", ""))
+    if not word_key or f" {word_key} " not in f" {sentence_key} ":
+        return "counterpart_line 的 word_en 必須取自同一段對方原話"
+    return None
+
+
 def _apply_locked_blueprint_lines(item: dict, pain_points: list | None) -> dict:
     """Make editorially approved English authoritative over model wording."""
     if not pain_points:
@@ -487,9 +524,118 @@ def _apply_locked_blueprint_lines(item: dict, pain_points: list | None) -> dict:
     if not point or not point.get("target_phrase"):
         return item
     locked = dict(item)
+    mismatched_fields = [
+        field
+        for field, target in (
+            ("word_en", point["target_phrase"]),
+            ("sentence_en", point["target_sentence"]),
+        )
+        if _spoken_line_key(item.get(field, "")) != _spoken_line_key(target)
+    ]
+    if mismatched_fields:
+        locked["_locked_source_mismatch"] = ", ".join(mismatched_fields)
     locked["word_en"] = point["target_phrase"]
     locked["sentence_en"] = point["target_sentence"]
     return locked
+
+
+def _locked_item_issue(item: dict, point) -> str | None:
+    """Validate exact locked English before trusting dependent IPA fields."""
+    normalized = _normalize_pain_point(point)
+    if not normalized or not normalized.get("target_phrase"):
+        return "痛點缺少鎖定英文"
+    for field, target in (
+        ("word_en", normalized["target_phrase"]),
+        ("sentence_en", normalized["target_sentence"]),
+    ):
+        if _spoken_line_key(item.get(field, "")) != _spoken_line_key(target):
+            return f"{field} 未逐字使用鎖定英文"
+    issues = _validation_issues(item)
+    if issues:
+        return ", ".join(issues)
+    for english_field, ipa_field in (
+        ("word_en", "word_ipa"),
+        ("sentence_en", "sentence_ipa"),
+    ):
+        english_count = _english_word_count(item.get(english_field, ""))
+        component_count = len(
+            re.findall(r"[A-Za-z0-9]+", item.get(english_field, ""))
+        )
+        ipa_count = len(item.get(ipa_field, "").strip().strip("/").split())
+        if not english_count <= ipa_count <= component_count:
+            return (
+                f"{ipa_field} 詞數 {ipa_count} 與 {english_field} "
+                f"詞數範圍 {english_count}-{component_count} 不一致"
+            )
+    return None
+
+
+def _generate_locked_blueprint_items(
+    topic: str,
+    targets: list[tuple[int, dict]],
+) -> list[dict]:
+    """Generate pronunciation and translations around code-owned English."""
+    completed: dict[int, dict] = {}
+    for attempt in range(1, 4):
+        missing = [entry for entry in targets if entry[0] not in completed]
+        if not missing:
+            break
+        assignments = [
+            {
+                "purpose_id": purpose_id,
+                "target_phrase": _normalize_pain_point(point)["target_phrase"],
+                "target_sentence": _normalize_pain_point(point)["target_sentence"],
+                "task": _pain_point_task(point),
+            }
+            for purpose_id, point in missing
+        ]
+        prompt = f"""你是情境英語卡片編輯。主題是「{topic}」。
+以下英文已由總編鎖定，不可改寫、增減或補完。只為它們產生準確 IPA、繁體中文口語翻譯與極短實戰提示。
+word_en 必須逐字等於 target_phrase；sentence_en 必須逐字等於 target_sentence。
+word_ipa 只能對應 word_en，sentence_ipa 只能對應 sentence_en，不可加入英文中沒有的字。
+輸出每個 purpose_id 各一張，並遵守以下欄位規格：
+{FIELD_SPEC}
+
+鎖定內容：
+{json.dumps(assignments, ensure_ascii=False)}
+只輸出 JSON，不要解釋。
+"""
+        kwargs = {
+            "messages": [{"role": "user", "content": prompt}],
+            "model": CARD_MODEL,
+            "response_format": {"type": "json_object"},
+        }
+        if CARD_MODEL.startswith("gpt-5"):
+            kwargs["max_completion_tokens"] = 2500
+        else:
+            kwargs["max_tokens"] = 2500
+            kwargs["temperature"] = 0.1
+        response = _call_openai(**kwargs)
+        raw_items = _extract_generated_items(response.choices[0].message.content)
+        missing_by_id = {purpose_id: point for purpose_id, point in missing}
+        for item in raw_items:
+            try:
+                purpose_id = int(item.get("purpose_id"))
+            except (TypeError, ValueError):
+                continue
+            point = missing_by_id.get(purpose_id)
+            if point is None or purpose_id in completed:
+                continue
+            issue = _locked_item_issue(item, point)
+            if issue:
+                print(
+                    f"      ⚠️ 鎖定卡 purpose_id={purpose_id} 第 {attempt} 次未通過: {issue}"
+                )
+                continue
+            completed[purpose_id] = dict(item)
+            completed[purpose_id]["purpose_id"] = purpose_id
+    missing_ids = [purpose_id for purpose_id, _ in targets if purpose_id not in completed]
+    if missing_ids:
+        raise RuntimeError(
+            "鎖定金句連續 3 次未能產生一致的 IPA 與翻譯，purpose_id="
+            + ",".join(map(str, missing_ids))
+        )
+    return [completed[purpose_id] for purpose_id, _ in targets]
 
 
 def _has_complete_locked_blueprint(pain_points: list | None) -> bool:
@@ -938,10 +1084,59 @@ def _topic_specific_plan_coverage_issues(
         ):
             issues.append("缺少使用者直接拒絕不合理補救方案的原話")
     for index, point in enumerate(pain_points, start=1):
+        explicit_violation = _explicit_focus_exclusion_violation(topic, point)
+        if explicit_violation:
+            issues.append(f"#{index} {explicit_violation}")
         violation = _topic_specific_plan_violation(topic, point)
         if violation:
             issues.append(f"#{index} {violation}")
     return issues
+
+
+def _explicit_focus_exclusion_violation(topic: str, point: dict) -> str | None:
+    """Enforce concrete exclusions from the original user-authored focus."""
+    if "本集內容焦點與邊界：" not in topic:
+        return None
+    focus = topic.split("本集內容焦點與邊界：", 1)[-1].casefold()
+    exclusion_sections = re.findall(
+        r"(?:不要收錄|不要包含|禁止包含|禁止收錄)[：:]?([^。\n]+)",
+        focus,
+    )
+    if not exclusion_sections:
+        return None
+    exclusions = " ".join(exclusion_sections)
+    normalized = _normalize_pain_point(point)
+    if not normalized:
+        return None
+    action_text = " ".join(
+        normalized[key]
+        for key in ("intent", "task", "desired_outcome")
+    ).casefold()
+
+    if "放慢" in exclusions and any(
+        marker in action_text
+        for marker in ("放慢", "說慢", "slow down", "slower", "speak slowly")
+    ):
+        return "違反 focus 明確排除：不要請別人放慢速度"
+    if "重複" in exclusions and any(
+        marker in action_text
+        for marker in ("請再說", "再說一次", "請重複", "repeat", "say that again")
+    ):
+        return "違反 focus 明確排除：不要請別人重複"
+    if "請別人發言" in exclusions and any(
+        marker in action_text
+        for marker in (
+            "請別人發言", "請對方發言", "請對方分享", "邀請對方",
+            "share your thoughts", "what do you think", "anything to add",
+        )
+    ):
+        return "違反 focus 明確排除：不要請別人發言"
+    if "一般會議流程" in exclusions and any(
+        marker in action_text
+        for marker in ("會議流程", "議程安排", "會議紀錄", "主持會議", "meeting agenda", "minutes")
+    ):
+        return "違反 focus 明確排除：不要一般會議流程"
+    return None
 
 
 def _review_rejection_conflicts_with_contract(
@@ -1337,9 +1532,6 @@ def _local_review_deck(
     seen_items: list[dict] = []
     seen_purpose_ids: set[int] = set()
     topic_text = _similarity_text(topic)
-    learner_only = _normalize_topic_contract(
-        getattr(pain_points, "contract", {})
-    ).get("learner_only", False)
     english_stopwords = {
         "a", "an", "and", "are", "be", "can", "could", "do", "does",
         "for", "get", "have", "how", "i", "if", "in", "is", "it",
@@ -1391,12 +1583,6 @@ def _local_review_deck(
         seen_items.append(item)
 
         combined = f'{item.get("word_en", "")} {item.get("sentence_en", "")}'.lower()
-        if learner_only and (
-            "?" in item.get("word_en", "")
-            or "?" in item.get("sentence_en", "")
-        ):
-            rejected[idx] = "learner_only 牌組只能收錄學習者的離場原話，不可使用問句或對方開場句"
-            continue
         assigned_point = ""
         if pain_points:
             try:
@@ -1478,6 +1664,10 @@ def _local_review_deck(
                         "不可寫成顧客再次抱怨"
                     )
                     continue
+            alignment_issue = _pain_point_alignment_issue(item, assigned_point)
+            if alignment_issue:
+                rejected[idx] = alignment_issue
+                continue
             explicit_terms = normalized_point.get("required_terms", []) if normalized_point else []
             required_tokens = [term.casefold() for term in explicit_terms]
             required_match_count = math.ceil(len(required_tokens) / 2)
@@ -2018,34 +2208,32 @@ def _ai_review_deck(
     if not items:
         return {}
 
-    compact_items = [
-        {
+    compact_items = []
+    for idx, item in enumerate(items):
+        purpose_id = item.get("_purpose_id", idx + 1)
+        assigned_point = None
+        if (
+            pain_points
+            and isinstance(purpose_id, int)
+            and 1 <= purpose_id <= len(pain_points)
+        ):
+            assigned_point = _normalize_pain_point(pain_points[purpose_id - 1])
+        compact_items.append({
             "id": f"{idx + 1:02d}",
-            "purpose_id": item.get("_purpose_id", idx + 1),
-            "assigned_pain_point": (
-                _pain_point_text(pain_points[item.get("_purpose_id", idx + 1) - 1])
-                if pain_points
-                and isinstance(item.get("_purpose_id", idx + 1), int)
-                and 1 <= item.get("_purpose_id", idx + 1) <= len(pain_points)
-                else ""
-            ),
+            "purpose_id": purpose_id,
+            "expected_role": assigned_point.get("role_type", "") if assigned_point else "",
+            "expected_speaker": assigned_point.get("speaker", "") if assigned_point else "",
+            "assigned_pain_point": _pain_point_text(assigned_point) if assigned_point else "",
             "word_en": item.get("word_en", ""),
             "tips": item.get("tips", ""),
             "sentence_en": item.get("sentence_en", ""),
             "sentence_cn": item.get("sentence_cn", ""),
-        }
-        for idx, item in enumerate(items)
-    ]
-    blueprint = "\n".join(
-        f"{idx + 1}. {_pain_point_text(point)}"
-        for idx, point in enumerate(pain_points or [])
-    )
+        })
     blueprint_rule = ""
-    if blueprint:
-        blueprint_rule = f"""
-這副牌必須逐項覆蓋以下核定痛點，每項剛好一張：
-{blueprint}
-若有卡片偏離藍圖、重複佔用同一痛點，或造成另一痛點缺漏，退回偏離或較低價值的卡片。
+    if pain_points:
+        blueprint_rule = """
+每張卡已附上其唯一的 assigned_pain_point、expected_role 與 expected_speaker。
+只依該卡附帶的指派判斷；若卡片偏離任務或說話角色，退回該卡。
 """
     contract_rule = _topic_contract_text(pain_points)
     if contract_rule:
@@ -2079,6 +2267,9 @@ def _ai_review_deck(
 9. 卡片沒有完成 assigned_pain_point 指定的任務，或用別的痛點內容佔位。
 10. 英文不合文法、不自然、指涉不清，或為了壓短而省略必要動詞，例如 "Is avocado available and extra charge?"。
 11. assigned_pain_point 指定店員問句時，卡片卻改寫成顧客旁白或 "I understand you asked..." 等教學敘述。
+12. expected_role=learner_line 時，word_en 與 sentence_en 必須是學習者說的；
+    expected_role=counterpart_line 時，兩者必須是對方說的。問句本身不代表 counterpart_line，
+    例如學習者為了插話而問 "Can I jump in?" 仍是 learner_line。
 
 不要審查字數、word_en 與 sentence_en 的關係或 IPA；這些由程式規則負責。
 
@@ -2275,6 +2466,37 @@ def generate(
     review_passed = False
     overgenerate_next_round = False
 
+    locked_targets = [
+        (idx + 1, point)
+        for idx, point in enumerate(pain_points or [])
+        if _normalize_pain_point(point).get("target_phrase")
+        and idx + 1 not in {
+            item.get("_purpose_id") for item in all_items
+        }
+    ]
+    if locked_targets:
+        print(f"   🔒 先生成 {len(locked_targets)} 張鎖定金句卡...")
+        for item in _generate_locked_blueprint_items(topic, locked_targets):
+            purpose_id = int(item["purpose_id"])
+            item["_purpose_id"] = purpose_id
+            item["_pain_point"] = pain_points[purpose_id - 1]
+            key = _normalize_key(item.get("word_en", ""))
+            if not key or key in seen_normalized or _is_near_duplicate(item, all_items):
+                raise RuntimeError(
+                    f"鎖定金句與牌組內既有內容重複: {item.get('word_en', '')}"
+                )
+            reference_reason = _reference_duplicate_reason(
+                item, reference_items, item["_pain_point"]
+            )
+            if reference_reason:
+                raise RuntimeError(
+                    f"鎖定金句與參考牌組重複: {item.get('word_en', '')}: "
+                    + reference_reason
+                )
+            all_items.append(item)
+            seen_normalized.add(key)
+        print(f"      ✅ 鎖定金句卡完成（累計 {len(all_items)}/{count}）")
+
     while rounds < max_rounds:
         if len(all_items) >= count:
             all_items = all_items[:count]
@@ -2404,9 +2626,9 @@ def generate(
         if pain_points and learner_only:
             role_note = (
                 "\nLEARNER-ONLY IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en: "
-                "every field must be something the learner directly says to end the conversation "
-                "and leave. Never write a question, conversation opener, or the counterpart's line. "
-                "word_en must be a short reusable part of the same learner exit line.\n"
+                "every field must be something the learner directly says in the assigned situation. "
+                "Never write the counterpart's line. Learner questions are allowed when the assigned "
+                "task asks the learner to request, clarify, interrupt, or respond.\n"
             )
         elif pain_points and "polite complaints" in topic.casefold():
             role_note = (
@@ -2428,8 +2650,9 @@ def generate(
             role_note = (
                 "\nROLE IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en:\n"
                 "- For counterpart_line, copy the complete English quote inside the assigned task "
-                "exactly into sentence_en. word_en must be a useful phrase or question spoken by "
-                "that same counterpart. Never write the learner's answer or reaction.\n"
+                "exactly into sentence_en. word_en MUST be copied as an exact contiguous span of "
+                "that sentence, so both fields have the same speaker. Never write the learner's "
+                "answer or reaction.\n"
                 "- For learner_line, write what the learner says to complete the assigned task.\n"
                 "Never switch speaker perspective between word_en and sentence_en.\n"
             )
@@ -2484,6 +2707,13 @@ def generate(
             if len(all_items) >= count:
                 break
             item = _apply_locked_blueprint_lines(item, pain_points)
+            locked_source_mismatch = item.pop("_locked_source_mismatch", "")
+            if locked_source_mismatch:
+                print(
+                    "      ⚠️ 跳過未逐字遵守鎖定英文的項目 "
+                    f"{item.get('word_en', 'Unknown')}: {locked_source_mismatch}"
+                )
+                continue
             issues = _validation_issues(item)
             if issues:
                 print(
@@ -2511,6 +2741,16 @@ def generate(
                     continue
                 item["_purpose_id"] = purpose_id
                 item["_pain_point"] = pain_points[purpose_id - 1]
+
+                alignment_issue = _pain_point_alignment_issue(
+                    item, pain_points[purpose_id - 1]
+                )
+                if alignment_issue:
+                    print(
+                        f"      ⚠️ 跳過角色不符的 purpose_id={purpose_id} 項目 "
+                        f"{item.get('word_en', 'Unknown')}: {alignment_issue}"
+                    )
+                    continue
 
             raw_word = item.get("word_en", "")
             key = _normalize_key(raw_word)
@@ -2756,14 +2996,19 @@ def _prompt_topic_description() -> str:
         "\n📝 請補充主題描述（建議填寫目標對象、具體情境、核心痛點、"
         "必教內容與不要包含的內容）"
     )
-    print("   可輸入多行，輸入空白行完成；直接 Enter 略過。")
+    print("   可輸入多段；連續輸入兩個空白行完成，第一行直接 Enter 則略過。")
     lines: list[str] = []
     while True:
         line = input("> " if not lines else "| ").strip()
         if not line:
-            break
+            if not lines:
+                break
+            if lines[-1] == "":
+                break
+            lines.append("")
+            continue
         lines.append(line)
-    return "\n".join(lines)
+    return "\n".join(lines).strip()
 
 
 def _chapter_time(seconds: float) -> str:
@@ -2982,9 +3227,46 @@ def write_xlsx(items: list[dict], path: str):
     for item in items:
         ws.append([item.get(h, "") for h in HEADERS])
 
-    for col in ws.columns:
-        max_len = max((len(str(c.value or "")) for c in col), default=0)
-        ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 60)
+    column_widths = {
+        "A": 6,
+        "B": 34,
+        "C": 38,
+        "D": 20,
+        "E": 28,
+        "F": 44,
+        "G": 48,
+        "H": 34,
+    }
+    for column, width in column_widths.items():
+        ws.column_dimensions[column].width = width
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:H{ws.max_row}"
+    ws.row_dimensions[1].height = 24
+    for row_idx in range(2, ws.max_row + 1):
+        max_lines = 1
+        for col_idx, column in enumerate(column_widths, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.alignment = Alignment(
+                horizontal="center" if column == "A" else "left",
+                vertical="top",
+                wrap_text=True,
+            )
+            display_units = sum(
+                2 if ord(char) > 127 else 1 for char in str(cell.value or "")
+            )
+            max_lines = max(
+                max_lines,
+                math.ceil(display_units / max(column_widths[column] - 2, 1)),
+            )
+        ws.row_dimensions[row_idx].height = min(max(30, max_lines * 15), 75)
+
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = "1:1"
+    ws.print_area = f"A1:H{ws.max_row}"
 
     wb.save(path)
 

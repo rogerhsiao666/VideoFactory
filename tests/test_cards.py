@@ -150,18 +150,60 @@ class ContentGateTests(unittest.TestCase):
 
         self.assertTrue(args.force)
 
-    def test_interactive_topic_description_accepts_multiple_trimmed_lines(self):
+    def test_interactive_topic_description_preserves_paragraph_breaks(self):
         with patch(
             "builtins.input",
             side_effect=[
                 "  電梯與派對的社交脫身  ",
+                "",
                 "  排除商務會議  ",
+                "",
                 "",
             ],
         ):
             result = cards._prompt_topic_description()
 
-        self.assertEqual(result, "電梯與派對的社交脫身\n排除商務會議")
+        self.assertEqual(result, "電梯與派對的社交脫身\n\n排除商務會議")
+
+    def test_interactive_topic_description_first_blank_still_skips(self):
+        with patch("builtins.input", side_effect=[""]):
+            result = cards._prompt_topic_description()
+
+        self.assertEqual(result, "")
+
+    def test_generic_counterpart_must_use_the_planned_quote(self):
+        item = _item(
+            "Can I add something?",
+            "Can I add something before we move to the next point?",
+        )
+        point = _pain_point(
+            '聽懂對方原話：“Let’s move on to the next point.”',
+            "對話節奏不熟悉",
+            1,
+        )
+        point["role_type"] = "counterpart_line"
+
+        rejected = cards._local_review_deck("插話藝術", [item], [point])
+
+        self.assertIn(0, rejected)
+        self.assertIn("逐字使用對方原話", rejected[0])
+
+    def test_generic_counterpart_word_must_come_from_the_same_quote(self):
+        item = _item(
+            "Can I add something?",
+            "Let’s move on to the next point.",
+        )
+        point = _pain_point(
+            '聽懂對方原話：“Let’s move on to the next point.”',
+            "對話節奏不熟悉",
+            1,
+        )
+        point["role_type"] = "counterpart_line"
+
+        rejected = cards._local_review_deck("插話藝術", [item], [point])
+
+        self.assertIn(0, rejected)
+        self.assertIn("同一段對方原話", rejected[0])
 
     def test_generated_youtube_title_removes_rayo_flashcard_suffix(self):
         response = SimpleNamespace(
@@ -304,6 +346,65 @@ class ContentGateTests(unittest.TestCase):
             result["sentence_en"],
             "The line cut out. Could you repeat the last part?",
         )
+        self.assertEqual(
+            result["_locked_source_mismatch"],
+            "word_en, sentence_en",
+        )
+
+    def test_locked_blueprint_exact_source_does_not_mark_ipa_as_stale(self):
+        item = _item(
+            "Could you repeat the last part?",
+            "The line cut out. Could you repeat the last part?",
+            purpose_id=1,
+        )
+        point = _pain_point("處理斷線", "通訊失控", 1)
+        point.update({
+            "job_key": "只重聽斷掉的最後一段",
+            "target_phrase": "Could you repeat the last part?",
+            "target_sentence": "The line cut out. Could you repeat the last part?",
+        })
+
+        result = cards._apply_locked_blueprint_lines(item, [point])
+
+        self.assertNotIn("_locked_source_mismatch", result)
+
+    def test_locked_blueprint_batch_retries_stale_ipa(self):
+        point = _pain_point("處理斷線", "通訊失控", 1)
+        point.update({
+            "job_key": "只重聽斷掉的最後一段",
+            "target_phrase": "Could you repeat the last part?",
+            "target_sentence": "The line cut out. Could you repeat the last part?",
+        })
+        stale = dict(
+            _item(
+                point["target_phrase"],
+                point["target_sentence"],
+            ),
+            purpose_id=1,
+        )
+        valid = dict(stale)
+        valid["word_ipa"] = "/kʊd ju rɪˈpit ðə læst pɑrt/"
+        valid["sentence_ipa"] = "/ðə laɪn kʌt aʊt kʊd ju rɪˈpit ðə læst pɑrt/"
+        responses = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content=json.dumps({"items": [stale]}, ensure_ascii=False)
+                ))]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content=json.dumps({"items": [valid]}, ensure_ascii=False)
+                ))]
+            ),
+        ]
+
+        with patch.object(cards, "_call_openai", side_effect=responses) as call:
+            result = cards._generate_locked_blueprint_items(
+                "Phone Call Phobia", [(1, point)]
+            )
+
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(result[0]["word_ipa"], valid["word_ipa"])
 
     def test_locked_blueprint_uses_code_review_without_ai(self):
         item = _item(
@@ -407,7 +508,40 @@ def _pain_point_plan(points: list[dict]) -> cards.PainPointPlan:
 
 
 class PainPointPlanningTests(unittest.TestCase):
-    def test_explicit_learner_only_focus_disables_counterpart_quota(self):
+    def test_explicit_focus_exclusion_rejects_slowdown_plan(self):
+        topic = cards._generation_topic(
+            "插話藝術",
+            "只教主動插話；不要收錄請別人重複或放慢速度。",
+        )
+        point = _pain_point(
+            "Could you please slow down a bit?",
+            "插話困難",
+            1,
+        )
+        point["intent"] = "請發言者放慢速度"
+        point["desired_outcome"] = "對方說慢一點"
+
+        issues = cards._topic_specific_plan_coverage_issues(topic, [point])
+
+        self.assertTrue(any("不要請別人放慢速度" in issue for issue in issues))
+
+    def test_explicit_focus_exclusion_rejects_inviting_others_to_speak(self):
+        topic = cards._generation_topic(
+            "插話藝術",
+            "只教學習者插話；不要收錄請別人發言。",
+        )
+        point = _pain_point(
+            "What do you think about this?",
+            "溝通不暢",
+            1,
+        )
+        point["intent"] = "邀請對方分享看法"
+
+        issues = cards._topic_specific_plan_coverage_issues(topic, [point])
+
+        self.assertTrue(any("不要請別人發言" in issue for issue in issues))
+
+    def test_explicit_learner_only_focus_allows_learner_questions(self):
         topic = cards._generation_topic(
             "結束話題",
             "50 張全部是學習者自己開口的句子，不要收錄對方延伸話題的原話。",
@@ -435,8 +569,7 @@ class PainPointPlanningTests(unittest.TestCase):
 
         self.assertTrue(cards._topic_requests_learner_only(topic))
         self.assertFalse(any("對方原話僅" in issue for issue in issues))
-        self.assertIn(0, rejected)
-        self.assertIn("learner_only", rejected[0])
+        self.assertNotIn(0, rejected)
 
     def test_focus_must_teach_phrases_become_partial_plan_locks(self):
         phrases = [
@@ -651,6 +784,53 @@ class PainPointPlanningTests(unittest.TestCase):
         prompt = call.call_args.kwargs["messages"][0]["content"]
         self.assertIn("copy the complete English quote", prompt)
         self.assertIn("Never write the learner's answer or reaction", prompt)
+
+    def test_generation_skips_misaligned_counterpart_candidate(self):
+        point = _pain_point(
+            '聽懂對方原話：“Let’s move on to the next point.”',
+            "對話節奏不熟悉",
+            1,
+        )
+        point["role_type"] = "counterpart_line"
+        invalid = dict(
+            _item(
+                "Can I add something?",
+                "Can I add something before we move to the next point?",
+            ),
+            purpose_id=1,
+        )
+        valid = dict(
+            _item(
+                "Let’s move on",
+                "Let’s move on to the next point.",
+            ),
+            purpose_id=1,
+        )
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {"items": [invalid, valid]}, ensure_ascii=False
+                        )
+                    )
+                )
+            ]
+        )
+
+        with (
+            patch.object(cards, "_call_openai", return_value=response),
+            patch.object(cards, "_review_deck", return_value={}),
+            patch.object(cards, "_load_used_words", return_value=set()),
+            patch.object(cards, "_save_used_words"),
+        ):
+            result = cards.generate("插話藝術", 1, pain_points=[point])
+
+        self.assertEqual(result[0]["word_en"], "Let’s move on")
+        self.assertEqual(
+            result[0]["sentence_en"],
+            "Let’s move on to the next point.",
+        )
 
     def test_planner_overproduces_candidates_then_selects_requested_count(self):
         candidates = [
@@ -1150,6 +1330,25 @@ class PainPointPlanningTests(unittest.TestCase):
 
         self.assertEqual(paths, [xlsx_path])
         self.assertEqual(references[0]["_pain_point"]["task"], point["task"])
+
+    def test_written_deck_wraps_text_and_freezes_header(self):
+        card = _item(
+            "Sorry to interrupt.",
+            "Sorry to interrupt, but I’d like to add something here.",
+        )
+        card["id"] = "01"
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "插話藝術.xlsx")
+            cards.write_xlsx([card], path)
+            sheet = cards.openpyxl.load_workbook(path).active
+
+        self.assertEqual(sheet.freeze_panes, "A2")
+        self.assertEqual(sheet.auto_filter.ref, "A1:H2")
+        self.assertTrue(sheet["F2"].alignment.wrap_text)
+        self.assertEqual(sheet["F2"].alignment.vertical, "top")
+        self.assertGreaterEqual(sheet.row_dimensions[2].height, 30)
+        self.assertEqual(sheet.page_setup.orientation, "landscape")
+        self.assertEqual(sheet.page_setup.fitToWidth, 1)
 
     def test_legacy_text_plan_remains_supported(self):
         selected = cards._select_pain_points(["任務甲", "任務乙"], 2)
