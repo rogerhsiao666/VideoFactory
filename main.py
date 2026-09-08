@@ -58,7 +58,7 @@ ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 TEMP_DIR   = os.path.join(BASE_DIR, "temp")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 IMAGES_DIR = os.path.join(TEMP_DIR, "images")
-DATA_FILE  = os.path.join(BASE_DIR, "data.json")
+DATA_FILE  = os.path.join(OUTPUT_DIR, "data.json")
 CARDS_DIR  = os.path.join(BASE_DIR, "cards")
 
 os.makedirs(TEMP_DIR,   exist_ok=True)
@@ -529,39 +529,49 @@ FREQUENCY RULE: Prioritize vocabulary that is HIGH-FREQUENCY in real daily life.
 
 
 def load_local_cards(topic: str) -> list:
-    """從 cards/ 資料夾讀取本地卡片，支援 .xlsx 與 .json。
-    topic → 空格/連字號換底線（保留大小寫與中文）→ cards/<slug>.xlsx 或 .json
-    找不到時列出可用檔案並拋出 FileNotFoundError。
+    """從 output/ 或 cards/ 讀取本地卡片，支援 .xlsx 與 .json。
+
+    output/ 是目前的標準位置，cards/ 則保留給舊牌組；同名時優先讀取
+    output/。topic 會將空格/連字號換成底線，並保留大小寫與中文。
     """
     slug = topic.strip().replace(" ", "_").replace("-", "_")
-    xlsx_path = os.path.join(CARDS_DIR, f"{slug}.xlsx")
-    json_path = os.path.join(CARDS_DIR, f"{slug}.json")
+    search_dirs = (("output", OUTPUT_DIR), ("cards", CARDS_DIR))
+    candidates = [
+        (label, os.path.join(directory, f"{slug}.{extension}"))
+        for label, directory in search_dirs
+        for extension in ("xlsx", "json")
+    ]
 
-    if os.path.exists(xlsx_path):
-        data = import_review_excel(xlsx_path)
+    for label, path in candidates:
+        if not os.path.isfile(path):
+            continue
+        if path.endswith(".xlsx"):
+            data = import_review_excel(path)
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
         for i, item in enumerate(data):
             item["id"] = f"{i + 1:02d}"
-        print(f"✅ 已從本地讀取 {len(data)} 個詞彙（cards/{slug}.xlsx）")
+        print(f"✅ 已從本地讀取 {len(data)} 個詞彙（{label}/{os.path.basename(path)}）")
         return data
 
-    if os.path.exists(json_path):
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for i, item in enumerate(data):
-            item["id"] = f"{i + 1:02d}"
-        print(f"✅ 已從本地讀取 {len(data)} 個詞彙（cards/{slug}.json）")
-        return data
+    for label, directory in search_dirs:
+        if not os.path.isdir(directory):
+            continue
+        available = sorted(
+            name for name in os.listdir(directory)
+            if name.lower().endswith((".xlsx", ".json"))
+        )
+        if available:
+            print(f"   📂 {label}/ 資料夾中可用的卡片：")
+            for name in available:
+                print(f"     · {name}")
 
-    available = sorted(
-        f for f in os.listdir(CARDS_DIR) if f.endswith(".xlsx") or f.endswith(".json")
-    )
-    if available:
-        print("   📂 cards/ 資料夾中可用的卡片：")
-        for name in available:
-            print(f"     · {name}")
+    searched = "\n".join(f"  · {path}" for _, path in candidates)
     raise FileNotFoundError(
-        f"找不到卡片檔案：{xlsx_path} 或 {json_path}\n"
-        f"請將 Excel 或 JSON 檔案放入 cards/ 資料夾，檔名設為 {slug}.xlsx（或 .json）"
+        f"找不到卡片檔案，已搜尋：\n{searched}\n"
+        f"請將 Excel 或 JSON 檔案放入 output/ 或 cards/ 資料夾，"
+        f"檔名設為 {slug}.xlsx（或 .json）；新牌組建議放在 output/。"
     )
 
 
@@ -2300,7 +2310,7 @@ async def main():
     srt_path     = os.path.join(OUTPUT_DIR, f"final_{safe_topic}.srt")
     desc_path    = os.path.join(OUTPUT_DIR, f"description_{safe_topic}.txt")
     topic_slug   = topic.strip().replace(" ", "_").replace("-", "_")
-    yt_desc_path = os.path.join(CARDS_DIR, f"youtube_{topic_slug}.txt")
+    yt_desc_path = os.path.join(OUTPUT_DIR, f"youtube_{topic_slug}.txt")
 
     with open(concat_path, "w", encoding="utf-8") as f:
         if os.path.exists(active_intro):
