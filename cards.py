@@ -40,6 +40,7 @@ OUTPUT_DIR      = os.path.join(BASE_DIR, "output")
 USED_WORDS_FILE = os.path.join(BASE_DIR, "used_words.json")
 GENERATE_CHUNK  = 10
 REFILL_CANDIDATE_MULTIPLIER = 3
+MAX_REFILL_CANDIDATE_MULTIPLIER = 6
 DEFAULT_CARD_COUNT = 50
 MAX_WORD_EN_WORDS = 8
 MAX_SENTENCE_EN_WORDS = 14
@@ -207,8 +208,13 @@ def _extract_generated_items(content: str) -> list[dict]:
 
 
 def _generation_request_size(target_size: int, is_refill: bool) -> int:
-    """Overproduce after a short batch so each missing card gets alternatives."""
-    multiplier = REFILL_CANDIDATE_MULTIPLIER if is_refill else 1
+    """Overproduce refills, with a deeper pool for small stubborn gaps."""
+    if not is_refill:
+        return target_size
+    multiplier = min(
+        MAX_REFILL_CANDIDATE_MULTIPLIER,
+        max(REFILL_CANDIDATE_MULTIPLIER, 24 // max(target_size, 1)),
+    )
     return target_size * multiplier
 
 
@@ -508,6 +514,11 @@ def _pain_point_text(point) -> str:
         f"理想結果={normalized['desired_outcome']}" if normalized["desired_outcome"] else "",
         f"內容角色={normalized['role_type']}" if normalized["role_type"] else "",
         f"失敗情況={normalized['failure_mode']}" if normalized["failure_mode"] else "",
+        (
+            f"硬性英文關鍵詞={', '.join(normalized['required_terms'])}"
+            if normalized["required_terms"]
+            else ""
+        ),
     ]
     return "；".join(part for part in parts if part)
 
@@ -2583,6 +2594,7 @@ def generate(
         request_size = _generation_request_size(
             chunk_size, overgenerate_next_round
         )
+        candidate_multiplier = max(1, request_size // max(chunk_size, 1))
         candidate_note = (
             f"，請求 {request_size} 個候選" if overgenerate_next_round else ""
         )
@@ -2635,9 +2647,11 @@ def generate(
                         f"{idx}. {_pain_point_text(point)}"
                         for idx, point in remaining[:chunk_size]
                     )
-                    + f"\nReturn {REFILL_CANDIDATE_MULTIPLIER} materially different candidates "
+                    + f"\nReturn {candidate_multiplier} materially different candidates "
                     "for EACH entry. Copy the entry number exactly into purpose_id for every "
-                    "candidate. The system will validate them and keep one per entry.\n"
+                    "candidate. The system will validate them and keep one per entry. "
+                    "If an entry lists 硬性英文關鍵詞, word_en or sentence_en must contain "
+                    "at least half of those exact phrases (rounded up), verbatim.\n"
                 )
             else:
                 purpose_note = (
@@ -2653,7 +2667,7 @@ def generate(
         if overgenerate_next_round:
             generation_note = (
                 f"\nReturn exactly {request_size} alternative candidate items in the items array. "
-                f"Provide exactly {REFILL_CANDIDATE_MULTIPLIER} candidates for EACH of the "
+                f"Provide exactly {candidate_multiplier} candidates for EACH of the "
                 f"{chunk_size} missing purposes. Make every alternative a genuinely different "
                 "natural line; the system will keep the first one per purpose that passes validation.\n"
             )
@@ -2792,6 +2806,16 @@ def generate(
                     print(
                         f"      ⚠️ 跳過角色不符的 purpose_id={purpose_id} 項目 "
                         f"{item.get('word_en', 'Unknown')}: {alignment_issue}"
+                    )
+                    continue
+
+                candidate_rejected = _local_review_deck(
+                    topic, [item], pain_points, reference_items
+                )
+                if candidate_rejected:
+                    print(
+                        f"      ⚠️ 跳過未通過本地審稿的 purpose_id={purpose_id} 項目 "
+                        f"{item.get('word_en', 'Unknown')}: {candidate_rejected[0]}"
                     )
                     continue
 

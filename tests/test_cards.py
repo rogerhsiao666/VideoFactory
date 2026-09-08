@@ -698,13 +698,16 @@ class PainPointPlanningTests(unittest.TestCase):
         request_contract.assert_not_called()
         ai_review.assert_not_called()
 
-    def test_refill_request_size_scales_any_gap_by_three(self):
-        for gap in (1, 2, 3, 4, 10):
+    def test_refill_request_size_uses_deeper_pool_for_small_gaps(self):
+        expected = {1: 6, 2: 12, 3: 18, 4: 24, 10: 30}
+        for gap, request_size in expected.items():
             with self.subTest(gap=gap):
-                self.assertEqual(cards._generation_request_size(gap, True), gap * 3)
+                self.assertEqual(
+                    cards._generation_request_size(gap, True), request_size
+                )
                 self.assertEqual(cards._generation_request_size(gap, False), gap)
 
-    def test_four_missing_cards_request_twelve_candidates(self):
+    def test_four_missing_cards_request_six_candidates_each(self):
         points = [
             _pain_point(f"溝通任務{purpose_id}", f"分類{purpose_id}", purpose_id)
             for purpose_id in range(1, 6)
@@ -752,10 +755,45 @@ class PainPointPlanningTests(unittest.TestCase):
         self.assertEqual([item["_purpose_id"] for item in result], [1, 2, 3, 4, 5])
         self.assertEqual(len(prompts), 2)
         self.assertIn(
-            "Return exactly 12 alternative candidate items in the items array",
+            "Return exactly 24 alternative candidate items in the items array",
             prompts[1],
         )
-        self.assertIn("Return 3 materially different candidates for EACH entry", prompts[1])
+        self.assertIn("Return 6 materially different candidates for EACH entry", prompts[1])
+
+    def test_generation_skips_required_term_miss_and_keeps_later_candidate(self):
+        point = _pain_point("我想告訴房東，應該退還我的押金。", "語言障礙", 1)
+        point["required_terms"] = ["refund my deposit"]
+        invalid = dict(
+            _item(
+                "I want my deposit back.",
+                "I want my deposit back after moving out.",
+            ),
+            purpose_id=1,
+        )
+        valid = dict(
+            _item(
+                "Please refund my deposit.",
+                "Please refund my deposit within the agreed timeframe.",
+            ),
+            purpose_id=1,
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content=json.dumps({"items": [invalid, valid]}, ensure_ascii=False)
+            ))]
+        )
+
+        with (
+            patch.object(cards, "_call_openai", return_value=response) as call,
+            patch.object(cards, "_review_deck", return_value={}),
+            patch.object(cards, "_load_used_words", return_value=set()),
+            patch.object(cards, "_save_used_words"),
+        ):
+            result = cards.generate("捍衛權益", 1, pain_points=[point])
+
+        self.assertEqual(result[0]["word_en"], "Please refund my deposit.")
+        prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("硬性英文關鍵詞=refund my deposit", prompt)
 
     def test_structured_plan_flows_through_generation_and_review(self):
         points = [
