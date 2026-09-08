@@ -619,6 +619,23 @@ class PainPointPlanningTests(unittest.TestCase):
             ],
         )
 
+    def test_focus_must_teach_phrases_ignore_chinese_translation_with_name(self):
+        topic = cards._generation_topic(
+            "插話藝術",
+            "必教金句：\n"
+            "Sorry to interrupt, but I’d like to add something here. "
+            "(不好意思打斷一下，我想補充一點。)\n"
+            "Building on what John just said... (延續 John 剛剛說的...)",
+        )
+
+        self.assertEqual(
+            cards._required_focus_phrases(topic),
+            [
+                "Sorry to interrupt, but I’d like to add something here.",
+                "Building on what John just said...",
+            ],
+        )
+
     def test_curated_topics_have_fifty_unique_jobs_and_locked_lines(self):
         for topic in ("Phone Call Phobia", "Polite Complaints"):
             with self.subTest(topic=topic):

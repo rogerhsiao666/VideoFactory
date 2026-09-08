@@ -222,16 +222,28 @@ def _required_focus_phrases(topic: str) -> list[str]:
     if not match:
         return []
     section = match.group(1)
-    parenthesized = [
-        raw.strip()
-        for raw in re.findall(r"[（(]([^()（）]*[A-Za-z][^()（）]*)[)）]", section)
-    ]
+    parenthesized = []
+    for raw in re.findall(r"[（(]([^()（）]*)[)）]", section):
+        candidate = raw.strip()
+        english_chars = len(re.findall(r"[A-Za-z]", candidate))
+        visible_chars = len(re.sub(r"\s", "", candidate))
+        if (
+            _english_word_count(candidate) >= 2
+            and english_chars >= max(1, math.ceil(visible_chars * 0.6))
+        ):
+            parenthesized.append(candidate)
     if parenthesized:
         return parenthesized
+    section = re.sub(r"\s*[（(][^()（）]*[)）]", "", section)
     phrases: list[str] = []
     for raw in re.split(r"[；;\n]+", section):
         phrase = raw.strip().strip("「」『』\"。 ")
-        if re.search(r"[A-Za-z]", phrase):
+        english_chars = len(re.findall(r"[A-Za-z]", phrase))
+        visible_chars = len(re.sub(r"\s", "", phrase))
+        if (
+            _english_word_count(phrase) >= 2
+            and english_chars >= max(1, math.ceil(visible_chars * 0.6))
+        ):
             phrases.append(phrase)
     return phrases
 
