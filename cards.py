@@ -474,7 +474,11 @@ def _normalize_pain_point(value, index: int = 0) -> dict | None:
     if isinstance(required_terms, str):
         required_terms = [required_terms]
     point["required_terms"] = (
-        [str(term).strip() for term in required_terms if str(term).strip()][:6]
+        [
+            str(term).strip()
+            for term in required_terms
+            if str(term).strip() and re.search(r"[A-Za-z]", str(term))
+        ][:6]
         if isinstance(required_terms, list)
         else []
     )

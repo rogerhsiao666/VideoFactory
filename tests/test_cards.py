@@ -89,6 +89,14 @@ class ReferenceDeckTests(unittest.TestCase):
 
 
 class ContentGateTests(unittest.TestCase):
+    def test_pain_point_required_terms_keep_only_english_constraints(self):
+        point = _pain_point("我想補充數據", "插話困難", 1)
+        point["required_terms"] = ["補充", "數據", "data", "support"]
+
+        normalized = cards._normalize_pain_point(point)
+
+        self.assertEqual(normalized["required_terms"], ["data", "support"])
+
     def test_singular_generated_item_is_normalized_to_a_list(self):
         item = _item("Could you repeat that?", "Could you say that one more time?")
 
