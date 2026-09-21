@@ -3078,26 +3078,6 @@ def _prompt_topic_description() -> str:
     return "\n".join(lines).strip()
 
 
-def _chapter_time(seconds: float) -> str:
-    m = int(seconds) // 60
-    s = int(seconds) % 60
-    return f"{m:02d}:{s:02d}"
-
-
-def _parse_srt_starts(srt_path: str) -> list[float]:
-    """讀取 SRT，回傳每條字幕的起始秒數。"""
-    if not os.path.exists(srt_path):
-        return []
-    starts: list[float] = []
-    with open(srt_path, "r", encoding="utf-8") as f:
-        for line in f:
-            m = re.match(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->", line)
-            if m:
-                h, mm, ss, ms = (int(x) for x in m.groups())
-                starts.append(h * 3600 + mm * 60 + ss + ms / 1000.0)
-    return starts
-
-
 def _youtube_scope_note(content_context: str) -> str:
     context = content_context.strip()
     if not context:
@@ -3218,25 +3198,7 @@ def write_youtube_description(
     output_path: str,
     content_context: str = "",
 ):
-    """產出 youtube_{topic}.txt。若對應的 SRT 已存在，四個進度時間戳從中讀取；否則用 00:00。"""
-    slug = _topic_to_slug(topic)
-    srt_path = os.path.join(OUTPUT_DIR, f"final_{slug.lower()}.srt")
-    srt_starts = _parse_srt_starts(srt_path)
-
-    def _srt_time(idx: int) -> str:
-        if 0 <= idx < len(srt_starts):
-            return _chapter_time(srt_starts[idx])
-        return "00:00"
-
-    ts_start = "00:00"
-    if srt_starts:
-        ts_25 = _srt_time(25)
-        ts_50 = _srt_time(card_count)
-        ts_75 = _srt_time(card_count + 25)
-        print(f"📼 已找到 SRT，四個進度時間戳從字幕讀取")
-    else:
-        ts_25 = ts_50 = ts_75 = "00:00"
-        print(f"ℹ️  未找到 {srt_path}，時間戳先用 00:00 佔位（跑完影片後可重新產生）")
+    """產出不含時間軸的 youtube_{topic}.txt。"""
 
     title = _generate_yt_title(topic, content_context)
     paragraph = _generate_yt_topic_paragraph(topic, content_context)
@@ -3269,11 +3231,6 @@ def write_youtube_description(
         "官網：https://rayo-ai.com/",
         "iOS App：https://rayo.pse.is/8ugjnq",
         "Chrome 插件：https://rayo.pse.is/8ughfh",
-        "",
-        f"{ts_start} 開始學習！",
-        f"{ts_25} 25%繼續加油！",
-        f"{ts_50} 50% 再複習一次  GO! GO!",
-        f"{ts_75} 75% 最後衝刺！",
         "",
         "✅ 訂閱頻道並開啟小鈴鐺",
         "💬 在下方留言告訴我：你覺得最難開口的一句英文是什麼？",

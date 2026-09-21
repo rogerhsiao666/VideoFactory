@@ -276,6 +276,24 @@ class ContentGateTests(unittest.TestCase):
         self.assertIn("在海外租屋的亞洲租客", context)
         self.assertIn("房東不修繕或不合理扣押金", context)
 
+    def test_youtube_description_does_not_include_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "youtube_測試.txt"
+            with (
+                patch.object(cards, "_generate_yt_title", return_value="測試標題"),
+                patch.object(cards, "_generate_yt_topic_paragraph", return_value="測試文案"),
+                patch.object(cards, "_generate_yt_hashtags", return_value=["測試標籤"]),
+            ):
+                cards.write_youtube_description("測試", 50, str(output_path))
+
+            description = output_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("00:00 開始學習！", description)
+        self.assertNotIn("25%繼續加油！", description)
+        self.assertNotIn("📑 完整章節", description)
+        self.assertIn("測試標題", description)
+        self.assertIn("測試文案", description)
+
     def test_long_plan_task_requires_two_fallback_keywords_not_verbatim_copy(self):
         item = _item(
             "I need a clear answer.",

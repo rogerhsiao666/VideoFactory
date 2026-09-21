@@ -77,5 +77,67 @@ class LocalCardPathTests(unittest.TestCase):
         self.assertIn("cards/ 資料夾中可用的卡片", stream.getvalue())
 
 
+class YouTubeDescriptionTests(unittest.TestCase):
+    def test_existing_description_has_legacy_timeline_removed(self):
+        legacy = """測試標題
+
+測試文案
+
+00:00 開始學習！
+09:10 25%繼續加油！
+19:04 50% 再複習一次  GO! GO!
+25:37 75% 最後衝刺！
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📑 完整章節
+00:00 Intro
+00:02 01 - Test sentence.
+32:38 Outro
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#英文學習
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "youtube_測試.txt"
+            output_path.write_text(legacy, encoding="utf-8")
+
+            main.write_youtube_description(
+                "測試",
+                [(0.0, "Intro"), (2.0, "01 - Test sentence.")],
+                [(0.0, "test")],
+                str(output_path),
+            )
+            description = output_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("00:00 開始學習！", description)
+        self.assertNotIn("25%繼續加油！", description)
+        self.assertNotIn("📑 完整章節", description)
+        self.assertNotIn("01 - Test sentence.", description)
+        self.assertIn("測試標題", description)
+        self.assertIn("測試文案", description)
+        self.assertIn("#英文學習", description)
+
+    def test_new_description_does_not_include_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "youtube_測試.txt"
+            with (
+                patch.object(main, "_generate_yt_title", return_value="測試標題"),
+                patch.object(main, "_generate_yt_topic_paragraph", return_value="測試文案"),
+                patch.object(main, "_generate_yt_hashtags", return_value=["測試標籤"]),
+            ):
+                main.write_youtube_description(
+                    "測試",
+                    [(0.0, "Intro"), (2.0, "01 - Test sentence.")],
+                    [(0.0, "test")],
+                    str(output_path),
+                )
+            description = output_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("00:00 開始學習！", description)
+        self.assertNotIn("📑 完整章節", description)
+        self.assertNotIn("01 - Test sentence.", description)
+        self.assertIn("測試標題", description)
+
+
 if __name__ == "__main__":
     unittest.main()

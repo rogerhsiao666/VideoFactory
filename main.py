@@ -1200,13 +1200,6 @@ def _srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def _chapter_time(seconds: float) -> str:
-    """秒數 → YouTube 章節格式 MM:SS"""
-    m = int(seconds) // 60
-    s = int(seconds) % 60
-    return f"{m:02d}:{s:02d}"
-
-
 def _probe_media_streams(src: str) -> list[dict]:
     """
     取得影片/音訊串流資訊。優先 ffprobe；若系統未安裝 ffprobe（常見於 imageio_ffmpeg），
@@ -1749,8 +1742,8 @@ def _generate_yt_hashtags(topic: str) -> list:
     return [f"{topic}英文", f"{topic} english"]
 
 
-def _patch_yt_timestamps(existing_path: str, ts_25: str, ts_50: str, ts_75: str) -> bool:
-    """就地替換既有 youtube 描述檔的四個進度時間戳行，其他內容保持不變。"""
+def _remove_yt_timeline(existing_path: str) -> bool:
+    """移除舊版 YouTube 描述中的進度時間與完整章節，保留其餘內容。"""
     try:
         with open(existing_path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -1758,59 +1751,56 @@ def _patch_yt_timestamps(existing_path: str, ts_25: str, ts_50: str, ts_75: str)
         print(f"⚠️  讀取既有 YouTube 描述失敗 ({e})")
         return False
 
-    suffix_map = {
-        "開始學習！": "00:00",
-        "25%繼續加油！": ts_25,
-        "50% 再複習一次  GO! GO!": ts_50,
-        "75% 最後衝刺！": ts_75,
-    }
-    patched = False
-    for i, line in enumerate(lines):
-        for suffix, new_ts in suffix_map.items():
-            if line.strip().endswith(suffix) and re.match(r"^\d{2}:\d{2}\s", line):
-                lines[i] = f"{new_ts} {suffix}"
-                patched = True
-                break
-    if not patched:
+    progress_suffixes = (
+        "開始學習！",
+        "25%繼續加油！",
+        "50% 再複習一次  GO! GO!",
+        "75% 最後衝刺！",
+    )
+    cleaned: list[str] = []
+    in_chapters = False
+    changed = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "📑 完整章節":
+            if cleaned and cleaned[-1].strip() == "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━":
+                cleaned.pop()
+            in_chapters = True
+            changed = True
+            continue
+        if in_chapters:
+            if stripped == "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━":
+                in_chapters = False
+            continue
+        if re.match(r"^\d{2,}:\d{2}\s", stripped) and stripped.endswith(progress_suffixes):
+            changed = True
+            continue
+        cleaned.append(line)
+
+    if not changed:
         return False
+
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+    normalized: list[str] = []
+    for line in cleaned:
+        if not line.strip() and normalized and not normalized[-1].strip():
+            continue
+        normalized.append(line)
     with open(existing_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write("\n".join(normalized) + "\n")
     return True
 
 
 def write_youtube_description(
     topic: str, chapter_entries: list, srt_entries: list, output_path: str,
 ):
-    """產出面向 YouTube 發布的完整描述檔（含進度時間戳、推廣連結、CTA、Hashtags）。
-
-    四個進度時間戳直接讀 srt_entries 的秒數：
-      - 25% → 第 26 條字幕（Phase1 第 26 張卡片例句）
-      - 50% → 第 51 條字幕（Phase2 第 1 張，落在 Break 之後）
-      - 75% → 第 76 條字幕（Phase2 第 26 張卡片例句）
-
-    若 output_path 已存在（例如 cards.py 先前預產的版本），只修補四個進度時間戳，
-    保留 AI 已生成的標題／段落／hashtags；否則從零產生完整檔案。
-    """
-
-    def _srt_time(idx: int) -> str:
-        if 0 <= idx < len(srt_entries):
-            return _chapter_time(srt_entries[idx][0])
-        if srt_entries:
-            return _chapter_time(srt_entries[-1][0])
-        return "00:00"
-
-    phase1_count = sum(
-        1 for _, lbl in chapter_entries
-        if lbl not in ("Intro", "Break", "Outro") and not lbl.startswith("🔄")
-    )
-
-    ts_start = "00:00"
-    ts_25 = _srt_time(25)
-    ts_50 = _srt_time(phase1_count)
-    ts_75 = _srt_time(phase1_count + 25)
-
-    if os.path.exists(output_path) and _patch_yt_timestamps(output_path, ts_25, ts_50, ts_75):
-        print(f"✅ YouTube 描述時間戳已更新: {output_path}")
+    """產出不含時間軸的 YouTube 發布描述，並清理已存在的舊版描述。"""
+    if os.path.exists(output_path):
+        if _remove_yt_timeline(output_path):
+            print(f"✅ YouTube 描述舊時間軸已移除: {output_path}")
+        else:
+            print(f"✅ YouTube 描述已存在且不含時間軸: {output_path}")
         return
 
     title = _generate_yt_title(topic)
@@ -1835,9 +1825,6 @@ def write_youtube_description(
         combined_tags.append(t)
     comma_line = ", ".join(combined_tags)
 
-    divider = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    chapter_lines = [f"{_chapter_time(t)} {lbl}" for t, lbl in chapter_entries]
-
     lines = [
         title,
         "",
@@ -1847,16 +1834,6 @@ def write_youtube_description(
         "官網：https://rayo-ai.com/",
         "iOS App：https://rayo.pse.is/8ugjnq",
         "Chrome 插件：https://rayo.pse.is/8ughfh",
-        "",
-        f"{ts_start} 開始學習！",
-        f"{ts_25} 25%繼續加油！",
-        f"{ts_50} 50% 再複習一次  GO! GO!",
-        f"{ts_75} 75% 最後衝刺！",
-        "",
-        divider,
-        "📑 完整章節",
-        *chapter_lines,
-        divider,
         "",
         "✅ 訂閱頻道並開啟小鈴鐺",
         "💬 在下方留言告訴我：你覺得最難開口的一句英文是什麼？",
