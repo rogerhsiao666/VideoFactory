@@ -3078,6 +3078,20 @@ def _prompt_topic_description() -> str:
     return "\n".join(lines).strip()
 
 
+def _parse_srt_starts(srt_path: str) -> list[float]:
+    """讀取字幕的實際起始時間，供 YouTube 進度時間使用。"""
+    if not os.path.exists(srt_path):
+        return []
+    starts: list[float] = []
+    with open(srt_path, "r", encoding="utf-8") as f:
+        for line in f:
+            match = re.match(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->", line)
+            if match:
+                hours, minutes, seconds, milliseconds = map(int, match.groups())
+                starts.append(hours * 3600 + minutes * 60 + seconds + milliseconds / 1000)
+    return starts
+
+
 def _youtube_scope_note(content_context: str) -> str:
     context = content_context.strip()
     if not context:
@@ -3198,7 +3212,21 @@ def write_youtube_description(
     output_path: str,
     content_context: str = "",
 ):
-    """產出不含時間軸的 youtube_{topic}.txt。"""
+    """產出含四個進度時間的描述；尚無字幕時先以 00:00 佔位。"""
+    slug = _topic_to_slug(topic)
+    srt_path = os.path.join(OUTPUT_DIR, f"final_{slug.lower()}.srt")
+    srt_starts = _parse_srt_starts(srt_path)
+
+    def progress_time(index: int) -> str:
+        if not srt_starts:
+            return "00:00"
+        seconds = srt_starts[min(index, len(srt_starts) - 1)]
+        return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
+
+    midpoint = card_count // 2
+    ts_25 = progress_time(midpoint)
+    ts_50 = progress_time(card_count)
+    ts_75 = progress_time(card_count + midpoint)
 
     title = _generate_yt_title(topic, content_context)
     paragraph = _generate_yt_topic_paragraph(topic, content_context)
@@ -3231,6 +3259,11 @@ def write_youtube_description(
         "官網：https://rayo-ai.com/",
         "iOS App：https://rayo.pse.is/8ugjnq",
         "Chrome 插件：https://rayo.pse.is/8ughfh",
+        "",
+        "00:00 開始學習！",
+        f"{ts_25} 25%繼續加油！",
+        f"{ts_50} 50% 再複習一次  GO! GO!",
+        f"{ts_75} 75% 最後衝刺！",
         "",
         "✅ 訂閱頻道並開啟小鈴鐺",
         "💬 在下方留言告訴我：你覺得最難開口的一句英文是什麼？",

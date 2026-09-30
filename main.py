@@ -1742,8 +1742,8 @@ def _generate_yt_hashtags(topic: str) -> list:
     return [f"{topic}英文", f"{topic} english"]
 
 
-def _remove_yt_timeline(existing_path: str) -> bool:
-    """移除舊版 YouTube 描述中的進度時間與完整章節，保留其餘內容。"""
+def _patch_yt_timestamps(existing_path: str, ts_25: str, ts_50: str, ts_75: str) -> bool:
+    """補上或更新四個進度時間，保留既有標題、文案與其他章節。"""
     try:
         with open(existing_path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -1757,50 +1757,62 @@ def _remove_yt_timeline(existing_path: str) -> bool:
         "50% 再複習一次  GO! GO!",
         "75% 最後衝刺！",
     )
-    cleaned: list[str] = []
-    in_chapters = False
-    changed = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "📑 完整章節":
-            if cleaned and cleaned[-1].strip() == "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━":
-                cleaned.pop()
-            in_chapters = True
-            changed = True
-            continue
-        if in_chapters:
-            if stripped == "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━":
-                in_chapters = False
-            continue
-        if re.match(r"^\d{2,}:\d{2}\s", stripped) and stripped.endswith(progress_suffixes):
-            changed = True
-            continue
-        cleaned.append(line)
+    progress_lines = [
+        f"{timestamp} {suffix}"
+        for timestamp, suffix in zip(("00:00", ts_25, ts_50, ts_75), progress_suffixes)
+    ]
+    progress_indices = [
+        i for i, line in enumerate(lines)
+        if re.match(r"^\d{2,}:\d{2}\s", line.strip())
+        and line.strip().endswith(progress_suffixes)
+    ]
+    if progress_indices:
+        insert_at = progress_indices[0]
+        progress_index_set = set(progress_indices)
+        updated = [line for i, line in enumerate(lines) if i not in progress_index_set]
+        updated[insert_at:insert_at] = progress_lines
+    else:
+        insert_at = next(
+            (i + 1 for i, line in enumerate(lines) if line.startswith("Chrome 插件：")),
+            next((i for i, line in enumerate(lines) if line.startswith("✅ 訂閱")), len(lines)),
+        )
+        updated = lines[:insert_at] + ["", *progress_lines, ""] + lines[insert_at:]
+        updated = [
+            line for i, line in enumerate(updated)
+            if line.strip() or i == 0 or updated[i - 1].strip()
+        ]
 
-    if not changed:
+    if updated == lines:
         return False
-
-    while cleaned and not cleaned[-1].strip():
-        cleaned.pop()
-    normalized: list[str] = []
-    for line in cleaned:
-        if not line.strip() and normalized and not normalized[-1].strip():
-            continue
-        normalized.append(line)
     with open(existing_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(normalized) + "\n")
+        f.write("\n".join(updated) + "\n")
     return True
 
 
 def write_youtube_description(
     topic: str, chapter_entries: list, srt_entries: list, output_path: str,
 ):
-    """產出不含時間軸的 YouTube 發布描述，並清理已存在的舊版描述。"""
+    """從字幕產生四個進度時間；既有描述只更新時間，保留文案。"""
+    phase1_count = sum(
+        1 for _, label in chapter_entries
+        if label not in ("Intro", "Break", "Outro") and not label.startswith("🔄")
+    )
+
+    def progress_time(index: int) -> str:
+        if not srt_entries:
+            return "00:00"
+        seconds = srt_entries[min(index, len(srt_entries) - 1)][0]
+        return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
+
+    midpoint = phase1_count // 2
+    ts_25 = progress_time(midpoint)
+    ts_50 = progress_time(phase1_count)
+    ts_75 = progress_time(phase1_count + midpoint)
     if os.path.exists(output_path):
-        if _remove_yt_timeline(output_path):
-            print(f"✅ YouTube 描述舊時間軸已移除: {output_path}")
+        if _patch_yt_timestamps(output_path, ts_25, ts_50, ts_75):
+            print(f"✅ YouTube 描述時間戳已更新: {output_path}")
         else:
-            print(f"✅ YouTube 描述已存在且不含時間軸: {output_path}")
+            print(f"✅ YouTube 描述時間戳無須更新: {output_path}")
         return
 
     title = _generate_yt_title(topic)
@@ -1834,6 +1846,11 @@ def write_youtube_description(
         "官網：https://rayo-ai.com/",
         "iOS App：https://rayo.pse.is/8ugjnq",
         "Chrome 插件：https://rayo.pse.is/8ughfh",
+        "",
+        "00:00 開始學習！",
+        f"{ts_25} 25%繼續加油！",
+        f"{ts_50} 50% 再複習一次  GO! GO!",
+        f"{ts_75} 75% 最後衝刺！",
         "",
         "✅ 訂閱頻道並開啟小鈴鐺",
         "💬 在下方留言告訴我：你覺得最難開口的一句英文是什麼？",

@@ -276,10 +276,11 @@ class ContentGateTests(unittest.TestCase):
         self.assertIn("在海外租屋的亞洲租客", context)
         self.assertIn("房東不修繕或不合理扣押金", context)
 
-    def test_youtube_description_does_not_include_timeline(self):
+    def test_youtube_description_includes_placeholder_progress_without_srt(self):
         with tempfile.TemporaryDirectory() as directory:
             output_path = Path(directory) / "youtube_測試.txt"
             with (
+                patch.object(cards, "OUTPUT_DIR", directory),
                 patch.object(cards, "_generate_yt_title", return_value="測試標題"),
                 patch.object(cards, "_generate_yt_topic_paragraph", return_value="測試文案"),
                 patch.object(cards, "_generate_yt_hashtags", return_value=["測試標籤"]),
@@ -288,11 +289,37 @@ class ContentGateTests(unittest.TestCase):
 
             description = output_path.read_text(encoding="utf-8")
 
-        self.assertNotIn("00:00 開始學習！", description)
-        self.assertNotIn("25%繼續加油！", description)
+        self.assertIn("00:00 開始學習！", description)
+        self.assertIn("00:00 25%繼續加油！", description)
+        self.assertIn("00:00 50% 再複習一次  GO! GO!", description)
+        self.assertIn("00:00 75% 最後衝刺！", description)
         self.assertNotIn("📑 完整章節", description)
         self.assertIn("測試標題", description)
         self.assertIn("測試文案", description)
+
+    def test_youtube_description_uses_existing_srt_times(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "youtube_Karen.txt"
+            srt_path = Path(directory) / "final_karen.srt"
+            srt_path.write_text(
+                "\n\n".join(
+                    f"{i + 1}\n00:{i:02d}:13,130 --> 00:{i:02d}:28,570\nTest"
+                    for i in range(8)
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(cards, "OUTPUT_DIR", directory),
+                patch.object(cards, "_generate_yt_title", return_value="測試標題"),
+                patch.object(cards, "_generate_yt_topic_paragraph", return_value="測試文案"),
+                patch.object(cards, "_generate_yt_hashtags", return_value=[]),
+            ):
+                cards.write_youtube_description("Karen", 4, str(output_path))
+            description = output_path.read_text(encoding="utf-8")
+        self.assertIn("00:00 開始學習！", description)
+        self.assertIn("02:13 25%繼續加油！", description)
+        self.assertIn("04:13 50% 再複習一次  GO! GO!", description)
+        self.assertIn("06:13 75% 最後衝刺！", description)
 
     def test_long_plan_task_requires_two_fallback_keywords_not_verbatim_copy(self):
         item = _item(
