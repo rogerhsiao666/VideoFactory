@@ -1479,11 +1479,61 @@ def _is_near_duplicate(candidate: dict, existing_items: list[dict]) -> bool:
         sentence_ratio = SequenceMatcher(
             None, candidate_sentence, _similarity_text(existing.get("sentence_en", ""))
         ).ratio()
-        # Keep materially different variants such as double meat vs double
-        # cheese; the semantic reviewer handles true purpose duplication.
+        # Purpose duplication and single-slot sentence templates have separate gates.
         if word_ratio >= 0.97 or sentence_ratio >= 0.98:
             return True
     return False
+
+
+def _sentence_pattern_issue(candidate: dict, existing_items: list[dict]) -> str | None:
+    """Catch single-slot sentence templates without conflating opposite answers."""
+    protected_tokens = {
+        "i", "me", "my", "mine", "we", "us", "our", "you", "your", "yours",
+        "he", "him", "his", "she", "her", "they", "them", "their", "it", "its",
+        "no", "not", "never", "without", "only", "all", "some", "any",
+        "can", "could", "will", "would", "may", "might", "must", "should",
+        "do", "does", "did", "is", "are", "was", "were", "have", "has", "had",
+        "more", "less", "extra", "double", "lightly", "fully", "before", "after",
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+        "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+        "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+        "thousand", "first", "second", "third", "half", "single", "small", "large",
+    }
+
+    def tokens(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9]+(?:'[a-z0-9]+)*", text.casefold().replace("’", "'"))
+
+    sentence = candidate.get("sentence_en", "")
+    candidate_tokens = tokens(sentence)
+    if len(candidate_tokens) < 5:
+        return None
+    candidate_role = (_normalize_pain_point(candidate.get("_pain_point")) or {}).get("role_type")
+    for existing in existing_items:
+        other_sentence = existing.get("sentence_en", "")
+        other_tokens = tokens(other_sentence)
+        if len(candidate_tokens) != len(other_tokens):
+            continue
+        if ("?" in sentence) != ("?" in other_sentence):
+            continue
+        other_role = (_normalize_pain_point(existing.get("_pain_point")) or {}).get("role_type")
+        if candidate_role and other_role and candidate_role != other_role:
+            continue
+        differences = [(a, b) for a, b in zip(candidate_tokens, other_tokens) if a != b]
+        if len(differences) != 1:
+            continue
+        left, right = differences[0]
+        # Changes in negation, role, quantity, or modality need semantic review.
+        if any(
+            token in protected_tokens or "'" in token or any(char.isdigit() for char in token)
+            for token in (left, right)
+        ):
+            continue
+        return (
+            f"句型過度相似：與「{other_sentence}」只有單一詞替換；"
+            "保留原本場景、角色與要求，改用不同句型或自然同義說法，不能只換名詞"
+        )
+    return None
 
 
 def _reference_duplicate_reason(
@@ -1614,6 +1664,11 @@ def _local_review_deck(
 
         if _is_near_duplicate(item, seen_items):
             rejected[idx] = "與前面卡片近乎逐字重複"
+            continue
+
+        pattern_issue = _sentence_pattern_issue(item, seen_items)
+        if pattern_issue:
+            rejected[idx] = pattern_issue
             continue
 
         candidate_point = item.get("_pain_point")
@@ -2224,6 +2279,11 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 9. 必須為詞句生成精確完整的 IPA，並以斜線「/」包裹；絕對不能直接填英文拼寫。
 10. 每張卡必須提供不同的實用學習價值。只換同義詞、句型與答案都相同才算重複；
     店員問句與顧客回答、肯定與否定、一般選擇與具體客製需求不是重複。
+    句型多樣性另行檢查：不同任務也不要只替換同一句的一個名詞或品項。
+    保留各卡的原意、角色、必要關鍵詞與要求，改用不同自然句型或同義說法；
+    例如不要同時寫 "Could I change the bread?" 與 "Could I change the sauce?"，
+    後者可寫 "I'd prefer a different sauce."。不要為了多樣性改成冷門或不自然的英文。
+    明確鎖定的英文仍須逐字遵守，不可擅自改寫。
 11. word_en 最多 {MAX_WORD_EN_WORDS} 個英文單字；sentence_en 最多 {MAX_SENTENCE_EN_WORDS} 個英文單字。這是硬性上限，不得超過。
 12. 每張卡只處理一個溝通目的，最多帶兩個選擇或條件。完整流程必須拆成多張連續短卡，禁止塞成一個長句。
 13. tips 最多 {MAX_TIPS_CHARS} 個中文字元；sentence_cn 最多 {MAX_SENTENCE_CN_CHARS} 個字元，避免卡片爆版。
@@ -2300,7 +2360,7 @@ def _ai_review_deck(
     )
 
     prompt = f"""你是獨立的情境英語牌組審稿人。主題是「{topic}」。
-請只退回明顯不合格的卡片，不要因為初學、句型相似或措辭可微調就退回。
+請只退回明顯不合格的卡片，不要因為初學或措辭可微調就退回。
 {blueprint_rule}
 {contract_rule}
 {reference_rule}
@@ -2320,13 +2380,19 @@ def _ai_review_deck(
 12. expected_role=learner_line 時，word_en 與 sentence_en 必須是學習者說的；
     expected_role=counterpart_line 時，兩者必須是對方說的。問句本身不代表 counterpart_line，
     例如學習者為了插話而問 "Can I jump in?" 仍是 learner_line。
+13. 句型過度相似：兩張卡只替換一個名詞、品項，或整體仍是同一個填空句型。
+    即使 purpose_id 不同，仍應退回較後的一張，kind 填 sentence_pattern。
+    reason 必須指出相似的卡片及建議改寫方向：保留原意、角色與要求，改用自然同義說法或不同句型。
+    例如 "Could I change the bread?" / "Could I change the sauce?"，可把後者改為 "I'd prefer a different sauce."。
+    肯定與否定、不同說話角色、數量或程度不同的要求，不可只因部分用字相同就退回。
+    同義改寫只適用於不同必要任務；如果兩卡本來就是相同角色、意圖與答案，仍須刪除灌水內容。
 
 不要審查字數、word_en 與 sentence_en 的關係或 IPA；這些由程式規則負責。
 
 請以高訊號為原則：寧可退回低價值卡讓系統補寫，也不要為了湊滿數量放行邊角內容。
 
 不要檢查 IPA。只輸出 JSON：
-{{"reject": [{{"id": "01", "reason": "極短原因"}}]}}
+{{"reject": [{{"id": "01", "kind": "content 或 sentence_pattern", "reason": "具體原因及改寫方向"}}]}}
 若全部合格，輸出 {{"reject": []}}。
 
 待審卡片：
@@ -2382,7 +2448,10 @@ def _ai_review_deck(
             continue
         if 0 <= idx < len(items):
             reason = str(entry.get("reason", "未通過內容審查")).strip()
-            if pain_points and "重複" in reason:
+            if (
+                pain_points and "重複" in reason
+                and entry.get("kind") != "sentence_pattern" and "句型" not in reason
+            ):
                 continue
             rejected[idx] = reason
     return rejected
@@ -2402,6 +2471,13 @@ def _review_deck(
             topic, items, pain_points, reference_items
         )
     if REVIEW_MODE == "ai":
+        pattern_rejected = {}
+        for idx, item in enumerate(items):
+            issue = _sentence_pattern_issue(item, items[:idx])
+            if issue:
+                pattern_rejected[idx] = issue
+        if pattern_rejected:
+            return pattern_rejected
         return _ai_review_deck(topic, items, pain_points, reference_items)
 
     local_rejected = _local_review_deck(
@@ -2567,6 +2643,17 @@ def generate(
                 print("      ✅ 自動審稿通過")
                 review_passed = True
                 break
+            for idx, reason in rejected.items():
+                if "句型" in reason and pain_points:
+                    purpose_id = all_items[idx].get("_purpose_id")
+                    if (
+                        isinstance(purpose_id, int) and 1 <= purpose_id <= len(pain_points)
+                        and _exact_generation_point(pain_points[purpose_id - 1])
+                    ):
+                        raise RuntimeError(
+                            f"第 {idx + 1:02d} 張鎖定英文未通過句型多樣性，"
+                            f"需先調整策劃中的鎖定原話，拒絕擅自改寫或輸出: {reason}"
+                        )
             if review_replacements >= MAX_REVIEW_REPLACEMENTS:
                 details = "; ".join(
                     f"{idx + 1:02d}: {reason}" for idx, reason in sorted(rejected.items())
@@ -2620,6 +2707,12 @@ def generate(
                 "the missing blueprint explicitly requires it:\n- "
                 + "\n- ".join(current_items)
                 + "\n"
+            )
+            exclusion_note += (
+                "\nSENTENCE DIVERSITY: Do not reuse an existing sentence template with only "
+                "a noun or product swapped. Preserve the assigned task, speaker, meaning, "
+                "and required terms, but use a different natural sentence structure or synonymous "
+                "expression. Do not invent a different task just to vary the wording.\n"
             )
         if rejected_examples:
             exclusion_note += (
@@ -3291,6 +3384,9 @@ def write_xlsx(items: list[dict], path: str):
             deck_issues.append(f"{expected_id}: {issue}")
         if _is_near_duplicate(item, accepted):
             deck_issues.append(f"{expected_id}: 與前面卡片近似重複")
+        pattern_issue = _sentence_pattern_issue(item, accepted)
+        if pattern_issue:
+            deck_issues.append(f"{expected_id}: {pattern_issue}")
         accepted.append(item)
 
     if deck_issues:

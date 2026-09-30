@@ -88,6 +88,130 @@ class ReferenceDeckTests(unittest.TestCase):
                 )
 
 
+class SentenceDiversityTests(unittest.TestCase):
+    def test_single_noun_substitution_is_rejected_by_local_review(self):
+        items = [
+            _item("Change the bread.", "Could I change the bread?"),
+            _item("Different sauce.", "Could I change the sauce?"),
+        ]
+        rejected = cards._local_review_deck("更換餐點", items)
+        self.assertEqual(set(rejected), {1})
+        self.assertIn("句型過度相似", rejected[1])
+        self.assertIn("保留原本場景", rejected[1])
+
+    def test_natural_rephrasing_is_allowed(self):
+        first = _item("Change the bread.", "Could I change the bread?")
+        second = _item("Different sauce.", "I'd prefer a different sauce.")
+        self.assertIsNone(cards._sentence_pattern_issue(second, [first]))
+
+    def test_negation_quantity_modality_and_short_phrases_are_not_template_swaps(self):
+        pairs = [
+            ("Could I change the bread?", "Could I change the bread without cheese?"),
+            ("Please use some sauce on this.", "Please use no sauce on this."),
+            ("Could I have two extra towels?", "Could I have three extra towels?"),
+            ("Could I change the bread?", "Should I change the bread?"),
+            ("Please add extra sauce to this.", "Please add less sauce to this."),
+            ("I'd like that grilled.", "I'd like that toasted."),
+        ]
+        for left, right in pairs:
+            with self.subTest(left=left, right=right):
+                self.assertIsNone(cards._sentence_pattern_issue(
+                    _item("Second", right), [_item("First", left)]
+                ))
+
+    def test_distinct_roles_are_not_template_swaps(self):
+        left = _item("First", "Could I change the bread?")
+        right = _item("Second", "Could I change the sauce?")
+        left["_pain_point"] = dict(_pain_point("更換麵包", "餐點", 1), role_type="learner_line")
+        right["_pain_point"] = dict(_pain_point("詢問醬料", "餐點", 2), role_type="counterpart_line")
+        self.assertIsNone(cards._sentence_pattern_issue(right, [left]))
+
+    def test_sentence_pattern_rejection_is_not_ignored_for_planned_decks(self):
+        items = [
+            _item("Change the bread.", "Could I change the bread?", 1),
+            _item("Different sauce.", "Could I change the sauce?", 2),
+        ]
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({"reject": [{
+                "id": "02", "kind": "sentence_pattern", "reason": "與 01 句型重複，改用不同結構",
+            }]}, ensure_ascii=False)
+        ))])
+        with patch.object(cards, "_call_openai", return_value=response) as call:
+            rejected = cards._ai_review_deck("更換餐點", items, [
+                _pain_point("更換麵包", "餐點", 1), _pain_point("更換醬料", "餐點", 2),
+            ])
+        self.assertIn(1, rejected)
+        self.assertIn("kind 填 sentence_pattern", call.call_args.kwargs["messages"][0]["content"])
+
+    def test_ai_mode_still_runs_deterministic_sentence_pattern_check(self):
+        items = [
+            _item("Change the bread.", "Could I change the bread?"),
+            _item("Different sauce.", "Could I change the sauce?"),
+        ]
+        with patch.object(cards, "REVIEW_MODE", "ai"), patch.object(cards, "_ai_review_deck") as ai_review:
+            rejected = cards._review_deck("更換餐點", items)
+        self.assertIn(1, rejected)
+        ai_review.assert_not_called()
+
+    def test_generate_refills_with_different_structure_and_preserves_purpose(self):
+        points = [_pain_point("更換麵包", "餐點", 1), _pain_point("更換醬料", "餐點", 2)]
+        first = dict(_item("Change the bread.", "Could I change the bread?", 1), purpose_id=1)
+        similar = dict(_item("Different sauce.", "Could I change the sauce?", 2), purpose_id=2)
+        rewritten = dict(_item("I'd prefer a different sauce.", "I'd prefer a different sauce.", 2), purpose_id=2)
+        responses = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+                content=json.dumps({"items": batch}, ensure_ascii=False)
+            ))])
+            for batch in ([first, similar], [rewritten])
+        ]
+        with (
+            patch.object(cards, "REVIEW_MODE", "local"),
+            patch.object(cards, "_call_openai", side_effect=responses) as call,
+            patch.object(cards, "_load_used_words", return_value=set()),
+            patch.object(cards, "_save_used_words"),
+        ):
+            result = cards.generate("更換餐點", 2, pain_points=points)
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(result[0]["sentence_en"], first["sentence_en"])
+        self.assertEqual(result[1]["sentence_en"], rewritten["sentence_en"])
+        self.assertEqual(result[1]["_purpose_id"], 2)
+        prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("SENTENCE DIVERSITY", prompt)
+        self.assertIn("句型過度相似", prompt)
+
+    def test_locked_sentence_conflict_fails_without_silent_rephrasing(self):
+        items = [
+            _item("Change the bread.", "Could I change the bread?", 1),
+            _item("Different sauce.", "Could I change the sauce?", 2),
+        ]
+        points = []
+        for i, item in enumerate(items):
+            point = _pain_point(("更換麵包", "更換醬料")[i], f"餐點{i}", i + 1)
+            point.update(job_key=f"change{i}", target_phrase=item["word_en"], target_sentence=item["sentence_en"])
+            points.append(point)
+        with (
+            patch.object(cards, "REVIEW_MODE", "hybrid"),
+            patch.object(cards, "_call_openai") as call,
+            patch.object(cards, "_load_used_words", return_value=set()),
+            patch.object(cards, "_save_used_words") as save,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "需先調整策劃中的鎖定原話"):
+                cards.generate("更換餐點", 2, seed_items=items, pain_points=points)
+        call.assert_not_called()
+        save.assert_not_called()
+
+    def test_excel_write_blocks_single_slot_templates(self):
+        items = [
+            dict(_item("Change the bread.", "Could I change the bread?"), id="01"),
+            dict(_item("Different sauce.", "Could I change the sauce?"), id="02"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "test.xlsx"
+            with self.assertRaisesRegex(ValueError, "句型過度相似"):
+                cards.write_xlsx(items, str(path))
+            self.assertFalse(path.exists())
+
+
 class ContentGateTests(unittest.TestCase):
     def test_pain_point_required_terms_keep_only_english_constraints(self):
         point = _pain_point("我想補充數據", "插話困難", 1)
