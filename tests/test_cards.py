@@ -1,10 +1,18 @@
+import asyncio
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import httpx
+from openai import AsyncOpenAI, APITimeoutError, AuthenticationError, BadRequestError
 
 import cards
 from curated_blueprints import get_curated_blueprint
@@ -21,6 +29,284 @@ def _item(word_en: str, sentence_en: str, purpose_id: int = 1) -> dict:
         "sentence_ipa": "/tɛst/",
         "sentence_cn": "測試句。",
     }
+
+
+class OpenAIProgressTests(unittest.TestCase):
+    def setUp(self):
+        self.real_progress = cards._progress
+        self.messages = []
+        self.clients = []
+        self.client_options = []
+        for name, value in (
+            ("OPENAI_KEYS", ["test-only-key"]),
+            ("API_REQUEST_TIMEOUT", 0.2),
+            ("API_CALL_TIMEOUT", 0.4),
+            ("PROGRESS_INTERVAL", 0.01),
+            ("API_RETRY_DELAY", 0.001),
+        ):
+            patcher = patch.object(cards, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        logger = patch.object(cards, "_progress", side_effect=self.messages.append)
+        logger.start()
+        self.addCleanup(logger.stop)
+        token = cards._generation_deadline.set(None)
+        self.addCleanup(cards._generation_deadline.reset, token)
+
+    def mock_transport(self, handler):
+        def factory(**kwargs):
+            self.client_options.append(kwargs)
+            client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            self.clients.append(client)
+            return AsyncOpenAI(**kwargs, http_client=client)
+
+        patcher = patch.object(cards, "AsyncOpenAI", side_effect=factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def response():
+        return httpx.Response(200, json={
+            "id": "test", "object": "chat.completion", "created": 0,
+            "model": "test", "choices": [{
+                "index": 0, "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }],
+        })
+
+    def call(self):
+        return cards._call_openai(
+            [{"role": "user", "content": "test"}], stage="測試策劃", model="test"
+        )
+
+    def test_success_reports_start_wait_and_finish_without_leaking_stage_to_api(self):
+        async def handler(request):
+            self.assertNotIn("stage", json.loads(request.content))
+            await asyncio.sleep(0.04)
+            return self.response()
+
+        self.mock_transport(handler)
+        result = self.call()
+
+        self.assertEqual(result.choices[0].message.content, "ok")
+        self.assertTrue(any("開始請求" in line for line in self.messages))
+        self.assertTrue(any("等待 API 回應" in line for line in self.messages))
+        self.assertIn("API 回應完成", self.messages[-1])
+        self.assertEqual(self.client_options[0]["max_retries"], 0)
+        self.assertTrue(all(client.is_closed for client in self.clients))
+        self.assertNotIn("test-only-key", "\n".join(self.messages))
+
+    def test_timeouts_cancel_pending_requests_and_stop_after_two_attempts(self):
+        cancelled = []
+
+        async def handler(request):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+        self.mock_transport(handler)
+        started = time.monotonic()
+        with patch.object(cards, "API_REQUEST_TIMEOUT", 0.03):
+            with self.assertRaises(APITimeoutError):
+                self.call()
+
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(len(cancelled), 2)
+        self.assertTrue(any("秒後重試" in line for line in self.messages))
+        self.assertTrue(all(client.is_closed for client in self.clients))
+
+    def test_call_budget_caps_retries_across_two_keys(self):
+        calls = []
+
+        async def handler(request):
+            calls.append(True)
+            await asyncio.Event().wait()
+
+        self.mock_transport(handler)
+        with (
+            patch.object(cards, "OPENAI_KEYS", ["test-key-a", "test-key-b"]),
+            patch.object(cards, "API_CALL_TIMEOUT", 0.03),
+        ):
+            with self.assertRaises(APITimeoutError):
+                self.call()
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(client.is_closed for client in self.clients))
+
+    def test_run_deadline_interrupts_request_without_retry(self):
+        async def handler(request):
+            await asyncio.Event().wait()
+
+        self.mock_transport(handler)
+        cards._generation_deadline.set(time.monotonic() + 0.03)
+        with self.assertRaises(cards.GenerationTimeoutError):
+            self.call()
+
+        self.assertEqual(len(self.clients), 1)
+        self.assertFalse(any("秒後重試" in line for line in self.messages))
+        self.assertTrue(self.clients[0].is_closed)
+
+    def test_expired_run_does_not_start_a_request(self):
+        self.mock_transport(lambda request: self.response())
+        cards._generation_deadline.set(time.monotonic() - 1)
+        with self.assertRaises(cards.GenerationTimeoutError):
+            self.call()
+        self.assertEqual(self.clients, [])
+
+    def test_rate_limit_has_visible_retry_and_no_sdk_retries(self):
+        attempts = []
+
+        def handler(request):
+            attempts.append(True)
+            if len(attempts) == 1:
+                return httpx.Response(429, json={"error": {"message": "test limit"}})
+            return self.response()
+
+        self.mock_transport(handler)
+        self.assertEqual(self.call().choices[0].message.content, "ok")
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(any("HTTP 429" in line for line in self.messages))
+
+    def test_authentication_failure_uses_backup_key(self):
+        attempts = []
+
+        def handler(request):
+            attempts.append(True)
+            if len(attempts) == 1:
+                return httpx.Response(401, json={"error": {"message": "test auth"}})
+            return self.response()
+
+        self.mock_transport(handler)
+        with patch.object(cards, "OPENAI_KEYS", ["test-key-a", "test-key-b"]):
+            self.call()
+        self.assertEqual([options["api_key"] for options in self.client_options],
+                         ["test-key-a", "test-key-b"])
+
+    def test_authentication_failure_without_backup_does_not_retry(self):
+        self.mock_transport(lambda request: httpx.Response(
+            401, json={"error": {"message": "test auth"}}
+        ))
+        with self.assertRaises(AuthenticationError):
+            self.call()
+        self.assertEqual(len(self.clients), 1)
+
+    def test_bad_request_does_not_retry(self):
+        self.mock_transport(lambda request: httpx.Response(
+            400, json={"error": {"message": "test bad request"}}
+        ))
+        with self.assertRaises(BadRequestError):
+            self.call()
+        self.assertEqual(len(self.clients), 1)
+
+    def test_cancellation_closes_client_and_stops_heartbeat(self):
+        cancelled = []
+
+        async def handler(request):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+        self.mock_transport(handler)
+
+        async def run():
+            task = asyncio.create_task(cards._call_openai_async([], "測試取消", {"model": "test"}))
+            await asyncio.sleep(0.03)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            log_count = len(self.messages)
+            await asyncio.sleep(0.03)
+            self.assertEqual(len(self.messages), log_count)
+
+        asyncio.run(run())
+        self.assertEqual(cancelled, [True])
+        self.assertTrue(self.clients[0].is_closed)
+
+    def test_global_timeout_is_not_swallowed_by_planning_review_or_youtube(self):
+        error = cards.GenerationTimeoutError("test deadline")
+        with patch.object(cards, "_call_openai", side_effect=error) as call:
+            for function, arguments in (
+                (cards._request_pain_point_candidates, ("test", {"pain_categories": ["test"]}, 5, "")),
+                (cards._plan_pain_points, ("test", 5)),
+                (cards.generate, ("test", 1)),
+                (cards._ai_review_deck, ("test", [_item("Test", "Test now.")])),
+                (cards._generate_yt_title, ("test",)),
+                (cards._generate_yt_topic_paragraph, ("test",)),
+                (cards._generate_yt_hashtags, ("test",)),
+            ):
+                with self.subTest(function=function.__name__):
+                    call.reset_mock()
+                    with self.assertRaises(cards.GenerationTimeoutError):
+                        function(*arguments)
+                    self.assertEqual(call.call_count, 1)
+
+    def test_main_restores_deadline_even_on_failure(self):
+        original = cards._generation_deadline.get()
+
+        def fail(argv):
+            cards._generation_deadline.set(time.monotonic() + 10)
+            raise cards.GenerationTimeoutError("test deadline")
+
+        with patch.object(cards, "_main", side_effect=fail):
+            with self.assertRaises(cards.GenerationTimeoutError):
+                cards.main([])
+        self.assertEqual(cards._generation_deadline.get(), original)
+
+    def test_progress_flushes_output_immediately(self):
+        with patch("builtins.print") as output:
+            self.real_progress("test")
+        self.assertTrue(output.call_args.kwargs["flush"])
+
+    def test_cli_timeout_and_interrupt_print_status_close_clients_and_exit(self):
+        script = textwrap.dedent('''
+            import asyncio, atexit, httpx, openai, os, runpy, signal, sys
+            real_client = openai.AsyncOpenAI
+            clients = []
+            mode = sys.argv[2]
+            async def handler(request):
+                try:
+                    if mode == "interrupt":
+                        asyncio.get_running_loop().call_later(0.05, os.kill, os.getpid(), signal.SIGINT)
+                    await asyncio.Event().wait()
+                finally:
+                    print("TEST_REQUEST_CANCELLED", flush=True)
+            def factory(**kwargs):
+                client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+                clients.append(client)
+                return real_client(**kwargs, http_client=client)
+            openai.AsyncOpenAI = factory
+            atexit.register(lambda: print("TEST_CLIENTS_CLOSED", all(c.is_closed for c in clients)))
+            sys.argv = ["cards.py", "--topic", "runtime_timeout_test", "--count", "5",
+                        "--output", sys.argv[1], "--no-youtube"]
+            runpy.run_path("cards.py", run_name="__main__")
+        ''')
+        environment = dict(os.environ, OPENAI_API_KEY="test-only-key", OPENAI_API_KEY_2="",
+                           CARD_GENERATION_TIMEOUT="0.2", CARD_API_REQUEST_TIMEOUT="2",
+                           CARD_API_CALL_TIMEOUT="4", CARD_PROGRESS_INTERVAL="0.02")
+        for mode, code, status in (("timeout", 1, "逾時停止"), ("interrupt", 130, "已取消")):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                output = str(Path(directory) / "test.xlsx")
+                result = subprocess.run(
+                    [sys.executable, "-c", script, output, mode], env=environment,
+                    cwd=cards.BASE_DIR, capture_output=True, text=True, timeout=10,
+                )
+                self.assertFalse(Path(output).exists())
+                self.assertFalse(Path(output).with_suffix(".plan.json").exists())
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                self.assertIn("主題範圍策劃：開始請求", result.stdout)
+                self.assertIn("等待 API 回應", result.stdout)
+                self.assertIn(status, result.stdout)
+                self.assertIn("TEST_REQUEST_CANCELLED", result.stdout)
+                self.assertIn("TEST_CLIENTS_CLOSED True", result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_invalid_time_limits_are_rejected(self):
+        for value in ("0", "-1", "nan", "inf", "not-a-number"):
+            with self.subTest(value=value), patch.dict(os.environ, CARD_PROGRESS_INTERVAL=value):
+                with self.assertRaises(ValueError):
+                    cards._positive_seconds("CARD_PROGRESS_INTERVAL", 15)
 
 
 class ReferenceDeckTests(unittest.TestCase):
@@ -302,6 +588,29 @@ class ContentGateTests(unittest.TestCase):
             result = cards._prompt_topic_description()
 
         self.assertEqual(result, "")
+
+    def test_interactive_topic_description_accepts_done_command(self):
+        with patch(
+            "builtins.input",
+            side_effect=[
+                "第一段",
+                "",
+                "第二段",
+                ":DONE",
+            ],
+        ):
+            result = cards._prompt_topic_description()
+
+        self.assertEqual(result, "第一段\n\n第二段")
+
+    def test_interactive_topic_description_accepts_eof_after_paste(self):
+        with patch(
+            "builtins.input",
+            side_effect=["貼上的最後一行", EOFError],
+        ):
+            result = cards._prompt_topic_description()
+
+        self.assertEqual(result, "貼上的最後一行")
 
     def test_generic_counterpart_must_use_the_planned_quote(self):
         item = _item(
@@ -826,6 +1135,25 @@ class PainPointPlanningTests(unittest.TestCase):
             [
                 "I'm good for now, thanks.",
                 "I'd love to, but I have plans.",
+            ],
+        )
+
+    def test_focus_must_teach_phrases_support_inline_scenario_format(self):
+        topic = cards._generation_topic(
+            "微歧視與文化刻板印象",
+            '必教 4 大場景：\n'
+            '1. 對方追問 "Where are you really from?"。'
+            '必教 "Are you asking about my family’s heritage?"。\n'
+            '2. 對方稱讚英文。必教 "Thank you! I use it every day for work." '
+            '與界線較強的 “What makes you say that?”。',
+        )
+
+        self.assertEqual(
+            cards._required_focus_phrases(topic),
+            [
+                "Are you asking about my family’s heritage?",
+                "Thank you! I use it every day for work.",
+                "What makes you say that?",
             ],
         )
 

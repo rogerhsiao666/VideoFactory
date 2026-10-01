@@ -15,6 +15,7 @@ python3 cards.py --topic "主題" --plan-file "output/主題.plan.json"
 from __future__ import annotations
 
 import argparse
+import asyncio
 import glob
 import json
 import math
@@ -23,12 +24,14 @@ import re
 import sys
 import time
 from collections import Counter
+from contextvars import ContextVar
 from datetime import datetime
 from difflib import SequenceMatcher
 
 import openpyxl
+import httpx
 from openpyxl.styles import Font, PatternFill, Alignment
-from openai import OpenAI
+from openai import AsyncOpenAI, APIConnectionError, APIError, APITimeoutError, AuthenticationError
 from curated_blueprints import get_curated_blueprint
 from dotenv import load_dotenv
 
@@ -72,12 +75,45 @@ if REVIEW_MODE not in {"local", "hybrid", "ai", "off"}:
     raise ValueError("CARD_REVIEW_MODE 必須是 local、hybrid、ai 或 off")
 ENABLE_PAIN_POINT_PLAN = os.getenv("OPENAI_PAIN_POINT_PLAN", "1").lower() not in {"0", "false", "no"}
 
+
+def _positive_seconds(name: str, default: float) -> float:
+    value = float(os.getenv(name, str(default)))
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} 必須是大於零的秒數")
+    return value
+
+
+API_REQUEST_TIMEOUT = _positive_seconds("CARD_API_REQUEST_TIMEOUT", 90)
+API_CALL_TIMEOUT = _positive_seconds("CARD_API_CALL_TIMEOUT", 180)
+GENERATION_TIMEOUT = _positive_seconds("CARD_GENERATION_TIMEOUT", 900)
+PROGRESS_INTERVAL = _positive_seconds("CARD_PROGRESS_INTERVAL", 15)
+API_MAX_ATTEMPTS = 2
+API_RETRY_DELAY = 2
+_generation_deadline: ContextVar[float | None] = ContextVar("generation_deadline", default=None)
+
 HEADERS = ["id", "word_en", "word_ipa", "word_cn", "tips",
            "sentence_en", "sentence_ipa", "sentence_cn"]
 
 
 class PlanVersionError(ValueError):
     """Raised when a saved plan predates the current quality contract."""
+
+
+class GenerationTimeoutError(RuntimeError):
+    """Stop all retries and fallbacks when the run exhausts its time budget."""
+
+
+def _progress(message: str) -> None:
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def _check_generation_deadline() -> None:
+    deadline = _generation_deadline.get()
+    if deadline is not None and time.monotonic() >= deadline:
+        raise GenerationTimeoutError(
+            f"生成流程已達總等待上限 {GENERATION_TIMEOUT:g} 秒，已停止請求與重試。"
+            "已寫出的檔案會保留；可調整 CARD_GENERATION_TIMEOUT 後重跑。"
+        )
 
 
 class PainPointPlan(list):
@@ -99,21 +135,93 @@ Each object MUST have exactly these keys:
 - "sentence_cn" : 台灣繁體中文口語意譯（非逐字翻譯）"""
 
 
-def _call_openai(messages: list, **kwargs):
-    from openai import RateLimitError, AuthenticationError, APIError
+async def _request_with_progress(client, messages: list, kwargs: dict, stage: str, timeout: float):
+    started = time.monotonic()
+
+    async def heartbeat():
+        while True:
+            await asyncio.sleep(PROGRESS_INTERVAL)
+            _progress(f"{stage}：等待 API 回應，已 {time.monotonic() - started:.0f} 秒")
+
+    reporter = asyncio.create_task(heartbeat())
+    try:
+        # A wall-clock limit also stops responses that trickle bytes forever.
+        return await asyncio.wait_for(
+            client.chat.completions.create(messages=messages, **kwargs), timeout=timeout
+        )
+    finally:
+        reporter.cancel()
+        await asyncio.gather(reporter, return_exceptions=True)
+
+
+async def _call_openai_async(messages: list, stage: str, kwargs: dict):
+    _check_generation_deadline()
+    started = time.monotonic()
+    call_deadline = started + API_CALL_TIMEOUT
+    run_deadline = _generation_deadline.get()
+    if run_deadline is not None:
+        call_deadline = min(call_deadline, run_deadline)
+    last_err = None
+    for attempt in range(API_MAX_ATTEMPTS):
+        _check_generation_deadline()
+        remaining = call_deadline - time.monotonic()
+        if remaining <= 0:
+            last_err = APITimeoutError(
+                request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+            )
+            break
+        key_index = min(attempt, len(OPENAI_KEYS) - 1)
+        timeout = min(API_REQUEST_TIMEOUT, remaining)
+        _progress(
+            f"{stage}：開始請求 {attempt + 1}/{API_MAX_ATTEMPTS}，"
+            f"模型 {kwargs.get('model', CARD_MODEL)}，金鑰 #{key_index + 1}，"
+            f"本次上限 {timeout:.0f} 秒"
+        )
+        try:
+            async with AsyncOpenAI(
+                api_key=OPENAI_KEYS[key_index], max_retries=0,
+                timeout=httpx.Timeout(timeout, connect=min(10, timeout)),
+            ) as client:
+                response = await _request_with_progress(client, messages, kwargs, stage, timeout)
+            _check_generation_deadline()
+            _progress(f"{stage}：API 回應完成，累計 {time.monotonic() - started:.1f} 秒")
+            return response
+        except asyncio.TimeoutError:
+            last_err = APITimeoutError(
+                request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+            )
+        except APIError as exc:
+            last_err = exc
+        _check_generation_deadline()
+        status = getattr(last_err, "status_code", None)
+        _progress(
+            f"{stage}：請求失敗（{type(last_err).__name__}"
+            f"{f', HTTP {status}' if status else ''}）"
+        )
+        if isinstance(last_err, AuthenticationError):
+            retryable = key_index + 1 < len(OPENAI_KEYS)
+        else:
+            retryable = (
+                isinstance(last_err, APIConnectionError)
+                or status in {408, 409, 429}
+                or (status is not None and status >= 500)
+            )
+        if not retryable or attempt + 1 >= API_MAX_ATTEMPTS:
+            break
+        delay = min(API_RETRY_DELAY, max(0, call_deadline - time.monotonic()))
+        if delay <= 0:
+            break
+        _progress(f"{stage}：{delay:g} 秒後重試，下一次金鑰 #{min(attempt + 1, len(OPENAI_KEYS) - 1) + 1}")
+        await asyncio.sleep(delay)
+    _check_generation_deadline()
+    _progress(f"{stage}：API 呼叫失敗，累計 {time.monotonic() - started:.1f} 秒，停止本次呼叫")
+    raise last_err
+
+
+def _call_openai(messages: list, *, stage: str = "OpenAI", **kwargs):
     if not OPENAI_KEYS:
         raise RuntimeError("未設定任何 OPENAI_API_KEY，請在 .env 補上金鑰")
-    last_err = None
-    for idx, key in enumerate(OPENAI_KEYS):
-        try:
-            client = OpenAI(api_key=key, timeout=90.0)
-            return client.chat.completions.create(messages=messages, **kwargs)
-        except (RateLimitError, AuthenticationError) as e:
-            print(f"   ⚠️  OpenAI 金鑰 #{idx + 1} 無法使用（{type(e).__name__}），切換備用金鑰...")
-            last_err = e
-        except APIError as e:
-            last_err = e
-    raise last_err
+    return asyncio.run(_call_openai_async(messages, stage, kwargs))
 
 
 def _normalize_key(word: str) -> str:
@@ -226,7 +334,25 @@ def _required_focus_phrases(topic: str) -> list[str]:
         flags=re.DOTALL,
     )
     if not match:
-        return []
+        phrases: list[str] = []
+        for marker in re.finditer(r"必教(?!金句)", topic):
+            section = topic[marker.end():]
+            section = re.split(r"\n|\s+\d+[.)、]\s*", section, maxsplit=1)[0]
+            quoted = re.findall(
+                r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』',
+                section,
+            )
+            for groups in quoted:
+                candidate = next((value.strip() for value in groups if value), "")
+                english_chars = len(re.findall(r"[A-Za-z]", candidate))
+                visible_chars = len(re.sub(r"\s", "", candidate))
+                if (
+                    _english_word_count(candidate) >= 2
+                    and english_chars >= max(1, math.ceil(visible_chars * 0.6))
+                    and candidate not in phrases
+                ):
+                    phrases.append(candidate)
+        return phrases
     section = match.group(1)
     parenthesized = []
     for raw in re.findall(r"[（(]([^()（）]*)[)）]", section):
@@ -660,7 +786,7 @@ word_ipa 只能對應 word_en，sentence_ipa 只能對應 sentence_en，不可�
         else:
             kwargs["max_tokens"] = 2500
             kwargs["temperature"] = 0.1
-        response = _call_openai(**kwargs)
+        response = _call_openai(stage=f"鎖定卡翻譯與 IPA，第 {attempt} 輪", **kwargs)
         raw_items = _extract_generated_items(response.choices[0].message.content)
         missing_by_id = {purpose_id: point for purpose_id, point in missing}
         for item in raw_items:
@@ -1307,7 +1433,7 @@ def _ai_review_pain_point_plan(
     else:
         kwargs["max_tokens"] = 8000
         kwargs["temperature"] = 0.1
-    response = _call_openai(**kwargs)
+    response = _call_openai(stage="痛點藍圖獨立審稿", **kwargs)
     payload = json.loads(response.choices[0].message.content)
     generic_reasons = {"整副牌問題", "偏離核心痛點", "內容偏離核心痛點", "偏題"}
     issues = [
@@ -1864,7 +1990,7 @@ def _request_topic_contract(topic: str, reference_note: str, retry_note: str = "
     else:
         kwargs["max_tokens"] = 2500
         kwargs["temperature"] = 0.1
-    response = _call_openai(**kwargs)
+    response = _call_openai(stage="主題範圍策劃", **kwargs)
     payload = json.loads(response.choices[0].message.content)
     contract = _normalize_topic_contract(payload.get("topic_contract"))
     if _topic_requests_learner_only(topic):
@@ -1895,6 +2021,7 @@ def _request_pain_point_candidates(
     zero_add_streak = 0
     batch_retry_note = ""
     while len(candidates) < candidate_count and rounds < max_rounds:
+        _check_generation_deadline()
         per_category_target = max(1, math.ceil(candidate_count / len(pain_categories)))
         batch_count = min(
             PLAN_GENERATE_BATCH,
@@ -2007,8 +2134,13 @@ def _request_pain_point_candidates(
             kwargs["max_tokens"] = 6000
             kwargs["temperature"] = 0.1
         try:
-            response = _call_openai(**kwargs)
+            response = _call_openai(
+                stage=f"痛點候選 #{rounds + 1}（{category_focus}，已 {len(candidates)}/{candidate_count}）",
+                **kwargs,
+            )
             payload = json.loads(response.choices[0].message.content)
+        except GenerationTimeoutError:
+            raise
         except Exception as exc:
             consecutive_failures += 1
             rounds += 1
@@ -2095,6 +2227,7 @@ def _plan_pain_points(
     reference_items: list[dict] | None = None,
 ) -> list[dict]:
     """Create, validate, and independently review a pain-centered blueprint."""
+    _check_generation_deadline()
     if not ENABLE_PAIN_POINT_PLAN:
         return []
 
@@ -2121,6 +2254,8 @@ def _plan_pain_points(
     last_error: Exception | None = None
     retry_note = ""
     for attempt in range(3):
+        _check_generation_deadline()
+        _progress(f"痛點策劃：第 {attempt + 1}/3 輪，目標 {count} 張、{candidate_count} 個候選")
         raw_points = None
         contract: dict = {}
         strict_selected = False
@@ -2164,6 +2299,8 @@ def _plan_pain_points(
                 raise RuntimeError("；".join(semantic_issues[:12]))
             points = selected_points
             break
+        except GenerationTimeoutError:
+            raise
         except Exception as exc:
             last_error = exc
             if raw_points is not None and contract and not strict_selected:
@@ -2195,6 +2332,8 @@ def _plan_pain_points(
                         fallback_contract = contract
                         fallback_category_count = relaxed_category_count
                         fallback_raw_count = raw_count
+                except GenerationTimeoutError:
+                    raise
                 except Exception:
                     pass
             if attempt < 2:
@@ -2406,7 +2545,7 @@ def _ai_review_deck(
         }
         if not REVIEW_MODEL.startswith("gpt-5"):
             request_kwargs["temperature"] = 0.1
-        response = _call_openai(**request_kwargs)
+        response = _call_openai(stage=f"牌組內容審稿（{len(items)} 張）", **request_kwargs)
         raw_rejects = json.loads(response.choices[0].message.content).get("reject", [])
 
         if not pain_points:
@@ -2433,10 +2572,12 @@ def _ai_review_deck(
             }
             if not DUPLICATE_REVIEW_MODEL.startswith("gpt-5"):
                 duplicate_kwargs["temperature"] = 0.1
-            duplicate_response = _call_openai(**duplicate_kwargs)
+            duplicate_response = _call_openai(stage="牌組語意去重審稿", **duplicate_kwargs)
             raw_rejects.extend(
                 json.loads(duplicate_response.choices[0].message.content).get("reject", [])
             )
+    except GenerationTimeoutError:
+        raise
     except Exception as e:
         raise RuntimeError(f"自動審稿失敗，拒絕輸出未審核牌組: {e}") from e
 
@@ -2464,6 +2605,7 @@ def _review_deck(
     reference_items: list[dict] | None = None,
 ) -> dict[int, str]:
     """Run the configured local, AI, or hybrid deck review."""
+    _check_generation_deadline()
     if REVIEW_MODE == "off" or not items:
         return {}
     if _has_complete_locked_blueprint(pain_points):
@@ -2530,6 +2672,7 @@ def generate(
     pain_points: list | None = None,
     reference_items: list[dict] | None = None,
 ) -> list[dict]:
+    _check_generation_deadline()
     reference_items = list(reference_items or [])
     if pain_points is None:
         pain_points = _plan_pain_points(topic, count, reference_items)
@@ -2628,6 +2771,7 @@ def generate(
             )
 
     while rounds < max_rounds:
+        _check_generation_deadline()
         if len(all_items) >= count:
             all_items = all_items[:count]
             if pain_points:
@@ -2838,17 +2982,23 @@ def generate(
             if not CARD_MODEL.startswith("gpt-5"):
                 # GPT-5 models currently only support their default temperature.
                 request_kwargs["temperature"] = 0.55 if len(all_items) > 0 else 0.4
-            resp = _call_openai(**request_kwargs)
+            resp = _call_openai(stage=f"卡片生成（已 {len(all_items)}/{count}）", **request_kwargs)
             raw = _extract_generated_items(resp.choices[0].message.content)
             if not raw:
                 print("      ⚠️ 模型未回傳可解析的 items 候選陣列")
+        except GenerationTimeoutError:
+            raise
         except Exception as e:
-            print(f"      ⚠️ API 呼召失敗，等待 2 秒後重試: {e}")
-            time.sleep(2)
             consecutive_fails += 1
             if consecutive_fails >= 3:
                 print("   ⚠️  連續失敗 3 次，中斷生成。")
                 break
+            _check_generation_deadline()
+            deadline = _generation_deadline.get()
+            delay = min(2, max(0, deadline - time.monotonic())) if deadline is not None else 2
+            _progress(f"卡片生成失敗（第 {consecutive_fails}/3 次）：{e}；{delay:g} 秒後重試")
+            time.sleep(delay)
+            _check_generation_deadline()
             continue
 
         consecutive_fails = 0
@@ -2952,6 +3102,7 @@ def generate(
             empty_streak = 0
             print(f"      ✅ 本輪新增 {added} 個（累計 {len(all_items)}/{count}）")
 
+    _check_generation_deadline()
     if len(all_items) < count:
         raise RuntimeError(f"僅生成 {len(all_items)}/{count} 張，未達數量與品質要求，拒絕輸出")
 
@@ -3156,10 +3307,17 @@ def _prompt_topic_description() -> str:
         "\n📝 請補充主題描述（建議填寫目標對象、具體情境、核心痛點、"
         "必教內容與不要包含的內容）"
     )
-    print("   可輸入多段；連續輸入兩個空白行完成，第一行直接 Enter 則略過。")
+    print("   可貼上多段文字；完成時在新的一行輸入 :done（也可連按兩次 Enter 或按 Ctrl+D）。")
+    print("   第一行直接 Enter 則略過。")
     lines: list[str] = []
     while True:
-        line = input("> " if not lines else "| ").strip()
+        try:
+            line = input("> " if not lines else "描述（:done 結束）> ").strip()
+        except EOFError:
+            print()
+            break
+        if line.casefold() == ":done":
+            break
         if not line:
             if not lines:
                 break
@@ -3168,7 +3326,9 @@ def _prompt_topic_description() -> str:
             lines.append("")
             continue
         lines.append(line)
-    return "\n".join(lines).strip()
+    description = "\n".join(lines).strip()
+    _progress(f"描述輸入已完成（{len(description)} 字），接下來確認卡片數量")
+    return description
 
 
 def _parse_srt_starts(srt_path: str) -> list[float]:
@@ -3216,6 +3376,7 @@ def _generate_yt_title(topic: str, content_context: str = "") -> str:
     )
     try:
         resp = _call_openai(
+            stage="YouTube 標題",
             messages=[{"role": "user", "content": prompt}],
             model="gpt-4o-mini",
             temperature=0.9,
@@ -3226,6 +3387,8 @@ def _generate_yt_title(topic: str, content_context: str = "") -> str:
             title = re.sub(r"\s*[\|｜-]?\s*用?\s*Rayo\s*智慧閃卡.*$", "", title).strip()
             title = re.sub(r"\s*[\|｜-]?\s*Rayo\s*智慧閃卡.*$", "", title).strip()
         return title.splitlines()[0] if title else fallback_title
+    except GenerationTimeoutError:
+        raise
     except Exception as e:
         print(f"⚠️  OpenAI 生成 YouTube 標題失敗 ({e})，使用預設模板")
         return fallback_title
@@ -3246,12 +3409,15 @@ def _generate_yt_topic_paragraph(topic: str, content_context: str = "") -> str:
     )
     try:
         resp = _call_openai(
+            stage="YouTube 描述",
             messages=[{"role": "user", "content": prompt}],
             model="gpt-4o-mini",
             temperature=0.9,
             max_tokens=400,
         )
         return resp.choices[0].message.content.strip()
+    except GenerationTimeoutError:
+        raise
     except Exception as e:
         print(f"⚠️  OpenAI 生成 YouTube 描述失敗 ({e})，使用預設模板")
         return (
@@ -3273,6 +3439,7 @@ def _generate_yt_hashtags(topic: str, content_context: str = "") -> list[str]:
     )
     try:
         resp = _call_openai(
+            stage="YouTube 標籤",
             messages=[{"role": "user", "content": prompt}],
             model="gpt-4o-mini",
             temperature=0.7,
@@ -3284,6 +3451,8 @@ def _generate_yt_hashtags(topic: str, content_context: str = "") -> list[str]:
         cleaned = [t.strip() for t in tags if isinstance(t, str) and t.strip()]
         if cleaned:
             return cleaned
+    except GenerationTimeoutError:
+        raise
     except Exception as e:
         print(f"⚠️  OpenAI 生成主題 hashtags 失敗 ({e})，使用預設 fallback")
     return [f"{topic}英文", f"{topic} english"]
@@ -3452,6 +3621,14 @@ def write_xlsx(items: list[dict], path: str):
 
 
 def main(argv: list[str] | None = None):
+    token = _generation_deadline.set(None)
+    try:
+        return _main(argv)
+    finally:
+        _generation_deadline.reset(token)
+
+
+def _main(argv: list[str] | None = None):
     global REVIEW_MODE
 
     raw_argv = list(sys.argv[1:] if argv is None else argv)
@@ -3512,6 +3689,13 @@ def main(argv: list[str] | None = None):
     else:
         raw_count = input(f"🔢 卡片數量（留空={DEFAULT_CARD_COUNT}）: ").strip()
         count = int(raw_count) if raw_count.isdigit() and int(raw_count) > 0 else DEFAULT_CARD_COUNT
+
+    _generation_deadline.set(time.monotonic() + GENERATION_TIMEOUT)
+    _progress(
+        f"開始處理「{topic}」：{count} 張；每 {PROGRESS_INTERVAL:g} 秒回報等待狀態，"
+        f"流程時間預算 {GENERATION_TIMEOUT:g} 秒（不含輸入時間）"
+    )
+    _progress("目前階段：載入或建立痛點策劃，完成後才開始生成卡片")
 
     plan_path = (
         os.path.abspath(os.path.expanduser(args.plan_file))
@@ -3657,4 +3841,11 @@ def main(argv: list[str] | None = None):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n⛔ 已取消，未繼續生成。")
+        raise SystemExit(130)
+    except GenerationTimeoutError as exc:
+        _progress(f"逾時停止：{exc}")
+        raise SystemExit(1)
