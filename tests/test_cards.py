@@ -420,14 +420,17 @@ class SentenceDiversityTests(unittest.TestCase):
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
             content=json.dumps({"reject": [{
                 "id": "02", "kind": "sentence_pattern", "reason": "與 01 句型重複，改用不同結構",
-            }]}, ensure_ascii=False)
+            }], "groups": [
+                {"purpose": "更換麵包", "ids": ["01"], "basic_id": "01", "advanced_id": None},
+                {"purpose": "更換醬料", "ids": ["02"], "basic_id": "02", "advanced_id": None},
+            ]}, ensure_ascii=False)
         ))])
         with patch.object(cards, "_call_openai", return_value=response) as call:
             rejected = cards._ai_review_deck("更換餐點", items, [
                 _pain_point("更換麵包", "餐點", 1), _pain_point("更換醬料", "餐點", 2),
             ])
         self.assertIn(1, rejected)
-        self.assertIn("kind 填 sentence_pattern", call.call_args.kwargs["messages"][0]["content"])
+        self.assertIn("kind 填 sentence_pattern", call.call_args_list[0].kwargs["messages"][0]["content"])
 
     def test_ai_mode_still_runs_deterministic_sentence_pattern_check(self):
         items = [
@@ -470,6 +473,8 @@ class SentenceDiversityTests(unittest.TestCase):
             _item("Change the bread.", "Could I change the bread?", 1),
             _item("Different sauce.", "Could I change the sauce?", 2),
         ]
+        items[0].update(word_ipa="/tʃeɪndʒ ðə brɛd/", sentence_ipa="/kʊd aɪ tʃeɪndʒ ðə brɛd/")
+        items[1].update(word_ipa="/ˈdɪfərənt sɔs/", sentence_ipa="/kʊd aɪ tʃeɪndʒ ðə sɔs/")
         points = []
         for i, item in enumerate(items):
             point = _pain_point(("更換麵包", "更換醬料")[i], f"餐點{i}", i + 1)
@@ -924,8 +929,82 @@ class ContentGateTests(unittest.TestCase):
 
         self.assertEqual(call.call_count, 2)
         self.assertEqual(result[0]["word_ipa"], valid["word_ipa"])
+        retry_prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("previous_error", retry_prompt)
+        self.assertIn("詞數", retry_prompt)
 
-    def test_locked_blueprint_uses_code_review_without_ai(self):
+    def test_locked_ipa_rejects_observed_errors_but_accepts_dialect_variants(self):
+        cases = [
+            ("A quote.", "/ə kwoʊt/", "/ə koʊt/"),
+            ("A quote.", "/ə kwəʊt/", "/ə kəʊt/"),
+            ("A charge.", "/ə tʃɑrd/", "/ə tʃɑrdʒ/"),
+            ("I was charged.", "/aɪ wəz tʃɑrd/", "/aɪ wəz tʃɑrdʒd/"),
+            ("I was charged.", "/aɪ wəz tʃɑrdʒ/", "/aɪ wəz tʃɑrdʒd/"),
+            ("Refund it.", "/ˈriːfʌnd ɪt/", "/rɪˈfʌnd ɪt/"),
+            ("A cancellation.", "/ə ˌkænsləˈeɪʃən/", "/ə ˌkænsəˈleɪʃən/"),
+            ("Unauthorized work.", "/ˌʌnəˈθɔraɪzd wɜrk/", "/ˌʌnˈɔθəraɪzd wɜrk/"),
+        ]
+        for english, bad, good in cases:
+            with self.subTest(english=english, bad=bad):
+                point = dict(_pain_point("測試", "測試", 1),
+                             target_phrase=english, target_sentence=english)
+                item = _item(english, english)
+                item.update(word_ipa=bad, sentence_ipa=bad)
+                self.assertIsNotNone(cards._locked_item_issue(item, point))
+                item.update(word_ipa=good, sentence_ipa=good)
+                self.assertIsNone(cards._locked_item_issue(item, point))
+
+    def test_locked_ipa_does_not_apply_verb_stress_to_refund_noun(self):
+        english = "The refund arrived."
+        point = dict(_pain_point("退款進度", "退款", 1),
+                     target_phrase=english, target_sentence=english)
+        item = _item(english, english)
+        item.update(word_ipa="/ðə ˈriːfʌnd əˈraɪvd/", sentence_ipa="/ðə ˈriːfʌnd əˈraɪvd/")
+        self.assertIsNone(cards._locked_item_issue(item, point))
+
+    def test_locked_translation_rejects_literal_store_credit(self):
+        english = "Not as store credit."
+        point = dict(_pain_point("退款方式", "退款", 1),
+                     target_phrase=english, target_sentence=english)
+        item = _item(english, english)
+        item.update(word_ipa="/nɑt æz stɔr ˈkrɛdɪt/", sentence_ipa="/nɑt æz stɔr ˈkrɛdɪt/",
+                    sentence_cn="不是商店信用。")
+        self.assertIn("店內購物金", cards._locked_item_issue(item, point))
+        item["sentence_cn"] = "不要退成店內購物金。"
+        self.assertIsNone(cards._locked_item_issue(item, point))
+
+    def test_known_ipa_correction_preserves_punctuation_and_refund_noun(self):
+        english = "Refund the charge, not the quote."
+        point = dict(_pain_point("測試", "測試", 1),
+                     target_phrase=english, target_sentence=english)
+        item = _item(english, english)
+        item.update(word_ipa="/ˈriːfʌnd ðə tʃɑrd, nɑt ðə kwoʊt./",
+                    sentence_ipa="/ˈriːfʌnd ðə tʃɑrd, nɑt ðə kwoʊt./")
+        corrected = cards._correct_known_locked_pronunciations(item, point)
+        self.assertEqual(corrected["word_ipa"], "/rɪˈfʌnd ðə tʃɑrdʒ, nɑt ðə koʊt./")
+        self.assertNotEqual(item["word_ipa"], corrected["word_ipa"])
+        item["sentence_en"] = "The refund arrived."
+        item["sentence_ipa"] = "/ðə ˈriːfʌnd əˈraɪvd/"
+        point["target_sentence"] = item["sentence_en"]
+        corrected = cards._correct_known_locked_pronunciations(item, point)
+        self.assertEqual(corrected["sentence_ipa"], item["sentence_ipa"])
+        item["sentence_en"] = "I authorized it."
+        item["sentence_ipa"] = "/aɪ ɔˈθɔraɪzd ɪt/"
+        point["target_sentence"] = item["sentence_en"]
+        corrected = cards._correct_known_locked_pronunciations(item, point)
+        self.assertEqual(corrected["sentence_ipa"], "/aɪ ˈɔθəraɪzd ɪt/")
+
+    def test_known_ipa_correction_does_not_hide_stale_source_or_alignment(self):
+        english = "A quote."
+        point = dict(_pain_point("報價", "報價", 1),
+                     target_phrase=english, target_sentence=english)
+        for source, ipa in (("The charge.", "/ðə tʃɑrd/"), (english, "/kwoʊt/")):
+            item = _item(source, source)
+            item.update(word_ipa=ipa, sentence_ipa=ipa)
+            self.assertEqual(cards._correct_known_locked_pronunciations(item, point), item)
+            self.assertIsNotNone(cards._locked_item_issue(item, point))
+
+    def test_locked_blueprint_still_gets_semantic_review_in_ai_modes(self):
         item = _item(
             "Could you repeat the last part?",
             "The line cut out. Could you repeat the last part?",
@@ -941,15 +1020,18 @@ class ContentGateTests(unittest.TestCase):
         for review_mode in ("local", "hybrid", "ai"):
             with self.subTest(review_mode=review_mode), patch.object(
                 cards, "REVIEW_MODE", review_mode
-            ), patch.object(cards, "_ai_review_deck") as ai_review:
+            ), patch.object(cards, "_ai_review_deck", return_value={}) as ai_review:
                 rejected = cards._review_deck(
                     "Phone Call Phobia", [item], [point]
                 )
 
             self.assertEqual(rejected, {})
-            ai_review.assert_not_called()
+            if review_mode == "local":
+                ai_review.assert_not_called()
+            else:
+                ai_review.assert_called_once()
 
-    def test_planned_deck_ignores_ai_duplicate_rejection(self):
+    def test_planned_deck_does_not_ignore_ai_duplicate_rejection(self):
         points = [
             _pain_point("用工作理由離開", "離開理由", 1),
             _pain_point("去拿飲料並離開", "離開理由", 2),
@@ -964,6 +1046,10 @@ class ContentGateTests(unittest.TestCase):
                     message=SimpleNamespace(
                         content=json.dumps({
                             "reject": [{"id": "02", "reason": "與 01 溝通目的重複"}],
+                            "groups": [
+                                {"purpose": "工作離場", "ids": ["01"], "basic_id": "01", "advanced_id": None},
+                                {"purpose": "飲料離場", "ids": ["02"], "basic_id": "02", "advanced_id": None},
+                            ],
                         })
                     )
                 )
@@ -973,8 +1059,229 @@ class ContentGateTests(unittest.TestCase):
         with patch.object(cards, "_call_openai", return_value=response) as call:
             rejected = cards._ai_review_deck("結束話題", items, points)
 
+        self.assertIn(1, rejected)
+        self.assertTrue(rejected[1].startswith("語意重複："))
+        self.assertEqual(call.call_count, 2)
+
+
+class SemanticDuplicateTests(unittest.TestCase):
+    @staticmethod
+    def response(reject, count=3, groups=None):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({"reject": reject, "groups": groups if groups is not None else [
+                {"purpose": f"測試目的{i}", "ids": [str(i)], "basic_id": str(i), "advanced_id": None}
+                for i in range(1, count + 1)
+            ]}, ensure_ascii=False)
+        ))])
+
+    def quote_items(self):
+        return [
+            _item("I need a written quote.", "Please give me a written quote.", 1),
+            _item("Could you put that in writing?", "Could you put the price and details in writing?", 2),
+            _item("Send me a written estimate.", "Can you send me an estimate for this service?", 3),
+        ]
+
+    def test_planned_deck_always_runs_full_semantic_review(self):
+        items = self.quote_items()
+        points = [
+            _pain_point("索取維修書面報價", "維修", 1),
+            _pain_point("索取會員書面細節", "會員", 2),
+            _pain_point("要求服務 estimate", "服務", 3),
+        ]
+        with patch.object(cards, "_call_openai", side_effect=[
+            self.response([]),
+            self.response([], groups=[{"purpose": "取得書面報價", "ids": ["01", "02", "03"],
+                                      "basic_id": "01", "advanced_id": "02", "pair_reason": "02使用片語put in writing"}]),
+        ]) as call:
+            rejected = cards._ai_review_deck("推銷與隱形敲詐", items, points)
+
+        self.assertEqual(set(rejected), {2})
+        self.assertIn("語意重複", rejected[2])
+        self.assertEqual(call.call_count, 2)
+        prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("先建立跨分類、跨 purpose_id 的語意群組", prompt)
+        self.assertIn("每組第三張起一律退回", prompt)
+        self.assertIn("written estimate", prompt)
+
+    def test_simple_advanced_pair_can_pass_without_a_blueprint(self):
+        with patch.object(cards, "_call_openai", return_value=self.response([], count=2, groups=[
+            {"purpose": "取得報價", "ids": ["01", "02"], "basic_id": "01", "advanced_id": "02", "pair_reason": "02使用片語"},
+        ])) as call:
+            rejected = cards._ai_review_deck("推銷", self.quote_items()[:2])
         self.assertEqual(rejected, {})
-        self.assertEqual(call.call_count, 1)
+        self.assertEqual(call.call_count, 2)
+        self.assertIn("沒有明顯難度差異則只保留一張", call.call_args.kwargs["messages"][0]["content"])
+
+    def test_cross_deck_paraphrases_are_still_excluded(self):
+        reference = dict(self.quote_items()[0], _source_deck="上一集")
+        with patch.object(cards, "_call_openai", side_effect=[
+            self.response([], count=1), self.response([{"id": "01", "reason": "與上一集書面報價重複"}], count=1),
+        ]) as call:
+            rejected = cards._ai_review_deck("推銷_02", [self.quote_items()[1]], reference_items=[reference])
+        self.assertIn(0, rejected)
+        self.assertIn("兩句上限只適用於當前牌組", call.call_args.kwargs["messages"][0]["content"])
+
+    def test_invalid_semantic_review_response_fails_closed(self):
+        invalid = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({"items": []})
+        ))])
+        with patch.object(cards, "_call_openai", side_effect=[self.response([]), invalid, invalid, invalid]):
+            with self.assertRaisesRegex(RuntimeError, "語意去重審稿必須回傳 reject 陣列"):
+                cards._ai_review_deck("推銷", self.quote_items())
+
+    def test_duplicate_blueprint_is_replaced_before_refilling(self):
+        points = [_pain_point("索取書面報價", "報價", 1)]
+        item = self.quote_items()[0]
+        replacement = _pain_point("限定本次授權金額", "報價", 1)
+        new_item = dict(_item("My limit is fifty dollars.", "Do not spend more than fifty dollars.", 1), purpose_id=1)
+
+        def repair(topic, plan, items, rejected, references):
+            plan[0] = replacement
+
+        with (
+            patch.object(cards, "_review_deck", side_effect=[{0: "語意重複：要求書面報價"}, {}]),
+            patch.object(cards, "_replace_duplicate_pain_points", side_effect=repair) as replace,
+            patch.object(cards, "_load_used_words", return_value=set()),
+            patch.object(cards, "_save_used_words") as save,
+            patch.object(cards, "_call_openai", return_value=SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content=json.dumps({"items": [new_item]}, ensure_ascii=False))
+            )])) as call,
+        ):
+            result = cards.generate("推銷", 1, seed_items=[item], pain_points=points)
+        replace.assert_called_once()
+        call.assert_called_once()
+        save.assert_called_once()
+        self.assertEqual(result[0]["_pain_point"]["task"], replacement["task"])
+        self.assertEqual(result[0]["word_en"], new_item["word_en"])
+
+    def test_invalid_semantic_rejection_ids_fail_closed(self):
+        for rejected_id in (None, "bad", "00", "04"):
+            with self.subTest(rejected_id=rejected_id), patch.object(cards, "_call_openai", side_effect=[
+                self.response([]), self.response([{"id": rejected_id, "reason": "重複"}]),
+            ]):
+                with self.assertRaisesRegex(RuntimeError, "語意去重退回"):
+                    cards._ai_review_deck("推銷", self.quote_items())
+
+    def test_generation_prompt_uses_meaning_not_ids_or_document_names(self):
+        prompt = cards._build_prompt("推銷與隱形敲詐", 50)
+        self.assertIn(cards.SEMANTIC_DUPLICATE_POLICY, prompt)
+        self.assertIn("同一溝通目的最多兩種說法", prompt)
+        self.assertIn("不同 purpose_id、分類、場所、商品、文件名稱", prompt)
+        self.assertIn("不得用同義改寫、換商品或新增理由填補句數", prompt)
+
+    def test_group_cap_is_enforced_even_when_model_reject_list_is_empty(self):
+        payload = {"reject": [], "groups": [{"purpose": "取得書面報價", "ids": ["01", "02", "03"],
+                    "basic_id": "01", "advanced_id": "02", "pair_reason": "片語進階"}]}
+        rejected = cards._semantic_group_rejections(payload, 3)
+        self.assertEqual(set(rejected), {2})
+        self.assertIn("同組 01,02,03", rejected[2])
+
+    def test_group_partition_must_be_complete_and_unambiguous(self):
+        one = {"purpose": "報價", "ids": ["01"], "basic_id": "01", "advanced_id": None}
+        cases = [
+            {}, {"groups": []}, {"groups": [one]},
+            {"groups": [one, dict(one, purpose="其他")]},
+            {"groups": [one, dict(one, ids=["02"], basic_id="02")]},
+            {"groups": [dict(one, ids=["01", "02"], advanced_id="02")]},
+            {"groups": [dict(one, ids=["01", "02"], basic_id="03")]},
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                cards._semantic_group_rejections(payload, 2)
+
+    def test_repair_keeps_good_jobs_and_replaces_only_duplicate_job(self):
+        points = [_pain_point("索取書面報價", "報價", 1), _pain_point("再次索取報價", "報價", 2)]
+        good = dict(points[0])
+        new = dict(_pain_point("限制最高授權金額", "報價", 2), id=2)
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=json.dumps({"replacements": [new]}, ensure_ascii=False)
+        ))])
+        with patch.object(cards, "_call_openai", return_value=response):
+            cards._replace_duplicate_pain_points("推銷", points, self.quote_items()[:2], {1: "語意重複：報價"})
+        self.assertEqual(points[0], good)
+        self.assertEqual(points[1]["task"], new["task"])
+
+    def test_repair_does_not_silently_change_locked_english(self):
+        point = _pain_point("索取報價", "報價", 1)
+        point.update(job_key="quote", target_phrase="I need a quote.", target_sentence="I need a written quote.")
+        with patch.object(cards, "_call_openai") as call, self.assertRaisesRegex(RuntimeError, "人工策劃"):
+            cards._replace_duplicate_pain_points("推銷", [point], self.quote_items()[:1], {0: "語意重複：報價"})
+        call.assert_not_called()
+
+    def test_incomplete_group_response_is_corrected_before_passing(self):
+        items = self.quote_items()
+        with patch.object(cards, "_call_openai", side_effect=[
+            self.response([]), self.response([], count=2), self.response([]),
+        ]) as call:
+            self.assertEqual(cards._ai_review_deck("測試", items), {})
+        self.assertEqual(call.call_count, 3)
+        prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("漏列編號 [3]", prompt)
+        self.assertIn("不能把缺漏卡片隨意獨立成組", prompt)
+
+    def test_resume_preserves_missing_purpose_ids_and_completed_jobs(self):
+        points = [_pain_point("控制授權金額", "金額", 1), _pain_point("保留更換零件", "證據", 2)]
+        second = _item("Keep the old part.", "Please keep the old part for me.", 2)
+        first = dict(_item("My limit is fifty dollars.", "Do not spend more than fifty dollars.", 1), purpose_id=1)
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "deck.draft.json"
+            checkpoint.write_text(json.dumps({
+                "version": cards.PLAN_VERSION, "topic": "測試", "count": 2,
+                "pain_points": points, "contract": {}, "items": [second],
+            }, ensure_ascii=False), encoding="utf-8")
+            with (
+                patch.object(cards, "_call_openai", return_value=SimpleNamespace(choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"items": [first]}))
+                )])) as call,
+                patch.object(cards, "_review_deck", return_value={}),
+                patch.object(cards, "_load_used_words", return_value=set()),
+                patch.object(cards, "_save_used_words"),
+            ):
+                result = cards.generate("測試", 2, pain_points=points, checkpoint_path=str(checkpoint), resume=True)
+            self.assertEqual([item["_purpose_id"] for item in result], [1, 2])
+            self.assertEqual(result[1]["_pain_point"]["task"], points[1]["task"])
+            self.assertEqual(result[1]["word_en"], second["word_en"])
+            self.assertEqual(len(json.loads(checkpoint.read_text())["items"]), 2)
+            call.assert_called_once()
+
+    def test_per_card_assignments_merge_synonymous_jobs_before_enforcing_cap(self):
+        payload = {"assignments": [
+            {"id": "01", "purpose": "取得書面報價", "level": "basic", "progression": ""},
+            {"id": "02", "purpose": "取得書面報價", "level": "advanced", "progression": "進階片語"},
+            {"id": "03", "purpose": "取得書面報價", "level": "basic", "progression": ""},
+        ]}
+        self.assertEqual(set(cards._semantic_group_rejections(payload, 3)), {2})
+
+    def test_hybrid_does_not_skip_semantic_review_due_to_sentence_patterns(self):
+        with (
+            patch.object(cards, "REVIEW_MODE", "hybrid"),
+            patch.object(cards, "_local_review_deck", return_value={1: "句型過度相似"}),
+            patch.object(cards, "_ai_review_deck", return_value={2: "語意重複：報價"}) as ai_review,
+        ):
+            result = cards._review_deck("推銷", self.quote_items())
+        self.assertEqual(set(result), {1, 2})
+        ai_review.assert_called_once()
+
+    def test_sales_blueprint_has_fifty_distinct_jobs_and_only_two_quote_variants(self):
+        contract, points = get_curated_blueprint("推銷與隱形敲詐", 50)
+        plan = cards.PainPointPlan(points, contract=contract)
+        self.assertEqual(cards._plan_quality_issues(plan, 50), [])
+        self.assertTrue(contract["learner_only"])
+        self.assertEqual(len({point["job_key"] for point in points}), 50)
+        items = [{"word_en": point["target_phrase"], "sentence_en": point["target_sentence"]} for point in points]
+        quotes = [index + 1 for index, item in enumerate(items) if cards._sales_communication_intent(item) == "取得書面報價與費用明細"]
+        self.assertEqual(quotes, [17, 18])
+        self.assertTrue(all(cards._sentence_pattern_issue(item, items[:index]) is None for index, item in enumerate(items)))
+
+    def test_sales_rules_do_not_conflate_billing_conditions_with_generic_extra_fees(self):
+        generic = _item("Are there any extra charges?", "Are there any additional costs?")
+        self.assertEqual(cards._sales_communication_intent(generic), "確認是否存在額外費用")
+        for sentence in (
+            "Is the call-out fee payable if I decline the repair?",
+            "Is the diagnostic fee waived if I approve the repair?",
+            "This charge is higher than we agreed.",
+        ):
+            self.assertNotIn(cards._sales_communication_intent(_item(sentence, sentence)), ("確認是否存在額外費用", "了解不明收費原因"))
 
 
 def _pain_point(

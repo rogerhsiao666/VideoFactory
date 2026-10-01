@@ -169,9 +169,89 @@ COMPLAINT_SPECS = [
 ]
 
 
+SALES_CONTRACT = {
+    "audience": "在國外面對修車、水電維修與強勢推銷的英文初學者",
+    "core_pain": "被術語、安全恐嚇與模糊價格施壓，無法控制授權、支出與退出",
+    "promised_transformation": "能驗證必要性、限定服務與價格、拒絕施壓並追蹤具體補救",
+    "in_scope": [
+        "核實故障、風險、保固與業者責任",
+        "限制檢查、施工、材料替換、預算與授權",
+        "取得報價並確認計費方式與條件",
+        "處理加購、續約、取消、押金與簽署風險",
+        "拒絕推銷、保護個資並安全退出",
+        "指出錯誤扣款、要求補救並升級追蹤",
+    ],
+    "out_of_scope": ["捏造特定地區法律或保證法律效力", "技術維修教學", "同義報價或換商品的拒絕句灌水"],
+    "required_moments": [
+        "面對必要性與危險主張時要求核實",
+        "服務開始前限定授權與價格",
+        "面對推銷或不完整合約時保護界線",
+        "未經同意施工或收費時中止與補救",
+        "業者不處理時取得責任人與追蹤管道",
+    ],
+    "pain_categories": ["證據與風險核實", "授權與施工界線", "價格與計費條件", "訂單與合約條件", "拒絕與安全退出", "收費爭議與補救", "升級與追蹤"],
+    "learner_only": True,
+}
+
+
+SALES_SPECS = [
+    ("證據與風險核實", "定位實際故障零件", "learner_line", "Which part is broken?", "Show me which part is broken.", "業者只說車子很危險，沒有指出故障位置", "無法核對故障就可能更換整套正常零件"),
+    ("證據與風險核實", "查看支持診斷的測試結果", "learner_line", "Show me the test result.", "Show me the test result that proves the problem.", "業者宣稱零件不合格但沒有出示測試", "只靠口頭判斷可能被收取不必要的維修費"),
+    ("證據與風險核實", "確認未修復前能否安全使用", "learner_line", "Is it safe to use?", "Is it safe to use before it's repaired?", "對方聲稱有故障，自己仍需要使用車輛或設備", "誤判可用性可能造成危險或被迫接受急修"),
+    ("證據與風險核實", "區分可延後與急迫維修", "learner_line", "What can wait?", "Which repairs can safely wait until next month?", "業者把所有建議都說成必須今天完成", "無法排序就可能一次支付超出預算的費用"),
+    ("證據與風險核實", "查明保固是否負擔本次維修", "learner_line", "Does the warranty cover this?", "Check whether the warranty covers this repair.", "仍在保固期卻被要求全額付款", "忽略保固就可能為原本可免付的維修買單"),
+    ("證據與風險核實", "要求由另一位技師獨立核實", "learner_line", "I want a second opinion.", "I want another mechanic to check this first.", "診斷與高額報價都來自同一位推銷者", "沒有獨立核實就會在單方資訊下決定"),
+    ("證據與風險核實", "施工前核實承包商資格", "learner_line", "Let me verify your license.", "Before you start, let me verify your contractor's license.", "陌生維修人員要求立刻進屋施工", "未核實資格可能無法確認業者身份與責任"),
+    ("證據與風險核實", "確認維修失敗時的負責業者", "learner_line", "Who is responsible for this work?", "Which company takes responsibility if this repair fails?", "推銷員與實際施工者不是同一家公司", "施工失敗後可能被不同業者互相推卸責任"),
+    ("授權與施工界線", "只授權檢查而非維修", "learner_line", "Check it, but don't fix it.", "You may check the problem, but don't repair anything yet.", "原本只預約診斷，技師準備直接修理", "檢查被當成維修同意會產生未預期費用"),
+    ("授權與施工界線", "立即制止正在進行的未授權施工", "learner_line", "Stop the work now.", "Stop the work now. I didn't agree to it.", "發現對方已開始未同意的施工", "繼續施工會增加材料與工時爭議"),
+    ("授權與施工界線", "新增施工前必須再次徵得同意", "learner_line", "Ask me before doing more work.", "Ask me before doing any work beyond this repair.", "對方說修理途中可能順便處理其他問題", "沒有事前界線就可能被追加更多工程"),
+    ("授權與施工界線", "設定可動支金額上限", "learner_line", "My limit is one hundred dollars.", "Do not spend more than one hundred dollars.", "業者要求開放式授權以便自行決定支出", "沒有上限就可能收到遠超預算的帳單"),
+    ("授權與施工界線", "禁止自行改用未同意零件", "learner_line", "Use the part we agreed on.", "Don't switch parts without asking me first.", "對方想把已談好的零件換成更貴規格", "零件被更換會改變價格與維修條件"),
+    ("授權與施工界線", "明確限定只修局部故障", "learner_line", "Fix only the leak.", "Fix only the leak, not the whole pipe.", "只需要補漏，業者卻建議更換整段管線", "若未限定範圍就可能被擴大施工"),
+    ("授權與施工界線", "保留拆下零件作為查驗證據", "learner_line", "Keep the replaced parts for me.", "Set the replaced parts aside so I can inspect them.", "技師準備丟棄已更換的零件", "零件一旦丟棄就無法核對原故障"),
+    ("授權與施工界線", "撤回尚未開始工程的既有同意", "learner_line", "I withdraw my approval.", "I withdraw my approval for any work that hasn't started.", "先前已答應維修，發現問題後想停止未開工部分", "不明確撤回同意會讓業者繼續依舊授權施工"),
+    ("價格與計費條件", "索取書面報價的簡單說法", "learner_line", "I need a written quote.", "I need a written quote before you start.", "業者只口頭報價卻要求立即決定", "沒有書面金額就難以核對之後的帳單"),
+    ("價格與計費條件", "索取書面報價的進階說法", "learner_line", "Put the itemized estimate in writing.", "Put the itemized estimate in writing before I approve the work.", "業者把各項估價只用口頭快速帶過", "費用項目未留存會無法比較與確認授權"),
+    ("價格與計費條件", "確認含稅總價", "learner_line", "What's the total, including tax?", "Tell me the total price, including tax.", "報價看起來便宜，卻沒有交代稅額", "付款時才加稅會讓實際支出超過預期"),
+    ("價格與計費條件", "確認按工時還是按整件計費", "learner_line", "Do you charge by the hour?", "Do you charge by the hour or by the job?", "業者報價沒有說明計費方式", "誤把時薪當成總價會付出更高費用"),
+    ("價格與計費條件", "核對收費工時數量", "learner_line", "How many hours am I paying for?", "How many hours of work are included in this price?", "已知按工時計費，但報價未列計費時數", "沒有核對時數就可能承擔灌水工時"),
+    ("價格與計費條件", "確認報價有效期限", "learner_line", "When does this quote expire?", "How long is this price valid?", "對方用價格即將失效逼迫立即同意", "不知道有效期限就可能在假急迫感下決定"),
+    ("價格與計費條件", "確認拒絕維修後是否仍收出勤費", "learner_line", "Is the call-out fee still payable?", "Is the call-out fee still payable if I decline the repair?", "師傅到場後說不修也要付出勤費", "沒有確認拒修時的費用就會被突襲收費"),
+    ("價格與計費條件", "確認維修成交後是否免診斷費", "learner_line", "Is the diagnostic fee waived?", "Is the diagnostic fee waived if I go ahead with the repair?", "報價同時列檢查與維修費，可能重複計費", "不知道免除條件就可能多付診斷費"),
+    ("訂單與合約條件", "從現有訂單移除未選擇加購", "learner_line", "Remove the extra item.", "Remove the extra item from my order.", "業者已把未選擇的配件加入訂單", "單純口頭拒絕但不更改訂單仍可能被扣款"),
+    ("訂單與合約條件", "查明是否自動續約", "learner_line", "Will this renew by itself?", "Will this plan renew by itself each year?", "推銷者只講首次價格，沒有說明續約方式", "未注意自動續約會產生長期支出"),
+    ("訂單與合約條件", "取得方案取消操作流程", "learner_line", "How do I cancel this plan?", "How do I cancel the plan after signing up?", "準備接受方案，卻不知道如何退出", "取消管道不明會讓訂閱持續扣款"),
+    ("訂單與合約條件", "確認提早解約的違約費", "learner_line", "Are there early termination fees?", "Are there early termination fees if I cancel this plan?", "方案可以取消，但對方避談合約提前結束成本", "取消不等於免費解約，可能被收取違約費"),
+    ("訂單與合約條件", "確認不繼續交易時押金能否退還", "learner_line", "Is this deposit refundable?", "Is this deposit refundable if I decide not to proceed?", "對方要求先付押金才肯保留維修時段", "不了解退還條件就可能失去押金"),
+    ("訂單與合約條件", "拒簽關鍵金額空白的表格", "learner_line", "I won't sign a blank form.", "I won't sign a form with the price left blank.", "業者說先簽名，價格之後再補", "簽署空白金額會讓費用被單方面填入"),
+    ("拒絕與安全退出", "直接拒絕不需要的推銷", "learner_line", "No, I don't need it.", "No, I don't need any extra service.", "對方第一次提出不需要的額外服務", "含糊回應可能被當成仍願意接受"),
+    ("拒絕與安全退出", "明確停止持續的推銷話題", "learner_line", "No more sales talk.", "Stop trying to sell me more services.", "已經拒絕，但對方仍繼續介紹加購", "只重複不需要會讓推銷無限延續"),
+    ("拒絕與安全退出", "停止後續推銷來電", "learner_line", "Don't call me again.", "Don't call me again about this offer.", "拒絕後對方仍打電話追問", "沒有停止聯絡界線就可能持續被打擾"),
+    ("拒絕與安全退出", "禁止把聯絡資料交給其他業者", "learner_line", "Don't share my phone number.", "Don't share my phone number with other companies.", "業者索取電話並準備轉給合作推銷商", "聯絡資料外流會招來更多強迫推銷"),
+    ("拒絕與安全退出", "拒絕現場立即做決定", "learner_line", "I need time to think.", "I'm not deciding now. I need time to think.", "業者說不立刻決定就沒有優惠", "時間壓力可能讓自己接受未核實條件"),
+    ("拒絕與安全退出", "要求解除阻擋出口的行為", "learner_line", "Let me leave.", "Move away from the door and let me leave.", "推銷者擋住門口不讓自己離開", "無法離開現場會讓人被迫接受要求"),
+    ("拒絕與安全退出", "拒絕以貸款負擔高額服務", "learner_line", "I'm not taking out a loan.", "I'm not taking out a loan to pay for this repair.", "負擔不起報價時，業者立刻推銷貸款", "短期維修壓力可能變成長期債務"),
+    ("拒絕與安全退出", "指出並制止恐嚇式施壓", "learner_line", "Stop using scare tactics.", "Stop using scare tactics to pressure me into buying this.", "對方用誇大危險或災難情境逼迫購買", "把恐嚇當成客觀風險會失去自主判斷"),
+    ("收費爭議與補救", "指出帳單高於已同意金額", "learner_line", "This price is higher than we agreed.", "The price on this bill is higher than we agreed.", "結帳金額高於談妥的價格", "不明確指出差額就可能被要求照單付款"),
+    ("收費爭議與補救", "指出同一筆服務扣款兩次", "learner_line", "I was charged twice.", "My card was charged twice for the same repair.", "銀行紀錄顯示相同服務被扣款兩次", "籠統說太貴無法讓業者定位重複交易"),
+    ("收費爭議與補救", "正式提出未授權扣款爭議", "learner_line", "I dispute this unauthorized charge.", "I dispute this charge because I never authorized the extra work.", "業者認為施工完成就可以扣款", "不明確提出爭議會被當成已接受該筆收費"),
+    ("收費爭議與補救", "要求退還未授權施工的扣款", "learner_line", "Refund the unauthorized charge.", "Refund the amount charged for work I never approved.", "已確認扣款來自未同意的工程", "只討論責任而不要求退款不會拿回款項"),
+    ("收費爭議與補救", "拒絕以購物金代替退回原卡", "learner_line", "Return the money to my original card.", "Return the money to my original card, not as store credit.", "業者願意補救但只提供店內購物金", "接受購物金會被綁住而無法拿回實際款項"),
+    ("收費爭議與補救", "拒絕付費修正業者自己造成的錯誤", "learner_line", "Don't charge me for fixing your mistake.", "I won't pay for remedial work caused by your installation error.", "業者施工有錯，卻要求再付一次修復費", "沒有區分業者錯誤與原故障就會多付補救費"),
+    ("升級與追蹤", "要求有決策權的主管處理", "learner_line", "Get your manager, please.", "I need to speak to your manager about this charge.", "第一線人員表示無法調整不合理收費", "沒有升級就可能在同一答案中來回耗時"),
+    ("升級與追蹤", "確認承辦案件的具體責任人", "learner_line", "Who is handling my complaint?", "Give me the name of the person handling my complaint.", "業者一直說有人會處理卻不交代是誰", "找不到責任人就無法可靠地追蹤案件"),
+    ("升級與追蹤", "取得案件識別碼供後續查詢", "learner_line", "Please give me a case reference.", "Please give me a case reference so I can follow up.", "客服說已經登記問題但沒有提供編號", "後續聯絡可能要重新說明或查不到紀錄"),
+    ("升級與追蹤", "確認已答應退款的入帳時間", "learner_line", "When will the refund reach my account?", "When should the refund reach my account after it's processed?", "業者已答應退款卻沒有給到帳時間", "不知道期限就無法判斷退款是否延誤"),
+    ("升級與追蹤", "取得取消後不再扣款的書面確認", "learner_line", "Confirm the cancellation in writing.", "Confirm the cancellation in writing so I won't be billed again.", "業者口頭答應取消自動續約", "沒有取消紀錄就可能在下期繼續被扣款"),
+    ("升級與追蹤", "通知將向銀行提出交易爭議", "learner_line", "I'll contact my bank about this charge.", "I'll contact my bank to dispute this charge if it remains unresolved.", "業者拒絕處理已有證據的扣款問題", "只在業者內部等待可能錯過其他申訴管道"),
+]
+
+
 CURATED = {
     "phone call phobia": (PHONE_CONTRACT, PHONE_SPECS),
     "polite complaints": (COMPLAINT_CONTRACT, COMPLAINT_SPECS),
+    "推銷與隱形敲詐": (SALES_CONTRACT, SALES_SPECS),
 }
 
 

@@ -53,7 +53,18 @@ MAX_REVIEW_REPLACEMENTS = 8
 REFERENCE_WORD_SIMILARITY = 0.88
 REFERENCE_SENTENCE_SIMILARITY = 0.90
 MAX_REFERENCE_CARDS_IN_PROMPT = 200
-PLAN_VERSION = 5
+SEMANTIC_DUPLICATE_POLICY = """嚴格語意去重（整副牌共同遵守）：
+- 先按「這句要求對方做什麼／確認什麼，以及得到什麼實際結果」分組，不按字面相似度分組。
+- 同一溝通目的最多兩種說法：一種最簡單直白、一種稍微進階且自然的說法；不是每組都必須湊兩句。
+- 不同 purpose_id、分類、場所、商品、文件名稱、禮貌程度或補充理由，不代表不同意思。
+- 「要求書面報價／書面細節／詳細 quote／estimate／cost breakdown」若都是為了取得價格與明細，應合併為同一組；
+  「停止未授權服務」、「拒絕不需要的推銷」、「要求簡單說明術語」、「要求時間考慮」也各自跨情境合併計數。
+- 只有真正不同的行動或決策結果才可拆組，例如詢問總價、詢問額外費用是否存在、要求退還已扣款項。
+  店員問句與顧客回答、肯定與否定、結果不同的客製要求仍是不同目的。
+- 必須同時檢查 word_en 和 sentence_en；短句看似不同，但情境例句完成同一目的，仍納入同組。
+- 不得用同義改寫、換商品或新增理由填補句數；多出的名額要留給尚未涵蓋的實際溝通目的。
+"""
+PLAN_VERSION = 6
 PLAN_MIN_EXTRA_CANDIDATES = 20
 PLAN_MAX_CATEGORY_SHARE = 0.35
 PLAN_MIN_CATEGORIES = 5
@@ -129,7 +140,7 @@ Each object MUST have exactly these keys:
 - "word_en"     : a high-utility English phrase or response the learner can actually say in the target situation; maximum 8 English words; avoid generic category labels
 - "word_ipa"    : IPA pronunciation of the word/phrase, enclosed in forward slashes (e.g., "/tʃɑp ˈvɛdʒtəblz/")
 - "word_cn"     : Traditional Chinese translation (繁體中文)
-- "tips"        : 極短一句實戰提示，不要 emoji。指出何時說、如何選、店員可能怎麼問，或容易犯的錯；禁止字典式解釋和重複 word_cn。
+- "tips"        : 極短一句實戰提示，不要 emoji。明確標示委婉、中立或強硬，並指出使用時機；禁止字典式解釋和重複 word_cn。
 - "sentence_en" : a natural line of maximum 14 English words that a customer/user or staff member would genuinely say in the exact target situation; not a textbook explanation
 - "sentence_ipa": full IPA pronunciation of the example sentence, enclosed in forward slashes (e.g., "/kæn juː hɛlp miː.../")
 - "sentence_cn" : 台灣繁體中文口語意譯（非逐字翻譯）"""
@@ -715,6 +726,38 @@ def _apply_locked_blueprint_lines(item: dict, pain_points: list | None) -> dict:
     return locked
 
 
+def _correct_known_locked_pronunciations(item: dict, point) -> dict:
+    """Apply reviewed lexical IPA only when exact source and token alignment agree."""
+    point = _normalize_pain_point(point)
+    corrected = dict(item)
+    lexicon = {"quote": "koʊt", "charge": "tʃɑrdʒ", "charged": "tʃɑrdʒd",
+               "cancellation": "ˌkænsəˈleɪʃən", "unauthorized": "ˌʌnˈɔθəraɪzd",
+               "authorized": "ˈɔθəraɪzd"}
+    for english_field, ipa_field, target_field in (
+        ("word_en", "word_ipa", "target_phrase"),
+        ("sentence_en", "sentence_ipa", "target_sentence"),
+    ):
+        english = item.get(english_field, "")
+        ipa = item.get(ipa_field, "")
+        if not point or _spoken_line_key(english) != _spoken_line_key(point[target_field]):
+            continue
+        if not isinstance(ipa, str) or not ipa.startswith("/") or not ipa.endswith("/"):
+            continue
+        words = re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", english.lower())
+        tokens = ipa.strip("/").split()
+        if len(words) != len(tokens):
+            continue
+        for index, word in enumerate(words):
+            replacement = lexicon.get(word)
+            if word == "refund" and index == 0:
+                replacement = "rɪˈfʌnd"
+            if replacement:
+                punctuation = re.search(r"[,.;!?]+$", tokens[index])
+                tokens[index] = replacement + (punctuation.group() if punctuation else "")
+        corrected[ipa_field] = "/" + " ".join(tokens) + "/"
+    return corrected
+
+
 def _locked_item_issue(item: dict, point) -> str | None:
     """Validate exact locked English before trusting dependent IPA fields."""
     normalized = _normalize_pain_point(point)
@@ -743,6 +786,29 @@ def _locked_item_issue(item: dict, point) -> str | None:
                 f"{ipa_field} 詞數 {ipa_count} 與 {english_field} "
                 f"詞數範圍 {english_count}-{component_count} 不一致"
             )
+        # Catch attested lexical errors without prescribing one accent or notation.
+        english = item[english_field].lower()
+        ipa = item[ipa_field]
+        if re.search(r"\bquote\b", english) and re.search(r"kw(?:oʊ|əʊ)", ipa):
+            return f"{ipa_field}: quote 沒有 /w/ 音，應為 /koʊt/ 或 /kəʊt/"
+        if re.search(r"\bcharg(?:e|ed)\b", english):
+            pronunciations = re.findall(r"tʃ[ɑa][ːrɹ]*[^\s/,.;!?]*", ipa)
+            if any("ʒ" not in value for value in pronunciations):
+                return f"{ipa_field}: charge 必須包含 /dʒ/，charged 必須包含 /dʒd/"
+            if "charged" in english and any(not value.endswith("ʒd") for value in pronunciations):
+                return f"{ipa_field}: charged 的字尾應為 /dʒd/"
+        if english.startswith("refund ") and re.search(r"ˈri[ː]?fʌnd", ipa):
+            return f"{ipa_field}: refund 作動詞時重音在後，應為 /rɪˈfʌnd/"
+        if "cancellation" in english and "sləˈeɪ" in ipa:
+            return f"{ipa_field}: cancellation 應為 /ˌkænsəˈleɪʃən/"
+        if "unauthorized" in english and "ʌnəˈθ" in ipa:
+            return f"{ipa_field}: unauthorized 應為 /ˌʌnˈɔθəraɪzd/"
+    if "store credit" in item["sentence_en"].lower() and "商店信用" in item["sentence_cn"]:
+        return "sentence_cn: store credit 是店內購物金，不是商店信用"
+    if "second opinion" in item["word_en"].lower() and "第二意見" in item["word_cn"]:
+        return "word_cn: second opinion 請自然譯為另一位專家的意見"
+    if "replaced parts" in item["sentence_en"].lower() and "舊" not in item["sentence_cn"]:
+        return "sentence_cn: replaced parts 指拆下來的舊零件，須避免與新零件混淆"
     return None
 
 
@@ -752,6 +818,7 @@ def _generate_locked_blueprint_items(
 ) -> list[dict]:
     """Generate pronunciation and translations around code-owned English."""
     completed: dict[int, dict] = {}
+    feedback: dict[int, str] = {}
     for attempt in range(1, 4):
         missing = [entry for entry in targets if entry[0] not in completed]
         if not missing:
@@ -762,6 +829,7 @@ def _generate_locked_blueprint_items(
                 "target_phrase": _normalize_pain_point(point)["target_phrase"],
                 "target_sentence": _normalize_pain_point(point)["target_sentence"],
                 "task": _pain_point_task(point),
+                "previous_error": feedback.get(purpose_id, ""),
             }
             for purpose_id, point in missing
         ]
@@ -769,6 +837,11 @@ def _generate_locked_blueprint_items(
 以下英文已由總編鎖定，不可改寫、增減或補完。只為它們產生準確 IPA、繁體中文口語翻譯與極短實戰提示。
 word_en 必須逐字等於 target_phrase；sentence_en 必須逐字等於 target_sentence。
 word_ipa 只能對應 word_en，sentence_ipa 只能對應 sentence_en，不可加入英文中沒有的字。
+使用一致的美式 IPA，檢查子音字尾與動詞重音。中文必須自然、忠於各自英文：
+word_cn 不可補入只有 sentence_en 才有的條件。replaced parts 指拆下來的舊零件；
+second opinion 是另一位專家的意見；store credit 是店內購物金。
+tips 必須包含「委婉」「中立」或「強硬」及具體使用時機。
+若 previous_error 非空，必須修正該錯誤，不可原樣重交。
 輸出每個 purpose_id 各一張，並遵守以下欄位規格：
 {FIELD_SPEC}
 
@@ -797,8 +870,10 @@ word_ipa 只能對應 word_en，sentence_ipa 只能對應 sentence_en，不可�
             point = missing_by_id.get(purpose_id)
             if point is None or purpose_id in completed:
                 continue
+            item = _correct_known_locked_pronunciations(item, point)
             issue = _locked_item_issue(item, point)
             if issue:
+                feedback[purpose_id] = issue
                 print(
                     f"      ⚠️ 鎖定卡 purpose_id={purpose_id} 第 {attempt} 次未通過: {issue}"
                 )
@@ -1412,6 +1487,8 @@ def _ai_review_pain_point_plan(
 8. failure_mode 不得只是「無法獲得資訊」等同義反述；必須呈現具體代價。
 9. 主題若含「本集內容焦點與邊界」，該段描述是最高優先的內容 brief：明確點名的項目是硬需求，不得判為偏題，也不得擴張到描述未涵蓋的受眾、場合或相鄰任務。
 {topic_specific_note}
+{SEMANTIC_DUPLICATE_POLICY}
+藍圖尚未寫出難度不同的英文，因此優先每個實際溝通目的只規劃一項；同一目的超過兩項一律退回。
 
 每個 issues 與 reject.reason 都必須指出具體違反哪一條、哪個 out_of_scope 或哪個內容缺口；禁止只寫「偏離核心痛點」「偏題」「整副牌問題」等無法採取行動的籠統理由。使用者明確列入 focus 的項目若要退回，必須說明它為何沒有完成該焦點，而不能只宣告偏離。
 
@@ -2069,14 +2146,13 @@ def _request_pain_point_candidates(
             role_instruction = (
                 "本批全部是 learner_line：speaker 必須是學習者，task 必須描述學習者會直接說出口的原話。"
             )
-        existing_in_category = [
-            point for point in candidates if point["category"] == category_focus
-        ]
         existing_note = ""
-        if existing_in_category:
+        if candidates:
             existing_note = (
-                "\n這個分類已產生的任務如下，不得做同義改寫：\n- " +
-                "\n- ".join(point["task"] for point in existing_in_category) + "\n"
+                "\n整副牌已產生的任務如下，跨分類也不得做同義改寫：\n- " +
+                "\n- ".join(
+                    f"[{point['category']}] {point['task']}" for point in candidates
+                ) + "\n"
             )
         category_action_instruction = ""
         if "polite complaints" in topic.casefold():
@@ -2106,6 +2182,8 @@ def _request_pain_point_candidates(
 {json.dumps(_normalize_topic_contract(contract), ensure_ascii=False)}
 {reference_note}
 {existing_note}
+{SEMANTIC_DUPLICATE_POLICY}
+規劃候選時優先每個實際溝通目的只產生一項；不可換分類或場景反覆要求同一種書面資料。
 
 規則：
 1. 每項都必須直接服務 core_pain；out_of_scope 一律禁止。若主題附有「本集內容焦點與邊界」，不得加入描述未涵蓋的受眾、場合或相鄰任務。
@@ -2416,7 +2494,7 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 7. tips 只寫一句極短實戰提醒：何時用、怎麼選、對方可能怎麼問，或台灣學習者常犯的錯。
 8. 所有中文使用台灣繁體中文日常口語；sentence_cn 要自然意譯，不要逐字硬翻。
 9. 必須為詞句生成精確完整的 IPA，並以斜線「/」包裹；絕對不能直接填英文拼寫。
-10. 每張卡必須提供不同的實用學習價值。只換同義詞、句型與答案都相同才算重複；
+10. 每張卡必須提供不同的實用學習價值。按實際溝通目的做語意去重，不可只比較字面或 purpose_id；
     店員問句與顧客回答、肯定與否定、一般選擇與具體客製需求不是重複。
     句型多樣性另行檢查：不同任務也不要只替換同一句的一個名詞或品項。
     保留各卡的原意、角色、必要關鍵詞與要求，改用不同自然句型或同義說法；
@@ -2436,6 +2514,7 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 - 看似相關但現場幾乎不會說的句子，以及同一句型只替換一個名詞的灌水項目。
 - 寒暄、泛用道謝、詢問食材是否新鮮等低資訊句，除非它確實是該主題的主要痛點。
 - 一口氣列出尺寸、品項、配料、醬料、付款等多個步驟的超長總結句。
+{SEMANTIC_DUPLICATE_POLICY}
 
 品質範例（只示範具體程度，不代表一定要生成餐飲內容）：
 - 差：word_en = "Honey mustard"；sentence_en = "I want honey mustard, please." 這只是在背品名。
@@ -2445,6 +2524,184 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 
 輸出前逐項自我檢查：如果學習者不能在「{topic}」現場直接說、直接回答或立刻聽懂這一項，就刪掉並換成更實用的內容。
 """
+
+
+def _sales_communication_intent(item: dict) -> str:
+    """Merge known sales-pressure paraphrases without depending on plan labels."""
+    text = f"{item.get('word_en', '')} {item.get('sentence_en', '')}".casefold().replace("’", "'")
+    patterns = (
+        ("取得書面報價與費用明細", r"(?:can|could|may|need|want|please|put|give|send|provide).*\b(?:quote|estimate|cost breakdown|breakdown of (?:the |these )?(?:costs|charges))\b"),
+        ("要求已扣款退款", r"\b(?:want|request|like|need|give|issue)\b.*\brefund\b"),
+        ("取消未授權服務", r"\bcancel\b.*\b(?:unauthorized|didn't authorize|did not authorize)\b|\b(?:unauthorized|didn't authorize|did not authorize)\b.*\bcancel\b"),
+        ("確認是否曾授權", r"\bdid i\b.*\b(?:authorize|approve|agree)\b|\bconfirm if i\b.*\bauthorized\b"),
+        ("要求簡單解釋術語", r"\bwhat does\b.*\bmean\b|\b(?:explain|understand|clarify)\b.*\b(?:term|jargon)\b"),
+        ("確認是否存在額外費用", r"\b(?:are there|will there be|if there are|if there will be)\b.*\b(?:extra|additional|hidden)\b.*\b(?:fees|charges|costs)\b"),
+        ("了解不明收費原因", r"\b(?:explain|clarify|why)\b.*\b(?:charge|fee)\b"),
+        ("了解零件或設備用途", r"\b(?:what|tell|explain)\b.*\b(?:equipment|material|part)\b.*\b(?:do|does|for)\b"),
+        ("了解施工流程", r"\b(?:explain|what)\b.*\b(?:repair process|installation steps|steps in the repair)\b"),
+        ("確認額外項目是否必要", r"\b(?:necessary|really need|why.*need)\b.*\b(?:inspection|part|equipment|service)\b|\b(?:inspection|part|equipment|service)\b.*\bnecessary\b"),
+    )
+    for purpose, pattern in patterns:
+        if re.search(pattern, text):
+            # Conditional fees and discrepancies are different decisions, not generic inquiries.
+            if purpose in {"確認是否存在額外費用", "了解不明收費原因"} and re.search(
+                r"\b(?:than|compared|agreed|hourly|flat|waived|refundable|if i|unless|without repairs|no repair)\b", text
+            ):
+                continue
+            return purpose
+    if re.search(r"\bi (?:don't|do not) (?:want|need)\b|\bi(?:'m| am) not interested\b", text) and re.search(
+        r"\b(?:service|equipment|material|maintenance|inspection|part|plan|product)\b", text
+    ) and not re.search(r"\b(?:cancel|remove|delete|stop|leave|contact|call|consent|authorize|approve|replace.*with)\b", text):
+        return "拒絕不需要的推銷"
+    return ""
+
+
+def _semantic_group_rejections(payload: dict, count: int, items: list[dict] | None = None) -> dict[int, str]:
+    """Require a complete partition; enforce the cap outside model judgment."""
+    if "assignments" in payload:
+        assignments = payload["assignments"]
+        if not isinstance(assignments, list) or len(assignments) != count:
+            raise ValueError(f"語意 assignments 必須逐張列出剛好 {count} 項")
+        by_purpose = {}
+        for assignment in assignments:
+            if not isinstance(assignment, dict) or assignment.get("level") not in ("basic", "advanced"):
+                raise ValueError("語意 assignment 必須是物件且 level 為 basic 或 advanced")
+            purpose = str(assignment.get("purpose", "")).strip()
+            if items:
+                try:
+                    source_item = items[int(assignment.get("id")) - 1]
+                except (TypeError, ValueError, IndexError) as exc:
+                    raise ValueError("語意 assignment 編號無效") from exc
+                purpose = _sales_communication_intent(source_item) or purpose
+            key = _similarity_text(purpose)
+            group = by_purpose.setdefault(key, {"purpose": purpose, "ids": [], "basic_id": None, "advanced_id": None})
+            group["ids"].append(assignment.get("id"))
+            level_key = assignment["level"] + "_id"
+            if group[level_key] is None:
+                group[level_key] = assignment.get("id")
+                if assignment["level"] == "advanced":
+                    group["pair_reason"] = str(assignment.get("progression", "")).strip()
+        payload["groups"] = list(by_purpose.values())
+    groups = payload.get("groups")
+    if not isinstance(groups, list) or not groups:
+        raise ValueError("語意審稿必須回傳完整 groups 分組")
+    seen: set[int] = set()
+    purposes: set[str] = set()
+    rejected: dict[int, str] = {}
+
+    def card_id(value):
+        if isinstance(value, bool) or not re.fullmatch(r"\d+", str(value)):
+            raise ValueError("語意分組 id 必須是有效編號")
+        result = int(value)
+        if not 1 <= result <= count:
+            raise ValueError("語意分組 id 超出牌組範圍")
+        return result
+
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get("ids"), list) or not group["ids"]:
+            raise ValueError("語意分組必須包含非空 ids 陣列")
+        purpose = str(group.get("purpose", "")).strip()
+        purpose_key = _similarity_text(purpose)
+        if not purpose_key or purpose_key in purposes:
+            raise ValueError("語意分組 purpose 不得空白或拆成同名多組")
+        purposes.add(purpose_key)
+        ids = [card_id(value) for value in group["ids"]]
+        if len(set(ids)) != len(ids) or seen.intersection(ids):
+            raise ValueError(f"每張卡必須剛好出現在一個語意分組，重複歸組編號 {ids}（先前已列 {sorted(seen)}）")
+        seen.update(ids)
+        keep = [card_id(group[key]) for key in ("basic_id", "advanced_id") if group.get(key) is not None]
+        if not keep or len(set(keep)) != len(keep) or not set(keep).issubset(ids):
+            raise ValueError("語意分組保留編號必須互異且屬於該組")
+        if len(keep) == 2 and not str(group.get("pair_reason", "")).strip():
+            raise ValueError("保留兩句必須說明簡單與進階的實際難度差異")
+        for value in ids:
+            if value not in keep:
+                rejected[value - 1] = (
+                    f"語意重複：{purpose}；同組 {','.join(f'{i:02d}' for i in ids)}，"
+                    f"只保留 {','.join(f'{i:02d}' for i in keep)} 的一簡單一進階上限"
+                )
+    if seen != set(range(1, count + 1)):
+        missing = sorted(set(range(1, count + 1)) - seen)
+        raise ValueError(f"語意分組未涵蓋全牌組，漏列編號 {missing}；拒絕把遺漏卡片當成合格")
+    return rejected
+
+
+def _replace_duplicate_pain_points(
+    topic: str, pain_points: list, items: list[dict], rejected: dict[int, str],
+    reference_items: list[dict] | None = None,
+) -> None:
+    """Replace redundant jobs, not their wording; keep accepted jobs unchanged."""
+    targets = [
+        (items[idx]["_purpose_id"], reason)
+        for idx, reason in rejected.items() if reason.startswith("語意重複：")
+    ]
+    if any(_exact_generation_point(pain_points[purpose_id - 1]) for purpose_id, _ in targets):
+        raise RuntimeError("鎖定英文的溝通目的重複，需先調整人工策劃，拒絕擅自改寫")
+    for start in range(0, len(targets), PLAN_GENERATE_BATCH):
+        batch = targets[start:start + PLAN_GENERATE_BATCH]
+        assigned = [{
+            "id": purpose_id,
+            "category": pain_points[purpose_id - 1]["category"],
+            "role_type": pain_points[purpose_id - 1]["role_type"],
+            "speaker": pain_points[purpose_id - 1]["speaker"],
+            "rejected_task": pain_points[purpose_id - 1]["task"],
+            "reason": reason,
+        } for purpose_id, reason in batch]
+        context = [{"id": idx + 1, "task": point["task"]} for idx, point in enumerate(pain_points)]
+        prompt = f"""你是情境英語教材總編。主題：{topic}
+{_topic_contract_text(pain_points)}
+{SEMANTIC_DUPLICATE_POLICY}
+以下任務已被語意分組審稿退回。不要改寫原句：將它們換成尚未涵蓋的實際溝通目的。
+保留每個指定 id 與 category；新 task、intent、desired_outcome 必須產生不同的行動或決策結果。
+不要再添加同義的報價、拒絕、術語解釋；可考慮不同的授權範圍、驗證方法、計費條件、
+證據保全、個資與安全界線、具體補救與後續追蹤，但必須在題名契約範圍內。
+全部是原指定的說話角色，每個 task 指導一句現場直接說出口的話，不是法律或背景教學。
+既有全部任務（包含本輪其他新任務），不得重出：{json.dumps(context, ensure_ascii=False)}
+{_reference_prompt_note(reference_items)}
+需替換項目：{json.dumps(assigned, ensure_ascii=False)}
+每項包含 id、category、scenario、speaker、intent、task、pain_trigger、user_stakes、desired_outcome、
+role_type、failure_mode、priority、frequency、friction、sequence、required_terms。
+只輸出 JSON，頂層 replacements 是包含完整欄位物件的陣列，不能省略欄位或使用省略號。
+"""
+        kwargs = {"messages": [{"role": "user", "content": prompt}], "model": PLAN_MODEL,
+                  "response_format": {"type": "json_object"}}
+        kwargs["max_completion_tokens" if PLAN_MODEL.startswith("gpt-5") else "max_tokens"] = 6000
+        if not PLAN_MODEL.startswith("gpt-5"):
+            kwargs["temperature"] = 0.3
+        expected = {purpose_id for purpose_id, _ in batch}
+        for repair_attempt in range(3):
+            response = _call_openai(stage=f"替換重複溝通目的 {start + 1}-{start + len(batch)}/{len(targets)}，嘗試 {repair_attempt + 1}/3", **kwargs)
+            raw_content = response.choices[0].message.content
+            try:
+                replacements = json.loads(raw_content).get("replacements", [])
+                pending = {}
+                for raw in replacements:
+                    purpose_id = int(raw.get("id", 0))
+                    if purpose_id not in expected or purpose_id in pending:
+                        raise ValueError("替換任務編號不符或重複")
+                    point = _normalize_pain_point(raw, purpose_id - 1)
+                    old = pain_points[purpose_id - 1]
+                    if not point:
+                        raise ValueError("替換任務缺少有效 task")
+                    point.update(category=old["category"], role_type=old["role_type"], speaker=old["speaker"])
+                    if any(not point[key] for key in ("scenario", "intent", "pain_trigger", "user_stakes", "desired_outcome", "failure_mode")):
+                        raise ValueError("替換任務缺少具體痛點或結果")
+                    others = [other for idx, other in enumerate(pain_points, 1) if idx not in expected]
+                    conflict = next((other for other in others + list(pending.values()) if _pain_points_semantically_duplicate(point, other)), None)
+                    if conflict:
+                        raise ValueError(f"替換任務 {purpose_id}「{point['task']}」仍與「{conflict['task']}」重複；intent 和實際結果必須不同")
+                    point.update(id=purpose_id, sequence=old["sequence"])
+                    pending[purpose_id] = {key: value for key, value in point.items() if not key.startswith("_")}
+                if set(pending) != expected:
+                    raise ValueError("替換任務數量不足，拒絕留下缺漏藍圖")
+                break
+            except (ValueError, TypeError) as exc:
+                if repair_attempt == 2:
+                    raise
+                _progress(f"替換任務未通過，要求重寫：{exc}")
+                kwargs["messages"] = [{"role": "user", "content": prompt + f"\n前次未通過：{exc}。請重新輸出本批全部新任務，不可只補一項。\n前次內容：{raw_content}"}]
+        for purpose_id, point in pending.items():
+            pain_points[purpose_id - 1] = point
 
 
 def _ai_review_deck(
@@ -2492,10 +2749,8 @@ def _ai_review_deck(
         )
     reference_rule = _reference_prompt_note(reference_items)
     duplicate_review_rule = (
-        "3. 此牌組已由 pain-point plan 保證每個 purpose 不同。purpose_id 不同時，"
-        "不可只因都是同一主題或都在結束對話就判為重複；只審查是否完成各自 assigned_pain_point。"
-        if pain_points
-        else "3. 與另一張卡的說話角色、意圖和答案都實質相同，只是改寫措辭。"
+        "3. 按實際溝通目的分組，同一意思最多一種簡單說法與一種進階說法。"
+        "purpose_id 不同或已通過藍圖審稿，不代表語意不同；仍須退回超額或沒有難度差異的同義句。"
     )
 
     prompt = f"""你是獨立的情境英語牌組審稿人。主題是「{topic}」。
@@ -2503,6 +2758,7 @@ def _ai_review_deck(
 {blueprint_rule}
 {contract_rule}
 {reference_rule}
+{SEMANTIC_DUPLICATE_POLICY}
 
 明顯不合格的定義：
 1. 套用主題的其他同名含義、偏離核心任務、擴張到主題描述未涵蓋的受眾或場合，或是泛用填充內容。
@@ -2524,14 +2780,14 @@ def _ai_review_deck(
     reason 必須指出相似的卡片及建議改寫方向：保留原意、角色與要求，改用自然同義說法或不同句型。
     例如 "Could I change the bread?" / "Could I change the sauce?"，可把後者改為 "I'd prefer a different sauce."。
     肯定與否定、不同說話角色、數量或程度不同的要求，不可只因部分用字相同就退回。
-    同義改寫只適用於不同必要任務；如果兩卡本來就是相同角色、意圖與答案，仍須刪除灌水內容。
+    同義改寫只適用於不同必要任務，或同一目的的一簡單一進階配對；不能靠改寫保留第三句。
 
 不要審查字數、word_en 與 sentence_en 的關係或 IPA；這些由程式規則負責。
 
 請以高訊號為原則：寧可退回低價值卡讓系統補寫，也不要為了湊滿數量放行邊角內容。
 
 不要檢查 IPA。只輸出 JSON：
-{{"reject": [{{"id": "01", "kind": "content 或 sentence_pattern", "reason": "具體原因及改寫方向"}}]}}
+{{"reject": [{{"id": "01", "kind": "content 或 sentence_pattern 或 semantic_duplicate", "reason": "具體原因及改寫方向"}}]}}
 若全部合格，輸出 {{"reject": []}}。
 
 待審卡片：
@@ -2548,10 +2804,12 @@ def _ai_review_deck(
         response = _call_openai(stage=f"牌組內容審稿（{len(items)} 張）", **request_kwargs)
         raw_rejects = json.loads(response.choices[0].message.content).get("reject", [])
 
-        if not pain_points:
-            duplicate_prompt = f"""你只負責檢查英語牌組內及其與參考牌組之間的語意重複。主題是「{topic}」。
-只有在兩張卡的「說話角色、當下意圖、實際答案」三者都相同，只是換同義詞或改寫措辭時，才退回其中一張。
-例如「分開包裝」與「兩份分開包」、「外帶切半」與「切半方便分享」算重複。
+        duplicate_prompt = f"""你只負責檢查英語牌組內及其與參考牌組之間的語意重複。主題是「{topic}」。
+{SEMANTIC_DUPLICATE_POLICY}
+逐張閱讀全部卡片，先建立跨分類、跨 purpose_id 的語意群組，再決定退回項目。
+同組最多保留一張最簡單直白與一張稍微進階的自然說法；沒有明顯難度差異則只保留一張。
+每組第三張起一律退回；reason 要指出同組編號和實際溝通目的，kind 填 semantic_duplicate。
+例如「分開包裝」與「兩份分開包」、「外帶切半」與「切半方便分享」各自算同一目的。
 以下都不算重複，必須保留：
 - 店員問 "Cash or card?" 與顧客答 "I'll pay by card."
 - 店員問蔬菜選擇與顧客回答不要洋蔥。
@@ -2559,23 +2817,66 @@ def _ai_review_deck(
 - 詢問有哪些選項、確認特定品項是否供應、實際選定其中一項。
 - 一般選擇與少量、不要、另外裝等結果不同的客製要求。
 不同步驟、不同回答方向或解決不同錯誤也不算重複。
-每組只保留較具體、較實用或編號較前的一張，退回真正的改寫複本。
 參考牌組已經發布，不能退回參考牌組；若新卡與參考牌組重複，只退回新卡。
+跨集不得重出已教的同義句；兩句上限只適用於當前牌組，不能作為跨集重出的理由。
 {reference_rule}
-只輸出 JSON：{{"reject": [{{"id": "02", "reason": "與 01 溝通目的重複"}}]}}；沒有重複則輸出空陣列。
-卡片：{json.dumps(compact_items, ensure_ascii=False)}
+必須按 id 順序逐張標記，不可只列重複句或只說沒有重複。
+assignments 必須剛好 {len(items)} 項，編號 {', '.join(f'{i:02d}' for i in range(1, len(items) + 1))} 各出現一次。
+每項 purpose 用不含場所、商品名稱的核心目的命名。同一目的逐字使用相同標籤，
+不能把「要詳細報價」與「要書面估價」拆成不同標籤，也不可為了保留第三句拆成新標籤。
+每項 level 為 basic 或 advanced；advanced 的 progression 說明真實的句法、片語或詞彙難度，
+不是只加 please、thanks、禮貌程度、商品名稱或理由。basic 的 progression 填空字串。
+只輸出 JSON：{{"assignments": [{{"id": "01", "purpose": "取得書面報價與明細", "level": "basic", "progression": ""}}, {{"id": "02", "purpose": "取得書面報價與明細", "level": "advanced", "progression": "使用片語 put in writing"}}], "reject": []}}。
+reject 只用來退回與參考牌組重複的卡片；當前牌組上限由程式合併 purpose 標籤後計算。
+卡片：{json.dumps([{key: item[key] for key in ('id', 'word_en', 'sentence_en', 'sentence_cn')} for item in compact_items], ensure_ascii=False)}
 """
-            duplicate_kwargs = {
-                "messages": [{"role": "user", "content": duplicate_prompt}],
-                "model": DUPLICATE_REVIEW_MODEL,
-                "response_format": {"type": "json_object"},
-            }
-            if not DUPLICATE_REVIEW_MODEL.startswith("gpt-5"):
-                duplicate_kwargs["temperature"] = 0.1
-            duplicate_response = _call_openai(stage="牌組語意去重審稿", **duplicate_kwargs)
-            raw_rejects.extend(
-                json.loads(duplicate_response.choices[0].message.content).get("reject", [])
-            )
+        duplicate_kwargs = {
+            "messages": [{"role": "user", "content": duplicate_prompt}],
+            "model": DUPLICATE_REVIEW_MODEL,
+            "response_format": {"type": "json_object"},
+        }
+        if not DUPLICATE_REVIEW_MODEL.startswith("gpt-5"):
+            duplicate_kwargs["temperature"] = 0.1
+        for audit_attempt in range(3):
+            duplicate_response = _call_openai(stage=f"牌組語意去重審稿 {audit_attempt + 1}/3", **duplicate_kwargs)
+            raw_audit = duplicate_response.choices[0].message.content
+            try:
+                duplicate_payload = json.loads(raw_audit)
+                if not isinstance(duplicate_payload, dict) or not isinstance(duplicate_payload.get("reject"), list):
+                    raise ValueError("語意去重審稿必須回傳 reject 陣列")
+                sales_items = items if any(marker in topic.casefold() for marker in ("推銷", "敲詐", "upsell")) else None
+                group_rejected = _semantic_group_rejections(duplicate_payload, len(items), sales_items)
+                break
+            except (ValueError, TypeError) as exc:
+                if audit_attempt == 2:
+                    raise
+                _progress(f"語意審稿格式未通過，要求重審：{exc}")
+                duplicate_kwargs["messages"] = [{"role": "user", "content": (
+                    duplicate_prompt + f"\n前次回傳未通過完整性校驗：{exc}。"
+                    "請重新輸出完整全部分組，不可只補缺漏組，不能把缺漏卡片隨意獨立成組。"
+                    f"\n前次分組供修正：{raw_audit}"
+                )}]
+        _progress(
+            f"語意分組檢查：{len(items)} 張／{len(duplicate_payload['groups'])} 個目的；"
+            f"退回 {len(group_rejected)} 張超額或無難度差異的同義句"
+        )
+        for idx, reason in group_rejected.items():
+            raw_rejects.append({"id": idx + 1, "kind": "semantic_duplicate", "reason": reason.removeprefix("語意重複：")})
+        for group in duplicate_payload["groups"]:
+            for value in group["ids"]:
+                items[int(value) - 1]["_semantic_group"] = group["purpose"]
+        for assignment in duplicate_payload.get("assignments", []):
+            items[int(assignment["id"]) - 1]["_semantic_level"] = assignment["level"]
+        for entry in duplicate_payload["reject"]:
+            if not isinstance(entry, dict):
+                raise ValueError("語意去重退回項目必須是物件")
+            try:
+                rejected_id = int(str(entry.get("id", "")).strip())
+            except (TypeError, ValueError) as exc:
+                raise ValueError("語意去重退回項目必須有有效 id") from exc
+            if not 1 <= rejected_id <= len(items):
+                raise ValueError("語意去重退回 id 超出牌組範圍")
+            raw_rejects.append({**entry, "kind": "semantic_duplicate"})
     except GenerationTimeoutError:
         raise
     except Exception as e:
@@ -2589,11 +2890,8 @@ def _ai_review_deck(
             continue
         if 0 <= idx < len(items):
             reason = str(entry.get("reason", "未通過內容審查")).strip()
-            if (
-                pain_points and "重複" in reason
-                and entry.get("kind") != "sentence_pattern" and "句型" not in reason
-            ):
-                continue
+            if entry.get("kind") == "semantic_duplicate":
+                reason = "語意重複：" + reason
             rejected[idx] = reason
     return rejected
 
@@ -2608,11 +2906,11 @@ def _review_deck(
     _check_generation_deadline()
     if REVIEW_MODE == "off" or not items:
         return {}
-    if _has_complete_locked_blueprint(pain_points):
-        return _local_review_deck(
-            topic, items, pain_points, reference_items
-        )
     if REVIEW_MODE == "ai":
+        if _has_complete_locked_blueprint(pain_points):
+            local_rejected = _local_review_deck(topic, items, pain_points, reference_items)
+            if local_rejected:
+                return local_rejected
         pattern_rejected = {}
         for idx, item in enumerate(items):
             issue = _sentence_pattern_issue(item, items[:idx])
@@ -2625,9 +2923,9 @@ def _review_deck(
     local_rejected = _local_review_deck(
         topic, items, pain_points, reference_items
     )
-    if local_rejected or REVIEW_MODE == "local":
+    if REVIEW_MODE == "local" or (local_rejected and _has_complete_locked_blueprint(pain_points)):
         return local_rejected
-    return _ai_review_deck(topic, items, pain_points, reference_items)
+    return {**local_rejected, **_ai_review_deck(topic, items, pain_points, reference_items)}
 
 
 def _load_used_words() -> set[str]:
@@ -2671,9 +2969,19 @@ def generate(
     seed_items: list | None = None,
     pain_points: list | None = None,
     reference_items: list[dict] | None = None,
+    checkpoint_path: str | None = None,
+    resume: bool = False,
 ) -> list[dict]:
     _check_generation_deadline()
     reference_items = list(reference_items or [])
+    if resume and checkpoint_path and os.path.isfile(checkpoint_path):
+        with open(checkpoint_path, encoding="utf-8") as handle:
+            checkpoint = json.load(handle)
+        if (checkpoint.get("topic"), checkpoint.get("count"), checkpoint.get("version")) != (topic, count, PLAN_VERSION):
+            raise ValueError("生成檢查點的主題、數量或版本不符，拒絕沿用")
+        pain_points = PainPointPlan(checkpoint["pain_points"], contract=checkpoint["contract"])
+        seed_items = checkpoint["items"]
+        _progress(f"已恢復生成檢查點：{len(seed_items)}/{count} 張，接續審稿與補寫")
     if pain_points is None:
         pain_points = _plan_pain_points(topic, count, reference_items)
     elif pain_points:
@@ -2704,7 +3012,16 @@ def generate(
         if _is_near_duplicate(item, all_items):
             print(f"   ⚠️  移除近似重複的既有卡片: {item.get('word_en', 'Unknown')}")
             continue
-        seed_point = pain_points[seed_idx] if pain_points and seed_idx < len(pain_points) else None
+        seed_purpose_id = int(item.get("_purpose_id", seed_idx + 1))
+        if pain_points and not 1 <= seed_purpose_id <= len(pain_points):
+            raise ValueError("生成檢查點的 purpose_id 超出藍圖範圍")
+        seed_point = pain_points[seed_purpose_id - 1] if pain_points else None
+        if seed_point and _exact_generation_point(seed_point):
+            item = _correct_known_locked_pronunciations(item, seed_point)
+            issue = _locked_item_issue(item, seed_point)
+            if issue:
+                print(f"   ⚠️ 移除未通過鎖定卡校驗的既有卡片: {issue}")
+                continue
         reference_reason = _reference_duplicate_reason(
             item, reference_items, seed_point
         )
@@ -2718,7 +3035,7 @@ def generate(
         if item.get("word_en"):
             seeded_item = dict(item)
             if pain_points:
-                seeded_item["_purpose_id"] = seed_idx + 1
+                seeded_item["_purpose_id"] = seed_purpose_id
                 if seed_point:
                     seeded_item["_pain_point"] = seed_point
             all_items.append(seeded_item)
@@ -2734,6 +3051,16 @@ def generate(
     rejected_examples: list[str] = []
     review_passed = False
     overgenerate_next_round = False
+
+    def save_checkpoint():
+        if not checkpoint_path:
+            return
+        payload = {"version": PLAN_VERSION, "topic": topic, "count": count,
+                   "pain_points": pain_points, "contract": getattr(pain_points, "contract", {}),
+                   "items": all_items}
+        with open(checkpoint_path + ".tmp", "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        os.replace(checkpoint_path + ".tmp", checkpoint_path)
 
     completed_ids = {item.get("_purpose_id") for item in all_items}
     locked_targets = []
@@ -2769,6 +3096,7 @@ def generate(
                 f"      ✅ 固定英文批次 {start // 5 + 1} 完成"
                 f"（累計 {len(all_items)}/{count}）"
             )
+            save_checkpoint()
 
     while rounds < max_rounds:
         _check_generation_deadline()
@@ -2776,6 +3104,7 @@ def generate(
             all_items = all_items[:count]
             if pain_points:
                 all_items.sort(key=lambda item: item.get("_purpose_id", count + 1))
+            save_checkpoint()
             print(
                 f"   🔎 {REVIEW_MODE} 審稿 #{review_replacements + 1}"
                 f"（{len(all_items)} 張）..."
@@ -2785,6 +3114,7 @@ def generate(
             )
             if not rejected:
                 print("      ✅ 自動審稿通過")
+                save_checkpoint()
                 review_passed = True
                 break
             for idx, reason in rejected.items():
@@ -2804,6 +3134,8 @@ def generate(
                 )
                 raise RuntimeError(f"牌組連續未通過自動審稿，拒絕輸出: {details}")
 
+            if pain_points and any(reason.startswith("語意重複：") for reason in rejected.values()):
+                _replace_duplicate_pain_points(topic, pain_points, all_items, rejected, reference_items)
             print(f"      ⚠️  退回 {len(rejected)} 張，開始自動補寫")
             for idx, reason in sorted(rejected.items()):
                 print(f"         - {idx + 1:02d} {all_items[idx].get('word_en', '')}: {reason}")
@@ -2818,6 +3150,7 @@ def generate(
             }
             review_replacements += 1
             overgenerate_next_round = True
+            save_checkpoint()
             continue
 
         need = count - len(all_items)
@@ -3091,6 +3424,7 @@ def generate(
                 added += 1
 
         rounds += 1
+        save_checkpoint()
         overgenerate_next_round = added < chunk_size
         if added == 0:
             empty_streak += 1
@@ -3286,6 +3620,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         "--no-youtube",
         action="store_true",
         help="不要生成 youtube_{topic}.txt",
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="從輸出檔旁的 .draft.json 接續未完成的生成與審稿",
     )
     parser.add_argument(
         "--force",
@@ -3792,7 +4130,12 @@ def _main(argv: list[str] | None = None):
                 seed_items=items,
                 pain_points=pain_points,
                 reference_items=reference_items,
+                checkpoint_path=xlsx_path + ".draft.json",
+                resume=args.resume,
             )
+            if pain_points and all(item.get("_pain_point") for item in items):
+                pain_points = PainPointPlan([item["_pain_point"] for item in items], contract=pain_points.contract)
+                _save_pain_point_plan(generation_topic, pain_points, plan_path)
             write_xlsx(items, xlsx_path)
             used_after = len(_load_used_words())
             print(f"\n✅ 已校驗並輸出 {len(items)} 個詞彙 → {xlsx_path}")
@@ -3818,12 +4161,17 @@ def _main(argv: list[str] | None = None):
         count,
         pain_points=pain_points,
         reference_items=reference_items,
+        checkpoint_path=xlsx_path + ".draft.json",
+        resume=args.resume,
     )
 
     if not items:
         print("❌ 未生成任何詞彙")
         return
 
+    if pain_points and all(item.get("_pain_point") for item in items):
+        pain_points = PainPointPlan([item["_pain_point"] for item in items], contract=pain_points.contract)
+        _save_pain_point_plan(generation_topic, pain_points, plan_path)
     write_xlsx(items, xlsx_path)
     used_after = len(_load_used_words())
     print(f"\n✅ 已生成 {len(items)} 個詞彙 → {xlsx_path}")
