@@ -1,0 +1,1516 @@
+{
+  "source": [
+    {
+      "id": "01",
+      "word_en": "What does that term mean?",
+      "word_ipa": "/wʌt dʌz ðæt tɜrm min/",
+      "word_cn": "那個術語是什麼意思？",
+      "tips": "聽不懂時要立刻詢問。",
+      "sentence_en": "Could you please explain what that term means?",
+      "sentence_ipa": "/kəd juː pliz ɪkˈspleɪn wʌt ðæt tɜrm minz/",
+      "sentence_cn": "能否解釋一下那個術語的意思？"
+    },
+    {
+      "id": "02",
+      "word_en": "Can you simplify that?",
+      "word_ipa": "/kæn juː ˈsɪmplɪfaɪ ðæt/",
+      "word_cn": "你能簡單說明一下嗎？",
+      "tips": "對方用術語時要請求簡化解釋。",
+      "sentence_en": "Can you break down what that means in simpler terms?",
+      "sentence_ipa": "/kæn juː breɪk daʊn wʌt ðæt minz ɪn ˈsɪmplər tɜrmz/",
+      "sentence_cn": "能否用更簡單的話解釋一下？"
+    },
+    {
+      "id": "03",
+      "word_en": "Explain that in simple terms.",
+      "word_ipa": "/ɪkˈspleɪn ðæt ɪn ˈsɪmpl tɜrmz/",
+      "word_cn": "用簡單的話解釋一下。",
+      "tips": "面對推銷時要要求簡單解釋。",
+      "sentence_en": "Could you explain that in layman's terms?",
+      "sentence_ipa": "/kəd juː ɪkˈspleɪn ðæt ɪn ˈleɪmənz tɜrmz/",
+      "sentence_cn": "能否用一般人能懂的話解釋？"
+    },
+    {
+      "id": "04",
+      "word_en": "What does that part do?",
+      "word_ipa": "/wʌt dʌz ðæt pɑrt du/",
+      "word_cn": "那個零件是做什麼的？",
+      "tips": "不懂零件時要主動詢問功能。",
+      "sentence_en": "What exactly does that part do?",
+      "sentence_ipa": "/wʌt ɪɡˈzæktli dʌz ðæt pɑrt du/",
+      "sentence_cn": "那個零件具體是做什麼的？"
+    },
+    {
+      "id": "05",
+      "word_en": "I need a written estimate.",
+      "word_ipa": "/aɪ nid ə ˈrɪtən ˈɛstɪmət/",
+      "word_cn": "我需要一份書面報價。",
+      "tips": "要求報價時要明確要求書面。",
+      "sentence_en": "Can you provide a written estimate with details?",
+      "sentence_ipa": "/kæn juː prəˈvaɪd ə ˈrɪtən ˈɛstɪmət wɪð ˈdɪteɪlz/",
+      "sentence_cn": "能否提供一份詳細的書面報價？"
+    },
+    {
+      "id": "06",
+      "word_en": "Send me the details in writing.",
+      "word_ipa": "/sɛnd mi ðə ˈdɪteɪlz ɪn ˈraɪtɪŋ/",
+      "word_cn": "請把細節寫下來給我。",
+      "tips": "面對推銷時要要求書面資料。",
+      "sentence_en": "Can you send me the details in writing?",
+      "sentence_ipa": "/kæn juː sɛnd mi ðə ˈdɪteɪlz ɪn ˈraɪtɪŋ/",
+      "sentence_cn": "能否把細節寫下來給我？"
+    },
+    {
+      "id": "07",
+      "word_en": "Why is this procedure necessary?",
+      "word_ipa": "/waɪ ɪz ðɪs prəˈsidʒər ˈnɛsəsɛri/",
+      "word_cn": "這個程序為什麼是必要的？",
+      "tips": "不懂程序時要詢問必要性。",
+      "sentence_en": "Why is this procedure necessary for the repair?",
+      "sentence_ipa": "/waɪ ɪz ðɪs prəˈsidʒər ˈnɛsəsɛri fɔr ðə rɪˈpɛr/",
+      "sentence_cn": "這個維修程序為什麼是必要的？"
+    },
+    {
+      "id": "08",
+      "word_en": "I won't accept extra repairs.",
+      "word_ipa": "/aɪ woʊnt əkˈsɛpt ˈɛkstrə rɪˈpɛrz/",
+      "word_cn": "我不會接受額外的維修。",
+      "tips": "面對額外報價時要堅定拒絕。",
+      "sentence_en": "I won't accept any extra repairs unless I see a written estimate.",
+      "sentence_ipa": "/aɪ woʊnt əkˈsɛpt ˈɛni ˈɛkstrə rɪˈpɛrz ənˈlɛs aɪ si ə ˈrɪtən ˈɛstɪmət/",
+      "sentence_cn": "我不會接受任何額外的維修，除非我看到書面報價。"
+    },
+    {
+      "id": "09",
+      "word_en": "Stop all work immediately.",
+      "word_ipa": "/stɑp ɔl wɜrk ɪˈmidjətli/",
+      "word_cn": "請立即停止所有工作。",
+      "tips": "發現未經同意的服務時要立刻中止。",
+      "sentence_en": "Please stop all work, as I did not authorize these services.",
+      "sentence_ipa": "/pliz stɑp ɔl wɜrk æz aɪ dɪd nɑt ˈɔθəraɪz ðiz ˈsɜrvɪsɪz/",
+      "sentence_cn": "請停止所有工作，因為我沒有授權這些服務。"
+    },
+    {
+      "id": "10",
+      "word_en": "I don't need this product.",
+      "word_ipa": "/aɪ doʊnt nid ðɪs ˈprɒdʌkt/",
+      "word_cn": "我不需要這個產品。",
+      "tips": "面對強推時要堅定拒絕。",
+      "sentence_en": "I don't need this product, please stop selling it to me.",
+      "sentence_ipa": "/aɪ doʊnt nid ðɪs ˈprɒdʌkt pliz stɑp ˈsɛlɪŋ ɪt tu mi/",
+      "sentence_cn": "我不需要這個產品，請不要再推銷了。"
+    },
+    {
+      "id": "11",
+      "word_en": "I need a detailed written quote.",
+      "word_ipa": "/aɪ niːd ə ˈdiːteɪld ˈrɪtən koʊt/",
+      "word_cn": "我需要一份詳細的書面報價。",
+      "tips": "要求報價時一定要清楚。",
+      "sentence_en": "Please provide a detailed written quote for my decision.",
+      "sentence_ipa": "/pliːz prəˈvaɪd ə ˈdiːteɪld ˈrɪtən koʊt fɔr maɪ dɪˈsɪʒən/",
+      "sentence_cn": "請提供詳細的書面報價，讓我做決定。"
+    },
+    {
+      "id": "12",
+      "word_en": "I won't replace any parts without proof.",
+      "word_ipa": "/aɪ woʊnt rɪˈpleɪs ˈɛni pɑrts wɪˈðaʊt pruːf/",
+      "word_cn": "沒有證明我不會更換任何零件。",
+      "tips": "對於不必要的建議要堅定拒絕。",
+      "sentence_en": "I won't replace those parts unless you show proof.",
+      "sentence_ipa": "/aɪ woʊnt rɪˈpleɪs ðoʊz pɑrts ənˈlɛs ju ʃoʊ pruːf/",
+      "sentence_cn": "我不會更換這些零件，除非你能提供證明。"
+    },
+    {
+      "id": "13",
+      "word_en": "Stop those tasks, I didn't agree.",
+      "word_ipa": "/stɑp ðoʊz tæks, aɪ ˈdɪdnt əˈɡri/",
+      "word_cn": "停止這些工作，我沒有同意。",
+      "tips": "立即制止未經同意的工作。",
+      "sentence_en": "Please stop those tasks, as I didn't authorize them.",
+      "sentence_ipa": "/pliːz stɑp ðoʊz tæks, æz aɪ ˈdɪdnt ˈɔːθəraɪz ðɛm/",
+      "sentence_cn": "請停止這些工作，因為我沒有授權。"
+    },
+    {
+      "id": "14",
+      "word_en": "I won't agree without written proof.",
+      "word_ipa": "/aɪ woʊnt əˈɡri wɪˈðaʊt ˈrɪtən pruːf/",
+      "word_cn": "沒有書面證據我不會同意。",
+      "tips": "拒絕時要堅定且清楚。",
+      "sentence_en": "If there's no written proof, I won't agree to repairs.",
+      "sentence_ipa": "/ɪf ðɛrz noʊ ˈrɪtən pruːf, aɪ woʊnt əˈɡri tuː rɪˈpɛrz/",
+      "sentence_cn": "如果沒有書面證據，我不會同意維修。"
+    },
+    {
+      "id": "15",
+      "word_en": "I've already said I don't need this.",
+      "word_ipa": "/aɪv ɔːlˈrɛdi sɛd aɪ doʊnt niːd ðɪs/",
+      "word_cn": "我已經說過我不需要這個。",
+      "tips": "重申拒絕，保持堅定。",
+      "sentence_en": "I've already told you I don't need this product.",
+      "sentence_ipa": "/aɪv ɔːlˈrɛdi toʊld ju aɪ doʊnt niːd ðɪs ˈprɒdʌkt/",
+      "sentence_cn": "我已經告訴過你我不需要這個產品。"
+    },
+    {
+      "id": "16",
+      "word_en": "What is the specific issue with these parts?",
+      "word_ipa": "/wɑt ɪz ðə spəˈsɪfɪk ˈɪʃu wɪð ðiz pɑrts/",
+      "word_cn": "這些零件具體的問題是什麼？",
+      "tips": "詢問具體問題以便理解。",
+      "sentence_en": "Can you explain the specific issue with these parts?",
+      "sentence_ipa": "/kæn ju ɪkˈspleɪn ðə spəˈsɪfɪk ˈɪʃu wɪð ðiz pɑrts/",
+      "sentence_cn": "你能解釋這些零件的具體問題嗎？"
+    },
+    {
+      "id": "17",
+      "word_en": "I need more time to think about this.",
+      "word_ipa": "/aɪ niːd mɔr taɪm tu θɪŋk əˈbaʊt ðɪs/",
+      "word_cn": "我需要更多時間考慮這個。",
+      "tips": "要求時間時要明確。",
+      "sentence_en": "I need some time to think about this quote.",
+      "sentence_ipa": "/aɪ niːd sʌm taɪm tu θɪŋk əˈbaʊt ðɪs koʊt/",
+      "sentence_cn": "我需要時間來考慮這個報價。"
+    },
+    {
+      "id": "18",
+      "word_en": "I don't need this accessory, remove it.",
+      "word_ipa": "/aɪ doʊnt niːd ðɪs əkˈsɛsəri, rɪˈmuːv ɪt/",
+      "word_cn": "我不需要這個配件，請把它刪掉。",
+      "tips": "直接告訴對方你的需求。",
+      "sentence_en": "Please remove this accessory from my order.",
+      "sentence_ipa": "/pliːz rɪˈmuːv ðɪs əkˈsɛsəri frəm maɪ ˈɔrdər/",
+      "sentence_cn": "請把這個配件從我的訂單中刪掉。"
+    },
+    {
+      "id": "19",
+      "word_en": "I need written details about the membership.",
+      "word_ipa": "/aɪ niːd ˈrɪtən ˈdiːteɪlz əˈbaʊt ðə ˈmɛmbərʃɪp/",
+      "word_cn": "我需要會員方案的書面細節。",
+      "tips": "要求書面資料以便比較。",
+      "sentence_en": "Can I have written details about the membership plan?",
+      "sentence_ipa": "/kæn aɪ hæv ˈrɪtən ˈdiːteɪlz əˈbaʊt ðə ˈmɛmbərʃɪp plæn/",
+      "sentence_cn": "我可以要會員方案的書面細節嗎？"
+    },
+    {
+      "id": "20",
+      "word_en": "I don't need these extra treatments.",
+      "word_ipa": "/aɪ doʊnt niːd ðiz ˈɛkstrə ˈtritmənts/",
+      "word_cn": "我不需要這些額外的護理。",
+      "tips": "堅持自己的需求，拒絕額外服務。",
+      "sentence_en": "Please focus on the service I booked, not extras.",
+      "sentence_ipa": "/pliːz ˈfoʊkəs ɑn ðə ˈsɜrvɪs aɪ bʊkt, nɑt ˈɛkstrəz/",
+      "sentence_cn": "請專注於我預約的服務，不要額外的護理。"
+    },
+    {
+      "id": "21",
+      "word_en": "I need an independent inspection report.",
+      "word_ipa": "/aɪ niːd ən ɪnˈdɛpənt ɪnˈspɛkʃən rɪˈpɔrt/",
+      "word_cn": "我需要一份獨立的檢查報告。",
+      "tips": "對方可能會強調安全，堅持索取報告。",
+      "sentence_en": "Please provide an independent report verifying the need for this part.",
+      "sentence_ipa": "/pliːz prəˈvaɪd ən ɪnˈdɛpəndənt rɪˈpɔrt ˈvɛrɪfaɪɪŋ ðə niːd fɔr ðɪs pɑrt/",
+      "sentence_cn": "請提供一份獨立報告，證明這個部件需要更換。"
+    },
+    {
+      "id": "22",
+      "word_en": "Can I get a clear cost breakdown?",
+      "word_ipa": "/kæn aɪ gɛt ə klɪr kɔst ˈbreɪkˌdaʊn/",
+      "word_cn": "我可以要一份清楚的費用明細嗎？",
+      "tips": "報價不明確時立即要求明細。",
+      "sentence_en": "Can you give me a detailed breakdown of the costs involved?",
+      "sentence_ipa": "/kæn juː gɪv miː ə ˈdiːteɪld ˈbreɪkˌdaʊn ʌv ðə kɔsts ɪnˈvɑlvd/",
+      "sentence_cn": "你能給我這些費用的詳細明細嗎？"
+    },
+    {
+      "id": "23",
+      "word_en": "What does this charge cover?",
+      "word_ipa": "/wʌt dʌz ðɪs tʃɑrd ˈkʌvər/",
+      "word_cn": "這項收費包含什麼？",
+      "tips": "對於不明費用要及時詢問。",
+      "sentence_en": "Can you explain what this charge specifically covers?",
+      "sentence_ipa": "/kæn juː ɪkˈspleɪn wʌt ðɪs tʃɑrd spɪˈsɪfɪkli ˈkʌvərz/",
+      "sentence_cn": "你能解釋這項收費具體包含什麼嗎？"
+    },
+    {
+      "id": "24",
+      "word_en": "I need a written quote for this.",
+      "word_ipa": "/aɪ niːd ə ˈrɪtən koʊt fɔr ðɪs/",
+      "word_cn": "我需要一份書面報價。",
+      "tips": "強烈要求書面報價以便考慮。",
+      "sentence_en": "Please provide a written quote before I make any decisions.",
+      "sentence_ipa": "/pliːz prəˈvaɪd ə ˈrɪtən koʊt bɪˈfɔr aɪ meɪk ˈɛni dɪˈsɪʒənz/",
+      "sentence_cn": "在我做決定之前，請提供一份書面報價。"
+    },
+    {
+      "id": "25",
+      "word_en": "Why is there an extra charge?",
+      "word_ipa": "/waɪ ɪz ðɛr ən ˈɛkstrə tʃɑrdʒ/",
+      "word_cn": "為什麼會有額外收費？",
+      "tips": "對於額外收費要立即詢問原因。",
+      "sentence_en": "Can you explain why I'm being charged extra for this service?",
+      "sentence_ipa": "/kæn juː ɪkˈspleɪn waɪ aɪm ˈbiːɪŋ tʃɑrdʒd ˈɛkstrə fɔr ðɪs ˈsɜrvɪs/",
+      "sentence_cn": "你能解釋為什麼我會被額外收費嗎？"
+    },
+    {
+      "id": "26",
+      "word_en": "Can you confirm the total cost?",
+      "word_ipa": "/kæn juː kənˈfɜrm ðə ˈtoʊtəl kɔst/",
+      "word_cn": "你能確認最終價格嗎？",
+      "tips": "在接受服務前，確認最終價格很重要。",
+      "sentence_en": "Could you confirm the total cost before we proceed with the service?",
+      "sentence_ipa": "/kʊd juː kənˈfɜrm ðə ˈtoʊtəl kɔst bɪˈfɔr wi prəˈsiːd wɪð ðə ˈsɜrvɪs/",
+      "sentence_cn": "在我們繼續服務之前，你能確認總價格嗎？"
+    },
+    {
+      "id": "27",
+      "word_en": "Why is this service so expensive?",
+      "word_ipa": "/waɪ ɪz ðɪs ˈsɜrvɪs soʊ ɪkˈspɛnsɪv/",
+      "word_cn": "為什麼這項服務這麼貴？",
+      "tips": "對於高價格要詢問原因。",
+      "sentence_en": "Can you explain why this service costs so much?",
+      "sentence_ipa": "/kæn juː ɪkˈspleɪn waɪ ðɪs ˈsɜrvɪs kɔsts soʊ mʌtʃ/",
+      "sentence_cn": "你能解釋為什麼這項服務這麼貴嗎？"
+    },
+    {
+      "id": "28",
+      "word_en": "I need an itemized invoice.",
+      "word_ipa": "/aɪ niːd ən ˈaɪtəˌmaɪzd ˈɪnˌvoɪs/",
+      "word_cn": "我需要一份詳細的發票。",
+      "tips": "在付款前要求明細發票。",
+      "sentence_en": "Please provide an itemized invoice for this service.",
+      "sentence_ipa": "/pliːz prəˈvaɪd ən ˈaɪtəˌmaɪzd ˈɪnˌvoɪs fɔr ðɪs ˈsɜrvɪs/",
+      "sentence_cn": "請提供這項服務的明細發票。"
+    },
+    {
+      "id": "29",
+      "word_en": "Please send me a written estimate.",
+      "word_ipa": "/pliːz sɛnd miː ə ˈrɪtən ˈɛstɪmət/",
+      "word_cn": "請發送給我一份書面報價。",
+      "tips": "在強勢推銷時要堅持要求報價。",
+      "sentence_en": "Can you send me a written estimate for this service?",
+      "sentence_ipa": "/kæn juː sɛnd miː ə ˈrɪtən ˈɛstɪmət fɔr ðɪs ˈsɜrvɪs/",
+      "sentence_cn": "你能給我這項服務的書面報價嗎？"
+    },
+    {
+      "id": "30",
+      "word_en": "I need a detailed quote.",
+      "word_ipa": "/aɪ niːd ə dɪˈteɪld koʊt/",
+      "word_cn": "我需要一份詳細的報價。",
+      "tips": "對不清楚的報價要求詳細說明。",
+      "sentence_en": "I need a detailed quote to understand each cost involved.",
+      "sentence_ipa": "/aɪ niːd ə dɪˈteɪld koʊt tuː ˌʌndərˈstænd iːtʃ kɔst ɪnˈvɑlvd/",
+      "sentence_cn": "我需要一份詳細報價，以了解每項費用。"
+    },
+    {
+      "id": "31",
+      "word_en": "I don't need this service.",
+      "word_ipa": "/aɪ doʊnt nid ðɪs ˈsɜrvɪs/",
+      "word_cn": "我不需要這項服務。",
+      "tips": "當感到壓力時，堅定拒絕。",
+      "sentence_en": "I don't need this service, please stop pushing.",
+      "sentence_ipa": "/aɪ doʊnt nid ðɪs ˈsɜrvɪs, pliz stɑp ˈpʊʃɪŋ/",
+      "sentence_cn": "我不需要這項服務，請不要再推銷了。"
+    },
+    {
+      "id": "32",
+      "word_en": "What does this term mean?",
+      "word_ipa": "/wʌt dʌz ðɪs tɜrm miːn/",
+      "word_cn": "這個術語是什麼意思？",
+      "tips": "當你聽不懂時可以這樣問。",
+      "sentence_en": "Could you explain what this term means, please?",
+      "sentence_ipa": "/kʊd juː ɪkˈspleɪn wʌt ðɪs tɜrm miːnz, pliz/",
+      "sentence_cn": "請問這個術語的意思是什麼？"
+    },
+    {
+      "id": "33",
+      "word_en": "I need a written quote.",
+      "word_ipa": "/aɪ nid ə ˈrɪtən koʊt/",
+      "word_cn": "我需要一份書面的報價單。",
+      "tips": "要求書面證據以保障權益。",
+      "sentence_en": "I need a written quote before I decide.",
+      "sentence_ipa": "/aɪ nid ə ˈrɪtən koʊt bɪˈfɔr aɪ dɪˈsaɪd/",
+      "sentence_cn": "我需要一份書面的報價單才能做決定。"
+    },
+    {
+      "id": "34",
+      "word_en": "Please clarify these extra charges.",
+      "word_ipa": "/pliz ˈklærɪfaɪ ðiz ˈɛkstrə ˈtʃɑrdʒɪz/",
+      "word_cn": "請澄清這些額外費用。",
+      "tips": "要求澄清時可以這樣說。",
+      "sentence_en": "I need a detailed explanation for these extra charges.",
+      "sentence_ipa": "/aɪ niːd ə ˈdiːteɪld ˌɛkspləˈneɪʃən fɔr ðiz ˈɛkstrə ˈtʃɑrdʒɪz/",
+      "sentence_cn": "我需要詳細說明這些額外費用的原因。"
+    },
+    {
+      "id": "35",
+      "word_en": "Please stop this sales talk.",
+      "word_ipa": "/pliz stɑp ðɪs seɪlz tɔk/",
+      "word_cn": "請停止這些推銷話。",
+      "tips": "當感到壓力時，直接中斷對話。",
+      "sentence_en": "I want you to stop this sales talk now.",
+      "sentence_ipa": "/aɪ wɑnt juː tə stɑp ðɪs seɪlz tɔk naʊ/",
+      "sentence_cn": "我希望你現在停止這些推銷話。"
+    },
+    {
+      "id": "36",
+      "word_en": "I need to read the contract.",
+      "word_ipa": "/aɪ nid tə rid ðə ˈkɒntrækt/",
+      "word_cn": "我需要先閱讀合約。",
+      "tips": "在簽署前要求閱讀合約內容。",
+      "sentence_en": "I need to read the contract before signing it.",
+      "sentence_ipa": "/aɪ nid tə rid ðə ˈkɒntrækt bɪˈfɔr ˈsaɪnɪŋ ɪt/",
+      "sentence_cn": "我需要在簽署之前先閱讀合約。"
+    },
+    {
+      "id": "37",
+      "word_en": "I need a written document.",
+      "word_ipa": "/aɪ nid ə ˈrɪtən ˈdɑkjʊmənt/",
+      "word_cn": "我需要一份書面的文件。",
+      "tips": "要求書面文件以避免口頭報價的風險。",
+      "sentence_en": "Please provide me with a written document for the quote.",
+      "sentence_ipa": "/pliz prəˈvaɪd mi wɪð ə ˈrɪtən ˈdɑkjʊmənt fɔr ðə koʊt/",
+      "sentence_cn": "請給我一份書面的報價文件。"
+    },
+    {
+      "id": "38",
+      "word_en": "Can you explain this simply?",
+      "word_ipa": "/kæn juː ɪkˈspleɪn ðɪs ˈsɪmpli/",
+      "word_cn": "你能簡單解釋一下這個嗎？",
+      "tips": "要求用簡單語言解釋專業術語。",
+      "sentence_en": "Could you explain this issue in simpler terms, please?",
+      "sentence_ipa": "/kʊd juː ɪkˈspleɪn ðɪs ˈɪʃu ɪn ˈsɪmplər tɜrmz, pliz/",
+      "sentence_cn": "你能用更簡單的語言解釋這個問題嗎？"
+    },
+    {
+      "id": "39",
+      "word_en": "I need a detailed breakdown.",
+      "word_ipa": "/aɪ nid ə ˈdiːteɪld ˈbreɪkdaʊn/",
+      "word_cn": "我需要一份詳細的報價明細。",
+      "tips": "要求明細以避免隱藏費用的風險。",
+      "sentence_en": "Can you provide me with a detailed breakdown of the costs?",
+      "sentence_ipa": "/kæn juː prəˈvaɪd mi wɪð ə ˈdiːteɪld ˈbreɪkdaʊn ʌv ðə kɔsts/",
+      "sentence_cn": "你能給我一份詳細的費用明細嗎？"
+    },
+    {
+      "id": "40",
+      "word_en": "I'm not interested in this.",
+      "word_ipa": "/aɪm nɑt ˈɪntrəstəd ɪn ðɪs/",
+      "word_cn": "我對這個不感興趣。",
+      "tips": "明確拒絕不需要的服務或產品。",
+      "sentence_en": "I am not interested in this service, thank you.",
+      "sentence_ipa": "/aɪ æm nɑt ˈɪntrəstəd ɪn ðɪs ˈsɜrvɪs, θæŋk ju/",
+      "sentence_cn": "我對這項服務不感興趣，謝謝你。"
+    },
+    {
+      "id": "41",
+      "word_en": "Stop! I did not authorize this.",
+      "word_ipa": "/stɑp! aɪ dɪd nɑt ˈɔːθəraɪz ðɪs/",
+      "word_cn": "停下！我沒有授權這項服務。",
+      "tips": "發現未經授權的服務時立即使用。",
+      "sentence_en": "Please stop this service; I didn’t authorize it.",
+      "sentence_ipa": "/pliz stɑp ðɪs ˈsɜrvɪs; aɪ ˈdɪdnt ˈɔːθəraɪz ɪt/",
+      "sentence_cn": "請停止這項服務，我沒有授權。"
+    },
+    {
+      "id": "42",
+      "word_en": "Can you explain the process simply?",
+      "word_ipa": "/kæn juː ɪkˈspleɪn ðə ˈprɑsɛs ˈsɪmpli/",
+      "word_cn": "你能簡單解釋一下過程嗎？",
+      "tips": "要求簡化解釋時使用。",
+      "sentence_en": "Could you explain the repair process in simple terms?",
+      "sentence_ipa": "/kʊd juː ɪkˈspleɪn ðə rɪˈpɛr ˈprɑsɛs ɪn ˈsɪmpl tɜrmz/",
+      "sentence_cn": "你能用簡單的話解釋修理過程嗎？"
+    },
+    {
+      "id": "43",
+      "word_en": "I already have something similar.",
+      "word_ipa": "/aɪ ɔːlˈrɛdi hæv ˈsʌmθɪŋ ˈsɪmɪlər/",
+      "word_cn": "我已經有類似的產品了。",
+      "tips": "明確告訴對方你有類似的產品。",
+      "sentence_en": "I don't need this because I already own a similar product.",
+      "sentence_ipa": "/aɪ doʊnt nid ðɪs bɪˈkɔːz aɪ ɔːlˈrɛdi oʊn ə ˈsɪmɪlər ˈprɒdʌkt/",
+      "sentence_cn": "我不需要這個，因為我已經有類似的產品了。"
+    },
+    {
+      "id": "44",
+      "word_en": "I need a clear quote.",
+      "word_ipa": "/aɪ niːd ə klɪr koʊt/",
+      "word_cn": "我需要一個清楚的報價。",
+      "tips": "詢問報價時可以這樣說。",
+      "sentence_en": "Could you provide a detailed quote for my review?",
+      "sentence_ipa": "/kʊd juː prəˈvaɪd ə ˈdiːteɪld koʊt fɔr maɪ rɪˈvjuː/",
+      "sentence_cn": "你能提供一個詳細的報價讓我審核嗎？"
+    },
+    {
+      "id": "45",
+      "word_en": "No, I don’t want it.",
+      "word_ipa": "/noʊ, aɪ doʊnt wɑnt ɪt/",
+      "word_cn": "不，我不想要這個。",
+      "tips": "直接拒絕不需要的服務時使用。",
+      "sentence_en": "I’m not interested in this service; please stop.",
+      "sentence_ipa": "/aɪm nɑt ˈɪntrəstɪd ɪn ðɪs ˈsɜrvɪs; pliz stɑp/",
+      "sentence_cn": "我對這項服務不感興趣，請停止。"
+    },
+    {
+      "id": "46",
+      "word_en": "Are there any extra charges?",
+      "word_ipa": "/ɑr ðɛr ˈɛni ˈɛkstrə ˈtʃɑrdʒɪz/",
+      "word_cn": "有額外的費用嗎？",
+      "tips": "詢問額外費用時可以這樣問。",
+      "sentence_en": "Can you explain why there are extra charges?",
+      "sentence_ipa": "/kæn juː ɪkˈspleɪn waɪ ðɛr ɑr ˈɛkstrə ˈtʃɑrdʒɪz/",
+      "sentence_cn": "你能解釋為什麼會有額外費用嗎？"
+    },
+    {
+      "id": "47",
+      "word_en": "I don’t understand this jargon.",
+      "word_ipa": "/aɪ doʊnt ˌʌndərˈstænd ðɪs ˈdʒɑrgən/",
+      "word_cn": "我不明白這些術語。",
+      "tips": "當你聽不懂時可以這樣說。",
+      "sentence_en": "Could you simplify this jargon for me?",
+      "sentence_ipa": "/kʊd juː ˈsɪmplɪfaɪ ðɪs ˈdʒɑrgən fɔr miː/",
+      "sentence_cn": "你能幫我簡化這些術語嗎？"
+    },
+    {
+      "id": "48",
+      "word_en": "Please stop pushing this on me.",
+      "word_ipa": "/pliz stɑp ˈpʊʃɪŋ ðɪs ɑn mi/",
+      "word_cn": "請不要再強迫我了。",
+      "tips": "當感到壓力時使用這句。",
+      "sentence_en": "I really need you to stop selling this to me.",
+      "sentence_ipa": "/aɪ ˈrɪli nid juː tə stɑp ˈsɛlɪŋ ðɪs tə mi/",
+      "sentence_cn": "我真的需要你不要再推銷這個了。"
+    },
+    {
+      "id": "49",
+      "word_en": "I need more time to decide.",
+      "word_ipa": "/aɪ nid mɔːr taɪm tə dɪˈsaɪd/",
+      "word_cn": "我需要更多時間來決定。",
+      "tips": "要求時間時要表現自信。",
+      "sentence_en": "I need a bit more time to consider this decision.",
+      "sentence_ipa": "/aɪ nid ə bɪt mɔːr taɪm tə kənˈsɪdər ðɪs dɪˈsɪʒən/",
+      "sentence_cn": "我需要再多一點時間來考慮這個決定。"
+    },
+    {
+      "id": "50",
+      "word_en": "Please provide a written report.",
+      "word_ipa": "/pliz prəˈvaɪd ə ˈrɪtən rɪˈpɔːrt/",
+      "word_cn": "請給我一份書面的報告。",
+      "tips": "要求書面證據時要堅定。",
+      "sentence_en": "I need a written report of the issues you mentioned.",
+      "sentence_ipa": "/aɪ nid ə ˈrɪtən rɪˈpɔːrt əv ði ˈɪʃuz ju ˈmɛnʃənd/",
+      "sentence_cn": "我需要一份你提到的問題的書面報告。"
+    }
+  ],
+  "groups": [
+    {
+      "core": "聽懂術語與說明",
+      "source_ids": [
+        1,
+        2,
+        3,
+        32,
+        38,
+        47
+      ],
+      "scenario": "聽懂說明與了解故障",
+      "boundary": "要求把術語解釋成聽得懂的話，不詢問維修步驟或故障證據。"
+    },
+    {
+      "core": "詢問零件功能",
+      "source_ids": [
+        4
+      ],
+      "scenario": "聽懂說明與了解故障",
+      "boundary": "詢問零件平常有何作用，不詢問哪裡壞掉。"
+    },
+    {
+      "core": "詢問具體故障",
+      "source_ids": [
+        16
+      ],
+      "scenario": "聽懂說明與了解故障",
+      "boundary": "要求描述具體缺陷，不詢問零件正常功能或要求書面證據。"
+    },
+    {
+      "core": "了解維修步驟",
+      "source_ids": [
+        42
+      ],
+      "scenario": "聽懂說明與了解故障",
+      "boundary": "了解將如何維修的順序，不只是把單一術語翻成簡單英文。"
+    },
+    {
+      "core": "取得書面報價與明細",
+      "source_ids": [
+        5,
+        6,
+        11,
+        19,
+        22,
+        24,
+        28,
+        29,
+        30,
+        33,
+        37,
+        39,
+        44
+      ],
+      "scenario": "核對報價與維修必要性",
+      "boundary": "取得可核對的書面費用與項目資料；quote、estimate、invoice 不各自增設一組。"
+    },
+    {
+      "core": "詢問維修必要性",
+      "source_ids": [
+        7
+      ],
+      "scenario": "核對報價與維修必要性",
+      "boundary": "詢問為何需要進行維修或程序，不等於要求故障報告。"
+    },
+    {
+      "core": "釐清收費項目的理由與內容",
+      "source_ids": [
+        23,
+        25,
+        27,
+        34,
+        46
+      ],
+      "scenario": "核對報價與維修必要性",
+      "boundary": "核對某筆收費的內容與理由，不要求再印一份報價，也不詢問合計金額。"
+    },
+    {
+      "core": "確認總費用",
+      "source_ids": [
+        26
+      ],
+      "scenario": "核對報價與維修必要性",
+      "boundary": "確認最終合計應付多少，不逐項詢問收費理由或索取明細。"
+    },
+    {
+      "core": "要求故障證據再決定維修",
+      "source_ids": [
+        12,
+        14,
+        50
+      ],
+      "scenario": "核實證據與控制施工",
+      "boundary": "要求故障的可核對證據再同意維修，沒有額外要求報告一定由第三方出具。"
+    },
+    {
+      "core": "取得第三方檢查報告",
+      "source_ids": [
+        21
+      ],
+      "scenario": "核實證據與控制施工",
+      "boundary": "報告的獨立來源是必要條件；與只向原推銷方要求故障證據不同。"
+    },
+    {
+      "core": "限定原先同意的服務範圍",
+      "source_ids": [
+        8,
+        20
+      ],
+      "scenario": "核實證據與控制施工",
+      "boundary": "限定可執行的服務範圍，不取消既有訂單項目，也不以這句代替即時停工。"
+    },
+    {
+      "core": "停止未授權施工",
+      "source_ids": [
+        9,
+        13,
+        41
+      ],
+      "scenario": "核實證據與控制施工",
+      "boundary": "讓已開始、未經同意的工作立即停止，不只是拒絕未來加購。"
+    },
+    {
+      "core": "拒絕推銷並停止糾纏",
+      "source_ids": [
+        10,
+        15,
+        31,
+        35,
+        40,
+        43,
+        45,
+        48
+      ],
+      "scenario": "拒絕加購與保留決定權",
+      "boundary": "拒絕尚未購買的推銷並要求停止施壓，不用不同商品或拒絕理由再造一組。"
+    },
+    {
+      "core": "移除訂單中的加購項目",
+      "source_ids": [
+        18
+      ],
+      "scenario": "拒絕加購與保留決定權",
+      "boundary": "把已列入訂單的項目拿掉；與拒絕尚未加進訂單的推銷不同。"
+    },
+    {
+      "core": "保留考慮時間",
+      "source_ids": [
+        17,
+        49
+      ],
+      "scenario": "拒絕加購與保留決定權",
+      "boundary": "延後決定以便思考，不等於已拒絕方案或要求先閱讀特定合約。"
+    },
+    {
+      "core": "先閱讀合約再決定簽署",
+      "source_ids": [
+        36
+      ],
+      "scenario": "拒絕加購與保留決定權",
+      "boundary": "先讀清楚合約條款再簽，不用這一組代替一般考慮時間或要求書面報價。"
+    }
+  ],
+  "items": [
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "What does that mean?",
+      "word_ipa": "/wʌt dʌz ðæt min/",
+      "word_cn": "那是什麼意思？",
+      "tips": "中立：對方連續說出你聽不懂的術語時，先請他停一下，再重複那個詞，用這句問意思。",
+      "sentence_en": "What does that word mean in simple English?",
+      "sentence_ipa": "/wʌt dʌz ðæt wɜrd min ɪn ˈsɪmpəl ˈɪŋɡlɪʃ/",
+      "sentence_cn": "那個詞用簡單英文來說是什麼意思？",
+      "vocab": [
+        {
+          "en": "mean",
+          "cn": "意思是"
+        },
+        {
+          "en": "simple",
+          "cn": "簡單的"
+        }
+      ],
+      "progression": "",
+      "id": "01",
+      "core": "聽懂術語與說明",
+      "Scenario": "聽懂說明與了解故障",
+      "Level": "⭐",
+      "Core_Vocab": "mean 意思是；simple 簡單的"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "Could you put that in plain English?",
+      "word_ipa": "/kʊd ju pʊt ðæt ɪn pleɪn ˈɪŋɡlɪʃ/",
+      "word_cn": "能用淺白的英文說明嗎？",
+      "tips": "委婉：對方解釋完仍滿是專業術語時，先說哪個詞聽不懂，再請他改用日常英文說明。",
+      "sentence_en": "Could you put that technical term in plain English?",
+      "sentence_ipa": "/kʊd ju pʊt ðæt ˈtɛknɪkəl tɜrm ɪn pleɪn ˈɪŋɡlɪʃ/",
+      "sentence_cn": "能用淺白的英文解釋那個專業術語嗎？",
+      "vocab": [
+        {
+          "en": "plain English",
+          "cn": "淺白易懂的英文"
+        },
+        {
+          "en": "technical term",
+          "cn": "專業術語"
+        }
+      ],
+      "progression": "使用 put ... in plain English 片語與 Could you 間接請求。",
+      "id": "02",
+      "core": "聽懂術語與說明",
+      "Scenario": "聽懂說明與了解故障",
+      "Level": "⭐⭐",
+      "Core_Vocab": "plain English 淺白易懂的英文；technical term 專業術語"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "What does this part do?",
+      "word_ipa": "/wʌt dʌz ðɪs pɑrt du/",
+      "word_cn": "這個零件是做什麼的？",
+      "tips": "中立：對方指著零件說要換掉時，先不要點頭，指著同一個零件，問它平常有什麼作用。",
+      "sentence_en": "What does this part do during normal use?",
+      "sentence_ipa": "/wʌt dʌz ðɪs pɑrt du ˈdʊrɪŋ ˈnɔrməl jus/",
+      "sentence_cn": "正常使用時，這個零件有什麼作用？",
+      "vocab": [
+        {
+          "en": "part",
+          "cn": "零件"
+        },
+        {
+          "en": "normal use",
+          "cn": "正常使用"
+        }
+      ],
+      "progression": "",
+      "id": "03",
+      "core": "詢問零件功能",
+      "Scenario": "聽懂說明與了解故障",
+      "Level": "⭐",
+      "Core_Vocab": "part 零件；normal use 正常使用"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "中立",
+      "word_en": "What is this part's function?",
+      "word_ipa": "/wʌt ɪz ðɪs pɑrts ˈfʌŋkʃən/",
+      "word_cn": "這個零件的功能是什麼？",
+      "tips": "中立：對方只說零件很重要，卻沒說用途時，指著零件或照片，要求說明它正常運作的功能。",
+      "sentence_en": "What is this part's function during normal use?",
+      "sentence_ipa": "/wʌt ɪz ðɪs pɑrts ˈfʌŋkʃən ˈdʊrɪŋ ˈnɔrməl jus/",
+      "sentence_cn": "正常使用時，這個零件的功能是什麼？",
+      "vocab": [
+        {
+          "en": "function",
+          "cn": "功能"
+        }
+      ],
+      "progression": "由 do 的常見問法進階為所有格 part's 與名詞 function。",
+      "id": "04",
+      "core": "詢問零件功能",
+      "Scenario": "聽懂說明與了解故障",
+      "Level": "⭐⭐",
+      "Core_Vocab": "function 功能"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "What's wrong with this part?",
+      "word_ipa": "/wʌts rɔŋ wɪð ðɪs pɑrt/",
+      "word_cn": "這個零件哪裡有問題？",
+      "tips": "中立：對方只說零件壞了時，先指著零件，問清楚是哪裡有問題，再聽維修建議。",
+      "sentence_en": "What's wrong with this part when the machine runs?",
+      "sentence_ipa": "/wʌts rɔŋ wɪð ðɪs pɑrt wɛn ðə məˈʃin rʌnz/",
+      "sentence_cn": "機器運轉時，這個零件有什麼問題？",
+      "vocab": [
+        {
+          "en": "wrong",
+          "cn": "有問題的"
+        },
+        {
+          "en": "part",
+          "cn": "零件"
+        }
+      ],
+      "progression": "",
+      "id": "05",
+      "core": "詢問具體故障",
+      "Scenario": "聽懂說明與了解故障",
+      "Level": "⭐",
+      "Core_Vocab": "wrong 有問題的；part 零件"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "中立",
+      "word_en": "What exactly is the fault?",
+      "word_ipa": "/wʌt ɪɡˈzæktli ɪz ðə fɔlt/",
+      "word_cn": "具體的故障是什麼？",
+      "tips": "中立：對方用嚴重、危險等字眼帶過問題時，先不要答應更換，要求指出具體故障。",
+      "sentence_en": "What exactly is the fault with this part?",
+      "sentence_ipa": "/wʌt ɪɡˈzæktli ɪz ðə fɔlt wɪð ðɪs pɑrt/",
+      "sentence_cn": "這個零件具體的故障是什麼？",
+      "vocab": [
+        {
+          "en": "fault",
+          "cn": "故障、缺陷"
+        },
+        {
+          "en": "exactly",
+          "cn": "具體地、確切地"
+        }
+      ],
+      "progression": "使用 fault 精確指故障，並以 exactly 要求具體說明。",
+      "id": "06",
+      "core": "詢問具體故障",
+      "Scenario": "聽懂說明與了解故障",
+      "Level": "⭐⭐",
+      "Core_Vocab": "fault 故障、缺陷；exactly 具體地、確切地"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "What will you do, step by step?",
+      "word_ipa": "/wʌt wɪl ju du stɛp baɪ stɛp/",
+      "word_cn": "你會一步一步怎麼做？",
+      "tips": "中立：對方只說會處理好，卻沒說怎麼修時，先請他按順序說明，再核對哪些步驟要做。",
+      "sentence_en": "What will you do to fix it, step by step?",
+      "sentence_ipa": "/wʌt wɪl ju du tə fɪks ɪt stɛp baɪ stɛp/",
+      "sentence_cn": "你會一步一步怎麼把它修好？",
+      "vocab": [
+        {
+          "en": "step by step",
+          "cn": "一步一步"
+        },
+        {
+          "en": "fix",
+          "cn": "修好"
+        }
+      ],
+      "progression": "",
+      "id": "07",
+      "core": "了解維修步驟",
+      "Scenario": "聽懂說明與了解故障",
+      "Level": "⭐",
+      "Core_Vocab": "step by step 一步一步；fix 修好"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "Could you walk me through the repair?",
+      "word_ipa": "/kʊd ju wɔk mi θru ðə rɪˈpɛr/",
+      "word_cn": "能向我逐步說明維修過程嗎？",
+      "tips": "委婉：對方快速帶過拆卸與更換流程時，先請他停一下，再要求從開始到完成逐步說明。",
+      "sentence_en": "Could you walk me through the repair from start to finish?",
+      "sentence_ipa": "/kʊd ju wɔk mi θru ðə rɪˈpɛr frəm stɑrt tə ˈfɪnɪʃ/",
+      "sentence_cn": "能從頭到尾向我逐步說明維修過程嗎？",
+      "vocab": [
+        {
+          "en": "walk me through",
+          "cn": "向我逐步說明"
+        },
+        {
+          "en": "repair",
+          "cn": "維修"
+        }
+      ],
+      "progression": "使用 walk someone through 的慣用片語，不是字面上的走路。",
+      "id": "08",
+      "core": "了解維修步驟",
+      "Scenario": "聽懂說明與了解故障",
+      "Level": "⭐⭐",
+      "Core_Vocab": "walk me through 向我逐步說明；repair 維修"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "I need a written quote.",
+      "word_ipa": "/aɪ nid ə ˈrɪtən koʊt/",
+      "word_cn": "我需要一份書面報價。",
+      "tips": "中立：對方只口頭說價格就準備動工時，先請他等一下，要求列出書面金額與項目再核對。",
+      "sentence_en": "I need a written quote before you start.",
+      "sentence_ipa": "/aɪ nid ə ˈrɪtən koʊt bɪˈfɔr ju stɑrt/",
+      "sentence_cn": "你開始之前，我需要一份書面報價。",
+      "vocab": [
+        {
+          "en": "written quote",
+          "cn": "書面報價"
+        }
+      ],
+      "progression": "",
+      "id": "09",
+      "core": "取得書面報價與明細",
+      "Scenario": "核對報價與維修必要性",
+      "Level": "⭐",
+      "Core_Vocab": "written quote 書面報價"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "Could you put the costs in writing?",
+      "word_ipa": "/kʊd ju pʊt ðə kɔsts ɪn ˈraɪtɪŋ/",
+      "word_cn": "能把費用寫下來嗎？",
+      "tips": "委婉：對方口頭列出一串費用，讓你無法核對時，請他把各項費用寫下來，再逐項確認。",
+      "sentence_en": "Could you put the costs in writing, including each item?",
+      "sentence_ipa": "/kʊd ju pʊt ðə kɔsts ɪn ˈraɪtɪŋ ɪnˈkludɪŋ itʃ ˈaɪtəm/",
+      "sentence_cn": "能把費用寫下來，包含每個項目嗎？",
+      "vocab": [
+        {
+          "en": "in writing",
+          "cn": "以書面形式"
+        },
+        {
+          "en": "costs",
+          "cn": "費用"
+        }
+      ],
+      "progression": "使用 put ... in writing 片語，並以 including 補充明細範圍。",
+      "id": "10",
+      "core": "取得書面報價與明細",
+      "Scenario": "核對報價與維修必要性",
+      "Level": "⭐⭐",
+      "Core_Vocab": "in writing 以書面形式；costs 費用"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "Why do I need this repair?",
+      "word_ipa": "/waɪ du aɪ nid ðɪs rɪˈpɛr/",
+      "word_cn": "為什麼我需要這項維修？",
+      "tips": "中立：對方說一定要加做某項維修時，先指著那個項目，問清楚原因，不要直接答應。",
+      "sentence_en": "Why do I need this repair before using it again?",
+      "sentence_ipa": "/waɪ du aɪ nid ðɪs rɪˈpɛr bɪˈfɔr ˈjuzɪŋ ɪt əˈɡɛn/",
+      "sentence_cn": "再次使用之前，為什麼我需要這項維修？",
+      "vocab": [
+        {
+          "en": "need",
+          "cn": "需要"
+        },
+        {
+          "en": "repair",
+          "cn": "維修"
+        }
+      ],
+      "progression": "",
+      "id": "11",
+      "core": "詢問維修必要性",
+      "Scenario": "核對報價與維修必要性",
+      "Level": "⭐",
+      "Core_Vocab": "need 需要；repair 維修"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "中立",
+      "word_en": "What makes this repair essential?",
+      "word_ipa": "/wʌt meɪks ðɪs rɪˈpɛr ɪˈsɛnʃəl/",
+      "word_cn": "為什麼這項維修是必要的？",
+      "tips": "中立：對方把建議項目說成非做不可時，先指出那一項，要求解釋它為何必要，而不只是建議。",
+      "sentence_en": "What makes this repair essential before I use it again?",
+      "sentence_ipa": "/wʌt meɪks ðɪs rɪˈpɛr ɪˈsɛnʃəl bɪˈfɔr aɪ juz ɪt əˈɡɛn/",
+      "sentence_cn": "再次使用之前，為什麼這項維修是必要的？",
+      "vocab": [
+        {
+          "en": "essential",
+          "cn": "必要的、不可或缺的"
+        }
+      ],
+      "progression": "使用 make + 受詞 + 形容詞結構，以及 essential 表達必要性。",
+      "id": "12",
+      "core": "詢問維修必要性",
+      "Scenario": "核對報價與維修必要性",
+      "Level": "⭐⭐",
+      "Core_Vocab": "essential 必要的、不可或缺的"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "What is this charge for?",
+      "word_ipa": "/wʌt ɪz ðɪs tʃɑrdʒ fɔr/",
+      "word_cn": "這筆費用是收什麼的？",
+      "tips": "中立：看到帳單上有你不認得的費用時，先指著那一行金額，問清楚收的是什麼，再核對服務。",
+      "sentence_en": "What is this extra charge on my bill for?",
+      "sentence_ipa": "/wʌt ɪz ðɪs ˈɛkstrə tʃɑrdʒ ɑn maɪ bɪl fɔr/",
+      "sentence_cn": "帳單上這筆額外費用是收什麼的？",
+      "vocab": [
+        {
+          "en": "charge",
+          "cn": "收費、費用"
+        },
+        {
+          "en": "bill",
+          "cn": "帳單"
+        }
+      ],
+      "progression": "",
+      "id": "13",
+      "core": "釐清收費項目的理由與內容",
+      "Scenario": "核對報價與維修必要性",
+      "Level": "⭐",
+      "Core_Vocab": "charge 收費、費用；bill 帳單"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "Could you clarify what this charge covers?",
+      "word_ipa": "/kʊd ju ˈklærəfaɪ wʌt ðɪs tʃɑrdʒ ˈkʌvərz/",
+      "word_cn": "能說明清楚這筆費用包含什麼嗎？",
+      "tips": "委婉：對方把不明費用說成固定收費時，指著該項目，請他說明包含哪些服務、為何需要收。",
+      "sentence_en": "Could you clarify what this charge covers and why it's needed?",
+      "sentence_ipa": "/kʊd ju ˈklærəfaɪ wʌt ðɪs tʃɑrdʒ ˈkʌvərz ænd waɪ ɪts ˈnidɪd/",
+      "sentence_cn": "能說明這筆費用包含什麼，以及為何需要收嗎？",
+      "vocab": [
+        {
+          "en": "clarify",
+          "cn": "說明清楚"
+        },
+        {
+          "en": "covers",
+          "cn": "包含、涵蓋"
+        }
+      ],
+      "progression": "使用 clarify、covers 與嵌入問句，不只增加禮貌詞。",
+      "id": "14",
+      "core": "釐清收費項目的理由與內容",
+      "Scenario": "核對報價與維修必要性",
+      "Level": "⭐⭐",
+      "Core_Vocab": "clarify 說明清楚；covers 包含、涵蓋"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "How much will I pay in total?",
+      "word_ipa": "/haʊ mʌtʃ wɪl aɪ peɪ ɪn ˈtoʊtəl/",
+      "word_cn": "我總共要付多少錢？",
+      "tips": "中立：對方分開報出零件、工錢與其他費用時，先不要把其中一項當總價，要求說出合計金額。",
+      "sentence_en": "How much will I pay in total for this service?",
+      "sentence_ipa": "/haʊ mʌtʃ wɪl aɪ peɪ ɪn ˈtoʊtəl fɔr ðɪs ˈsɜrvɪs/",
+      "sentence_cn": "這項服務我總共要付多少錢？",
+      "vocab": [
+        {
+          "en": "in total",
+          "cn": "總共"
+        },
+        {
+          "en": "pay",
+          "cn": "付錢"
+        }
+      ],
+      "progression": "",
+      "id": "15",
+      "core": "確認總費用",
+      "Scenario": "核對報價與維修必要性",
+      "Level": "⭐",
+      "Core_Vocab": "in total 總共；pay 付錢"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "Could you confirm the final amount?",
+      "word_ipa": "/kʊd ju kənˈfɜrm ðə ˈfaɪnəl əˈmaʊnt/",
+      "word_cn": "能確認最後的總金額嗎？",
+      "tips": "委婉：對方準備請你確認服務，但還沒說總金額時，先請他確認包含全部費用的最終應付額。",
+      "sentence_en": "Could you confirm the final amount, including all fees?",
+      "sentence_ipa": "/kʊd ju kənˈfɜrm ðə ˈfaɪnəl əˈmaʊnt ɪnˈkludɪŋ ɔl fiz/",
+      "sentence_cn": "能確認包含全部費用的最後總金額嗎？",
+      "vocab": [
+        {
+          "en": "confirm",
+          "cn": "確認"
+        },
+        {
+          "en": "final amount",
+          "cn": "最後總金額"
+        }
+      ],
+      "progression": "使用 confirm 與 final amount，並以 including 片語界定總額。",
+      "id": "16",
+      "core": "確認總費用",
+      "Scenario": "核對報價與維修必要性",
+      "Level": "⭐⭐",
+      "Core_Vocab": "confirm 確認；final amount 最後總金額"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "I need proof before I say yes.",
+      "word_ipa": "/aɪ nid pruf bɪˈfɔr aɪ seɪ jɛs/",
+      "word_cn": "我需要看到證據才會答應。",
+      "tips": "中立：對方說零件有問題卻只催你答應時，先不要同意更換，要求出示能核對的故障證據。",
+      "sentence_en": "I need proof of the problem before I say yes.",
+      "sentence_ipa": "/aɪ nid pruf əv ðə ˈprɑbləm bɪˈfɔr aɪ seɪ jɛs/",
+      "sentence_cn": "我需要看到問題的證據才會答應。",
+      "vocab": [
+        {
+          "en": "proof",
+          "cn": "證據、證明"
+        }
+      ],
+      "progression": "",
+      "id": "17",
+      "core": "要求故障證據再決定維修",
+      "Scenario": "核實證據與控制施工",
+      "Level": "⭐",
+      "Core_Vocab": "proof 證據、證明"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "強硬",
+      "word_en": "I won't approve repairs without written evidence.",
+      "word_ipa": "/aɪ woʊnt əˈpruv rɪˈpɛrz wɪˈðaʊt ˈrɪtən ˈɛvɪdəns/",
+      "word_cn": "沒有書面證據，我不會同意維修。",
+      "tips": "強硬：對方拿口頭說法當作你應該同意維修的理由時，先拒絕授權，要求留下故障的書面證據。",
+      "sentence_en": "I won't approve these repairs without written evidence of the fault.",
+      "sentence_ipa": "/aɪ woʊnt əˈpruv ðiz rɪˈpɛrz wɪˈðaʊt ˈrɪtən ˈɛvɪdəns əv ðə fɔlt/",
+      "sentence_cn": "沒有故障的書面證據，我不會同意這些維修。",
+      "vocab": [
+        {
+          "en": "approve",
+          "cn": "同意、核准"
+        },
+        {
+          "en": "written evidence",
+          "cn": "書面證據"
+        }
+      ],
+      "progression": "使用 approve、evidence 與 without 條件結構表達同意的界線。",
+      "id": "18",
+      "core": "要求故障證據再決定維修",
+      "Scenario": "核實證據與控制施工",
+      "Level": "⭐⭐",
+      "Core_Vocab": "approve 同意、核准；written evidence 書面證據"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "I need an outside expert's report.",
+      "word_ipa": "/aɪ nid ən ˈaʊtˌsaɪd ˈɛkspɜrts rɪˈpɔrt/",
+      "word_cn": "我需要一位外部專家的報告。",
+      "tips": "中立：對方一直強調安全卻不讓你核實時，先不要答應維修，說明你要找不屬於推銷方的專家檢查並出報告。",
+      "sentence_en": "I need an outside expert's report before I agree to repairs.",
+      "sentence_ipa": "/aɪ nid ən ˈaʊtˌsaɪd ˈɛkspɜrts rɪˈpɔrt bɪˈfɔr aɪ əˈɡri tə rɪˈpɛrz/",
+      "sentence_cn": "同意維修前，我需要一位外部專家的報告。",
+      "vocab": [
+        {
+          "en": "outside",
+          "cn": "外部的"
+        },
+        {
+          "en": "report",
+          "cn": "報告"
+        }
+      ],
+      "progression": "",
+      "id": "19",
+      "core": "取得第三方檢查報告",
+      "Scenario": "核實證據與控制施工",
+      "Level": "⭐",
+      "Core_Vocab": "outside 外部的；report 報告"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "I'd like an independent inspection report.",
+      "word_ipa": "/aɪd laɪk ən ˌɪndɪˈpɛndənt ɪnˈspɛkʃən rɪˈpɔrt/",
+      "word_cn": "我想要一份獨立檢查報告。",
+      "tips": "委婉：對方只拿自己公司的檢查結果要求你點頭時，先保留決定，請求不受推銷方影響的檢查報告。",
+      "sentence_en": "I'd like an independent inspection report before I approve any repairs.",
+      "sentence_ipa": "/aɪd laɪk ən ˌɪndɪˈpɛndənt ɪnˈspɛkʃən rɪˈpɔrt bɪˈfɔr aɪ əˈpruv ˈɛni rɪˈpɛrz/",
+      "sentence_cn": "同意任何維修前，我想要一份獨立檢查報告。",
+      "vocab": [
+        {
+          "en": "independent",
+          "cn": "獨立的、不受利益方影響的"
+        },
+        {
+          "en": "inspection report",
+          "cn": "檢查報告"
+        }
+      ],
+      "progression": "使用 independent inspection report 專業名詞組合與 I'd like 委婉請求。",
+      "id": "20",
+      "core": "取得第三方檢查報告",
+      "Scenario": "核實證據與控制施工",
+      "Level": "⭐⭐",
+      "Core_Vocab": "independent 獨立的、不受利益方影響的；inspection report 檢查報告"
+    },
+    {
+      "tier": "basic",
+      "Tone": "強硬",
+      "word_en": "Only do the work we agreed on.",
+      "word_ipa": "/ˈoʊnli du ðə wɜrk wi əˈɡrid ɑn/",
+      "word_cn": "只做我們約定好的工作。",
+      "tips": "強硬：對方準備把額外維修加進服務時，先指著原先確認的項目，明確要求只做那些工作。",
+      "sentence_en": "Only do the work we agreed on, not extra repairs.",
+      "sentence_ipa": "/ˈoʊnli du ðə wɜrk wi əˈɡrid ɑn nɑt ˈɛkstrə rɪˈpɛrz/",
+      "sentence_cn": "只做我們約定好的工作，不要額外維修。",
+      "vocab": [
+        {
+          "en": "only",
+          "cn": "只、僅"
+        },
+        {
+          "en": "agreed on",
+          "cn": "約定好的"
+        }
+      ],
+      "progression": "",
+      "id": "21",
+      "core": "限定原先同意的服務範圍",
+      "Scenario": "核實證據與控制施工",
+      "Level": "⭐",
+      "Core_Vocab": "only 只、僅；agreed on 約定好的"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "強硬",
+      "word_en": "Stick to the agreed scope of work.",
+      "word_ipa": "/stɪk tə ði əˈɡrid skoʊp əv wɜrk/",
+      "word_cn": "請按約定的工作範圍執行。",
+      "tips": "強硬：對方把加做服務當成原本方案的一部分時，拿出原先確認的項目，要求維持約定範圍。",
+      "sentence_en": "Stick to the agreed scope of work. Don't add extra services.",
+      "sentence_ipa": "/stɪk tə ði əˈɡrid skoʊp əv wɜrk doʊnt æd ˈɛkstrə ˈsɜrvɪsɪz/",
+      "sentence_cn": "請按約定的工作範圍執行，不要加做額外服務。",
+      "vocab": [
+        {
+          "en": "stick to",
+          "cn": "遵守、按原定內容做"
+        },
+        {
+          "en": "scope of work",
+          "cn": "工作範圍"
+        }
+      ],
+      "progression": "使用 stick to 慣用片語及 scope of work 工作範圍名詞組合。",
+      "id": "22",
+      "core": "限定原先同意的服務範圍",
+      "Scenario": "核實證據與控制施工",
+      "Level": "⭐⭐",
+      "Core_Vocab": "stick to 遵守、按原定內容做；scope of work 工作範圍"
+    },
+    {
+      "tier": "basic",
+      "Tone": "強硬",
+      "word_en": "Stop the work. I didn't agree.",
+      "word_ipa": "/stɑp ðə wɜrk aɪ ˈdɪdənt əˈɡri/",
+      "word_cn": "停止工作，我沒有同意。",
+      "tips": "強硬：發現對方已拆卸或更換你沒同意的項目時，先站在安全位置要求停工，再核對原定內容。",
+      "sentence_en": "Stop the work now. I didn't agree to these repairs.",
+      "sentence_ipa": "/stɑp ðə wɜrk naʊ aɪ ˈdɪdənt əˈɡri tə ðiz rɪˈpɛrz/",
+      "sentence_cn": "現在停止工作，我沒有同意這些維修。",
+      "vocab": [
+        {
+          "en": "stop",
+          "cn": "停止"
+        },
+        {
+          "en": "agree",
+          "cn": "同意"
+        }
+      ],
+      "progression": "",
+      "id": "23",
+      "core": "停止未授權施工",
+      "Scenario": "核實證據與控制施工",
+      "Level": "⭐",
+      "Core_Vocab": "stop 停止；agree 同意"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "強硬",
+      "word_en": "Stop. I did not authorize this work.",
+      "word_ipa": "/stɑp aɪ dɪd nɑt ˈɔθəraɪz ðɪs wɜrk/",
+      "word_cn": "停止，我沒有授權這項工作。",
+      "tips": "強硬：對方在未取得你同意前就開始額外維修時，先明確要求立刻停下，說明你沒有授權。",
+      "sentence_en": "Stop immediately. I did not authorize these extra repairs.",
+      "sentence_ipa": "/stɑp ɪˈmidiətli aɪ dɪd nɑt ˈɔθəraɪz ðiz ˈɛkstrə rɪˈpɛrz/",
+      "sentence_cn": "立刻停止，我沒有授權這些額外維修。",
+      "vocab": [
+        {
+          "en": "authorize",
+          "cn": "授權"
+        },
+        {
+          "en": "immediately",
+          "cn": "立刻"
+        }
+      ],
+      "progression": "使用 authorize 精確表達授權，並用 immediately 明確要求即時停工。",
+      "id": "24",
+      "core": "停止未授權施工",
+      "Scenario": "核實證據與控制施工",
+      "Level": "⭐⭐",
+      "Core_Vocab": "authorize 授權；immediately 立刻"
+    },
+    {
+      "tier": "basic",
+      "Tone": "強硬",
+      "word_en": "I don't want this. Please stop asking.",
+      "word_ipa": "/aɪ doʊnt wɑnt ðɪs pliz stɑp ˈæskɪŋ/",
+      "word_cn": "我不要這個，請不要再問了。",
+      "tips": "強硬：你已拒絕，對方仍反覆推銷同一項目時，先清楚說不要，再要求他停止追問，不必多解釋。",
+      "sentence_en": "I don't want extra services. Please stop asking.",
+      "sentence_ipa": "/aɪ doʊnt wɑnt ˈɛkstrə ˈsɜrvɪsɪz pliz stɑp ˈæskɪŋ/",
+      "sentence_cn": "我不要額外服務，請不要再問了。",
+      "vocab": [
+        {
+          "en": "don't want",
+          "cn": "不想要"
+        },
+        {
+          "en": "stop asking",
+          "cn": "停止追問"
+        }
+      ],
+      "progression": "",
+      "id": "25",
+      "core": "拒絕推銷並停止糾纏",
+      "Scenario": "拒絕加購與保留決定權",
+      "Level": "⭐",
+      "Core_Vocab": "don't want 不想要；stop asking 停止追問"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "強硬",
+      "word_en": "I'll pass. Please stop pressuring me.",
+      "word_ipa": "/aɪl pæs pliz stɑp ˈprɛʃərɪŋ mi/",
+      "word_cn": "我不接受，請不要再對我施壓。",
+      "tips": "強硬：對方在你拒絕後仍拿限時優惠逼你點頭時，先再次拒絕，再要求停止施壓並結束推銷。",
+      "sentence_en": "I'll pass on the offer. Please stop pressuring me.",
+      "sentence_ipa": "/aɪl pæs ɑn ði ˈɔfər pliz stɑp ˈprɛʃərɪŋ mi/",
+      "sentence_cn": "我不接受這個提議，請不要再對我施壓。",
+      "vocab": [
+        {
+          "en": "pass on",
+          "cn": "婉拒、不接受"
+        },
+        {
+          "en": "pressuring",
+          "cn": "施壓"
+        }
+      ],
+      "progression": "使用 I'll pass / pass on an offer 的婉拒慣用說法，以及 pressuring 表達施壓。",
+      "id": "26",
+      "core": "拒絕推銷並停止糾纏",
+      "Scenario": "拒絕加購與保留決定權",
+      "Level": "⭐⭐",
+      "Core_Vocab": "pass on 婉拒、不接受；pressuring 施壓"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "Please take this off my order.",
+      "word_ipa": "/pliz teɪk ðɪs ɔf maɪ ˈɔrdər/",
+      "word_cn": "請把這個從我的訂單拿掉。",
+      "tips": "中立：看到訂單多了你沒要的配件時，先指著那一行，要求拿掉，再確認訂單內容是否已更新。",
+      "sentence_en": "Please take this extra item off my order.",
+      "sentence_ipa": "/pliz teɪk ðɪs ˈɛkstrə ˈaɪtəm ɔf maɪ ˈɔrdər/",
+      "sentence_cn": "請把這個額外項目從我的訂單拿掉。",
+      "vocab": [
+        {
+          "en": "order",
+          "cn": "訂單"
+        },
+        {
+          "en": "extra item",
+          "cn": "額外項目"
+        }
+      ],
+      "progression": "",
+      "id": "27",
+      "core": "移除訂單中的加購項目",
+      "Scenario": "拒絕加購與保留決定權",
+      "Level": "⭐",
+      "Core_Vocab": "order 訂單；extra item 額外項目"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "Could you remove this from my order?",
+      "word_ipa": "/kʊd ju rɪˈmuv ðɪs frəm maɪ ˈɔrdər/",
+      "word_cn": "能把這個從我的訂單移除嗎？",
+      "tips": "委婉：對方把配件加進訂單卻說只是建議時，指著該項目請他移除，再核對新的訂單與金額。",
+      "sentence_en": "Could you remove the extra item from my order?",
+      "sentence_ipa": "/kʊd ju rɪˈmuv ði ˈɛkstrə ˈaɪtəm frəm maɪ ˈɔrdər/",
+      "sentence_cn": "能把額外項目從我的訂單移除嗎？",
+      "vocab": [
+        {
+          "en": "remove",
+          "cn": "移除"
+        },
+        {
+          "en": "order",
+          "cn": "訂單"
+        }
+      ],
+      "progression": "使用 remove ... from 結構與 Could you 間接請求，取代 take ... off 的直白指令。",
+      "id": "28",
+      "core": "移除訂單中的加購項目",
+      "Scenario": "拒絕加購與保留決定權",
+      "Level": "⭐⭐",
+      "Core_Vocab": "remove 移除；order 訂單"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "I need time to think.",
+      "word_ipa": "/aɪ nid taɪm tə θɪŋk/",
+      "word_cn": "我需要時間想一想。",
+      "tips": "中立：對方催你現在就答應方案時，先說你需要考慮，暫停決定，不要因為倒數優惠而點頭。",
+      "sentence_en": "I need time to think before I decide.",
+      "sentence_ipa": "/aɪ nid taɪm tə θɪŋk bɪˈfɔr aɪ dɪˈsaɪd/",
+      "sentence_cn": "做決定之前，我需要時間想一想。",
+      "vocab": [
+        {
+          "en": "think",
+          "cn": "思考"
+        },
+        {
+          "en": "decide",
+          "cn": "決定"
+        }
+      ],
+      "progression": "",
+      "id": "29",
+      "core": "保留考慮時間",
+      "Scenario": "拒絕加購與保留決定權",
+      "Level": "⭐",
+      "Core_Vocab": "think 思考；decide 決定"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "I'd like to weigh my options.",
+      "word_ipa": "/aɪd laɪk tə weɪ maɪ ˈɑpʃənz/",
+      "word_cn": "我想先衡量各種選擇。",
+      "tips": "委婉：對方要求你立刻選方案時，先保留決定，說明要衡量選擇，拿回資料後再比較。",
+      "sentence_en": "I'd like to weigh my options before deciding.",
+      "sentence_ipa": "/aɪd laɪk tə weɪ maɪ ˈɑpʃənz bɪˈfɔr dɪˈsaɪdɪŋ/",
+      "sentence_cn": "做決定之前，我想先衡量各種選擇。",
+      "vocab": [
+        {
+          "en": "weigh my options",
+          "cn": "衡量我的各種選擇"
+        }
+      ],
+      "progression": "使用 weigh one's options 慣用片語與 before + 動名詞結構。",
+      "id": "30",
+      "core": "保留考慮時間",
+      "Scenario": "拒絕加購與保留決定權",
+      "Level": "⭐⭐",
+      "Core_Vocab": "weigh my options 衡量我的各種選擇"
+    },
+    {
+      "tier": "basic",
+      "Tone": "中立",
+      "word_en": "I want to read the contract first.",
+      "word_ipa": "/aɪ wɑnt tə rid ðə ˈkɑntrækt fɜrst/",
+      "word_cn": "我想先閱讀合約。",
+      "tips": "中立：對方把筆遞給你，催你先簽再說時，先不要簽，拿起合約並說明你要先閱讀。",
+      "sentence_en": "I want to read the contract before I sign it.",
+      "sentence_ipa": "/aɪ wɑnt tə rid ðə ˈkɑntrækt bɪˈfɔr aɪ saɪn ɪt/",
+      "sentence_cn": "簽名之前，我想先閱讀合約。",
+      "vocab": [
+        {
+          "en": "contract",
+          "cn": "合約"
+        },
+        {
+          "en": "sign",
+          "cn": "簽名"
+        }
+      ],
+      "progression": "",
+      "id": "31",
+      "core": "先閱讀合約再決定簽署",
+      "Scenario": "拒絕加購與保留決定權",
+      "Level": "⭐",
+      "Core_Vocab": "contract 合約；sign 簽名"
+    },
+    {
+      "tier": "advanced",
+      "Tone": "委婉",
+      "word_en": "I'd like to review the terms first.",
+      "word_ipa": "/aɪd laɪk tə rɪˈvju ðə tɜrmz fɜrst/",
+      "word_cn": "我想先檢視條款。",
+      "tips": "委婉：對方說條款都一樣、不用看時，先保留簽名，要求讀清楚費用、取消與服務範圍等條款。",
+      "sentence_en": "I'd like to review the terms before I sign.",
+      "sentence_ipa": "/aɪd laɪk tə rɪˈvju ðə tɜrmz bɪˈfɔr aɪ saɪn/",
+      "sentence_cn": "簽名之前，我想先檢視條款。",
+      "vocab": [
+        {
+          "en": "review",
+          "cn": "檢視"
+        },
+        {
+          "en": "terms",
+          "cn": "條款"
+        }
+      ],
+      "progression": "使用 review the terms 的正式搭配與 I'd like 的委婉請求。",
+      "id": "32",
+      "core": "先閱讀合約再決定簽署",
+      "Scenario": "拒絕加購與保留決定權",
+      "Level": "⭐⭐",
+      "Core_Vocab": "review 檢視；terms 條款"
+    }
+  ],
+  "editorial_method": "Codex ESL editorial revision",
+  "external_api_review": "not_completed_permission_timeout"
+}

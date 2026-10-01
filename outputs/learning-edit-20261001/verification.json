@@ -1,0 +1,32 @@
+{
+  "source_sha256": "90e6876a0188743498304fe3a8b400f1827b2e70f8eea00f8a38f4281e78c50a",
+  "source_rows": 50,
+  "concepts": 16,
+  "output_rows": 32,
+  "columns": 12,
+  "all_cells_match_approved_content": true,
+  "review_method": "Codex ESL editorial revision",
+  "external_api_review": "not_completed_permission_timeout",
+  "basic_advanced_pairs": 16,
+  "scenarios": {
+    "聽懂說明與了解故障": 8,
+    "核對報價與維修必要性": 8,
+    "核實證據與控制施工": 8,
+    "拒絕加購與保留決定權": 8
+  },
+  "previews": [
+    "preview-01-phrases.png",
+    "preview-01-actions.png",
+    "preview-01-examples.png",
+    "preview-11-phrases.png",
+    "preview-11-actions.png",
+    "preview-11-examples.png",
+    "preview-21-phrases.png",
+    "preview-21-actions.png",
+    "preview-21-examples.png",
+    "preview-31-phrases.png",
+    "preview-31-actions.png",
+    "preview-31-examples.png"
+  ],
+  "clipped_cells": []
+}

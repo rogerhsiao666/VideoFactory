@@ -3877,9 +3877,21 @@ def write_youtube_description(
     print(f"✅ YouTube 描述: {output_path}")
 
 
-def write_xlsx(items: list[dict], path: str):
+def write_xlsx(items: list[dict], path: str, *, learning: bool = False):
     if not items:
         raise ValueError("拒絕輸出空牌組")
+
+    headers = HEADERS
+    if learning:
+        from learning_editor import LEARNING_HEADERS, validate_pair
+        headers = LEARNING_HEADERS
+        groups = {}
+        for item in items:
+            if not item.get("core"):
+                raise ValueError("學習版缺少核心概念")
+            groups.setdefault(item["core"], []).append(item)
+        for core, pair in groups.items():
+            validate_pair({"core": core, "scenario": pair[0].get("Scenario")}, pair)
 
     deck_issues: list[str] = []
     accepted: list[dict] = []
@@ -3888,10 +3900,12 @@ def write_xlsx(items: list[dict], path: str):
         if str(item.get("id", "")).strip() != expected_id:
             deck_issues.append(f"row {idx + 1}: id 應為 {expected_id}")
         for issue in _validation_issues(item):
+            if learning and issue.startswith("tips has "):
+                continue
             deck_issues.append(f"{expected_id}: {issue}")
-        if _is_near_duplicate(item, accepted):
+        if not learning and _is_near_duplicate(item, accepted):
             deck_issues.append(f"{expected_id}: 與前面卡片近似重複")
-        pattern_issue = _sentence_pattern_issue(item, accepted)
+        pattern_issue = _sentence_pattern_issue(item, accepted) if not learning else None
         if pattern_issue:
             deck_issues.append(f"{expected_id}: {pattern_issue}")
         accepted.append(item)
@@ -3905,14 +3919,14 @@ def write_xlsx(items: list[dict], path: str):
 
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF")
-    for col_idx, h in enumerate(HEADERS, start=1):
+    for col_idx, h in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_idx, value=h)
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center")
 
     for item in items:
-        ws.append([item.get(h, "") for h in HEADERS])
+        ws.append([item.get(h, "") for h in headers])
 
     column_widths = {
         "A": 6,
@@ -3924,11 +3938,14 @@ def write_xlsx(items: list[dict], path: str):
         "G": 48,
         "H": 34,
     }
+    if learning:
+        column_widths = dict(zip("ABCDEFGHIJKL", (6, 24, 9, 9, 34, 38, 24, 30, 52, 44, 48, 34)))
     for column, width in column_widths.items():
         ws.column_dimensions[column].width = width
 
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:H{ws.max_row}"
+    last_column = "L" if learning else "H"
+    ws.freeze_panes = "E2" if learning else "A2"
+    ws.auto_filter.ref = f"A1:{last_column}{ws.max_row}"
     ws.row_dimensions[1].height = 24
     for row_idx in range(2, ws.max_row + 1):
         max_lines = 1
@@ -3946,14 +3963,16 @@ def write_xlsx(items: list[dict], path: str):
                 max_lines,
                 math.ceil(display_units / max(column_widths[column] - 2, 1)),
             )
-        ws.row_dimensions[row_idx].height = min(max(30, max_lines * 15), 75)
+        ws.row_dimensions[row_idx].height = min(
+            max(45 if learning else 30, max_lines * 15 + (15 if learning else 0)), 75,
+        )
 
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.print_title_rows = "1:1"
-    ws.print_area = f"A1:H{ws.max_row}"
+    ws.print_area = f"A1:{last_column}{ws.max_row}"
 
     wb.save(path)
 
