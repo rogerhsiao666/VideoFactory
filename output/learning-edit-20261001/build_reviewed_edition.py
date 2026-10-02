@@ -32,7 +32,7 @@ def main():
     assert set(Counter(item["Scenario"] for item in items).values()) == {8}
     state = {"source": source, "groups": groups, "items": items,
              "editorial_method": content["editor"], "external_api_review": content["external_api_review"]}
-    target = directory / "推銷與隱形敲詐_精簡學習版.xlsx"
+    target = directory.parent / "推銷與隱形敲詐.xlsx"
     if target.exists() and "--replace-edition" not in sys.argv:
         raise ValueError("修訂版已存在；拒絕意外覆蓋。")
     assert target != source_path

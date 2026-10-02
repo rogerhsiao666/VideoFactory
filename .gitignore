@@ -4,7 +4,25 @@ __pycache__/
 
 # Videos and Output
 temp/
-output/
+output/*
+# Keep reviewed workbooks and reproducible source in the standard output directory.
+!output/README.md
+!output/推銷與隱形敲詐.xlsx
+!output/推銷與隱形敲詐.xlsx.editor.json
+!output/learning-edit-20261001/
+output/learning-edit-20261001/*
+!output/learning-edit-20261001/original.xlsx
+!output/learning-edit-20261001/build_reviewed_edition.py
+!output/learning-edit-20261001/reviewed_content.json
+!output/learning-edit-20261001/verify_learning_workbook.py
+!output/learning-edit-20261001/verification.json
+!output/semantic-rerun-20261001/
+output/semantic-rerun-20261001/*
+!output/semantic-rerun-20261001/final/
+output/semantic-rerun-20261001/final/*
+!output/semantic-rerun-20261001/final/推銷與隱形敲詐.xlsx
+!output/semantic-rerun-20261001/final/推銷與隱形敲詐.plan.json
+.cleanup-backups/
 *.mp4
 *.mp3
 *.png

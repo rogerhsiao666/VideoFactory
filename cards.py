@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 cards.py — 詞彙卡片語料前置生成工具
-輸入主題與主題描述 → OpenAI 生成 → 輸出 output/{topic}.xlsx
-已做過的主題自動跳過，同一副牌內自動去重。
+輸入主題與主題描述 → OpenAI 生成 → 輸出 output/{topic}.xlsx（12 欄）
+3–4 個真實情境均分，基礎／進階 60/40，同意思最多兩句。
+--legacy 保留舊版 8 欄痛點流程；已完成教材只在內容核對一致時跳過。
 
 第二集可指定一個或多個參考牌組，讓痛點規劃、生成與審稿都避開舊內容：
 python3 cards.py --topic "主題_02" --description "本集痛點" --avoid "主題_01"
@@ -165,10 +166,10 @@ async def _request_with_progress(client, messages: list, kwargs: dict, stage: st
         await asyncio.gather(reporter, return_exceptions=True)
 
 
-async def _call_openai_async(messages: list, stage: str, kwargs: dict):
+async def _call_openai_async(messages: list, stage: str, kwargs: dict, budget_seconds: float | None = None):
     _check_generation_deadline()
     started = time.monotonic()
-    call_deadline = started + API_CALL_TIMEOUT
+    call_deadline = started + (budget_seconds if budget_seconds is not None else API_CALL_TIMEOUT)
     run_deadline = _generation_deadline.get()
     if run_deadline is not None:
         call_deadline = min(call_deadline, run_deadline)
@@ -182,7 +183,7 @@ async def _call_openai_async(messages: list, stage: str, kwargs: dict):
             )
             break
         key_index = min(attempt, len(OPENAI_KEYS) - 1)
-        timeout = min(API_REQUEST_TIMEOUT, remaining)
+        timeout = min(budget_seconds if budget_seconds is not None else API_REQUEST_TIMEOUT, remaining)
         _progress(
             f"{stage}：開始請求 {attempt + 1}/{API_MAX_ATTEMPTS}，"
             f"模型 {kwargs.get('model', CARD_MODEL)}，金鑰 #{key_index + 1}，"
@@ -229,10 +230,10 @@ async def _call_openai_async(messages: list, stage: str, kwargs: dict):
     raise last_err
 
 
-def _call_openai(messages: list, *, stage: str = "OpenAI", **kwargs):
+def _call_openai(messages: list, *, stage: str = "OpenAI", budget_seconds: float | None = None, **kwargs):
     if not OPENAI_KEYS:
         raise RuntimeError("未設定任何 OPENAI_API_KEY，請在 .env 補上金鑰")
-    return asyncio.run(_call_openai_async(messages, stage, kwargs))
+    return asyncio.run(_call_openai_async(messages, stage, kwargs, budget_seconds))
 
 
 def _normalize_key(word: str) -> str:
@@ -249,7 +250,7 @@ def _english_word_count(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", text or ""))
 
 
-def _validation_issues(item: dict) -> list[str]:
+def _validation_issues(item: dict, *, max_word_en_words: int | None = None) -> list[str]:
     issues: list[str] = []
     required_keys = ["word_en", "word_ipa", "word_cn", "tips", "sentence_en", "sentence_ipa", "sentence_cn"]
     for key in required_keys:
@@ -265,8 +266,9 @@ def _validation_issues(item: dict) -> list[str]:
 
     word_count = _english_word_count(item["word_en"])
     sentence_count = _english_word_count(item["sentence_en"])
-    if word_count > MAX_WORD_EN_WORDS:
-        issues.append(f"word_en has {word_count}>{MAX_WORD_EN_WORDS} words")
+    word_limit = MAX_WORD_EN_WORDS if max_word_en_words is None else max_word_en_words
+    if word_count > word_limit:
+        issues.append(f"word_en has {word_count}>{word_limit} words")
     if sentence_count > MAX_SENTENCE_EN_WORDS:
         issues.append(f"sentence_en has {sentence_count}>{MAX_SENTENCE_EN_WORDS} words")
     if len(item["tips"].strip()) > MAX_TIPS_CHARS:
@@ -732,7 +734,7 @@ def _correct_known_locked_pronunciations(item: dict, point) -> dict:
     corrected = dict(item)
     lexicon = {"quote": "koʊt", "charge": "tʃɑrdʒ", "charged": "tʃɑrdʒd",
                "cancellation": "ˌkænsəˈleɪʃən", "unauthorized": "ˌʌnˈɔθəraɪzd",
-               "authorized": "ˈɔθəraɪzd"}
+               "authorized": "ˈɔθəraɪzd", "upgraded": "ʌpˈɡreɪdɪd", "connecting": "kəˈnɛktɪŋ"}
     for english_field, ipa_field, target_field in (
         ("word_en", "word_ipa", "target_phrase"),
         ("sentence_en", "sentence_ipa", "target_sentence"),
@@ -749,6 +751,10 @@ def _correct_known_locked_pronunciations(item: dict, point) -> dict:
             continue
         for index, word in enumerate(words):
             replacement = lexicon.get(word)
+            if word in {"laptop", "electronics", "electronic", "on", "product", "products", "product's", "quantity"} and "ɒ" in tokens[index]:
+                replacement = tokens[index].rstrip(",.;!?").replace("ɒ", "ɑ")
+            if word == "what" and "ɒ" in tokens[index]:
+                replacement = "wʌt"
             if word == "refund" and index == 0:
                 replacement = "rɪˈfʌnd"
             if replacement:
@@ -758,7 +764,7 @@ def _correct_known_locked_pronunciations(item: dict, point) -> dict:
     return corrected
 
 
-def _locked_item_issue(item: dict, point) -> str | None:
+def _locked_item_issue(item: dict, point, *, max_word_en_words: int | None = None) -> str | None:
     """Validate exact locked English before trusting dependent IPA fields."""
     normalized = _normalize_pain_point(point)
     if not normalized or not normalized.get("target_phrase"):
@@ -769,7 +775,7 @@ def _locked_item_issue(item: dict, point) -> str | None:
     ):
         if _spoken_line_key(item.get(field, "")) != _spoken_line_key(target):
             return f"{field} 未逐字使用鎖定英文"
-    issues = _validation_issues(item)
+    issues = _validation_issues(item, max_word_en_words=max_word_en_words)
     if issues:
         return ", ".join(issues)
     for english_field, ipa_field in (
@@ -777,9 +783,10 @@ def _locked_item_issue(item: dict, point) -> str | None:
         ("sentence_en", "sentence_ipa"),
     ):
         english_count = _english_word_count(item.get(english_field, ""))
-        component_count = len(
-            re.findall(r"[A-Za-z0-9]+", item.get(english_field, ""))
-        )
+        initialisms = {"ID", "ATM", "VIP", "TSA", "USA", "UK", "US", "EU", "ETA", "USB", "GPS", "SIM", "TV", "PC", "PDF", "CEO", "HR", "IT", "SMS"}
+        components = re.findall(r"[A-Za-z0-9]+", item.get(english_field, ""))
+        component_count = sum(len(word) if word in initialisms else len(word) + 1 if word.isdigit()
+                              else 2 if word == "IDs" else 1 for word in components)
         ipa_count = len(item.get(ipa_field, "").strip().strip("/").split())
         if not english_count <= ipa_count <= component_count:
             return (
@@ -803,6 +810,12 @@ def _locked_item_issue(item: dict, point) -> str | None:
             return f"{ipa_field}: cancellation 應為 /ˌkænsəˈleɪʃən/"
         if "unauthorized" in english and "ʌnəˈθ" in ipa:
             return f"{ipa_field}: unauthorized 應為 /ˌʌnˈɔθəraɪzd/"
+        if re.search(r"\bsouvenirs?\b", english) and re.search(r"su[ː]?ˈv[ɪi]n", ipa):
+            return f"{ipa_field}: souvenir 重音在最後音節，應為 /ˌsuːvəˈnɪr/，複數 /ˌsuːvəˈnɪrz/"
+        if "upgraded" in english and re.search(r"ʌ[ˈˌ]?[ɡg]reɪd", ipa):
+            return f"{ipa_field}: upgraded 不能漏掉 /p/，應為 /ʌpˈɡreɪdɪd/"
+        if "connecting" in english and re.search(r"kə[n][ˈˌ]nɛkt", ipa):
+            return f"{ipa_field}: connecting 不重複 /n/，應為 /kəˈnɛktɪŋ/"
     if "store credit" in item["sentence_en"].lower() and "商店信用" in item["sentence_cn"]:
         return "sentence_cn: store credit 是店內購物金，不是商店信用"
     if "second opinion" in item["word_en"].lower() and "第二意見" in item["word_cn"]:
@@ -3559,7 +3572,7 @@ def _positive_int(value: str) -> int:
 
 def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="生成痛點導向情境英語 XLSX 牌組",
+        description="生成初學者生存對話教材（預設 12 欄，情境均分、難度 60/40）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""範例：
   python3 cards.py --topic "美髮沙龍_03_剪壞補救" \\
@@ -3596,7 +3609,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         "--count",
         type=_positive_int,
         default=DEFAULT_CARD_COUNT,
-        help=f"卡片數量（預設 {DEFAULT_CARD_COUNT}）",
+        help=f"卡片數量（預設 {DEFAULT_CARD_COUNT}，新版至少 3；60/40 取最接近整數）",
     )
     parser.add_argument(
         "--output",
@@ -3623,13 +3636,15 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--resume", action="store_true",
-        help="從輸出檔旁的 .draft.json 接續未完成的生成與審稿",
+        help="從輸出旁的 .curriculum.json 接續教材生成（--legacy 使用 .draft.json）",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="即使 XLSX 已存在也不沿用舊卡，依目前主題描述與 plan 整副重新生成",
+        help="明確重建教材；新版先備份既有 Excel，不會直接遺失舊教材",
     )
+    parser.add_argument("--legacy", action="store_true",
+                        help="使用舊版 8 欄痛點生成流程；預設使用通用 12 欄初學者教材")
     return parser
 
 
@@ -3877,12 +3892,18 @@ def write_youtube_description(
     print(f"✅ YouTube 描述: {output_path}")
 
 
-def write_xlsx(items: list[dict], path: str, *, learning: bool = False):
+def write_xlsx(items: list[dict], path: str, *, learning: bool = False, curriculum_plan: dict | None = None):
     if not items:
         raise ValueError("拒絕輸出空牌組")
 
     headers = HEADERS
-    if learning:
+    if curriculum_plan is not None:
+        from curriculum import MAIN_WORD_LIMIT, validate_deck
+        from learning_editor import LEARNING_HEADERS
+        validate_deck(items, curriculum_plan, reviewed=True)
+        learning = True
+        headers = LEARNING_HEADERS
+    elif learning:
         from learning_editor import LEARNING_HEADERS, validate_pair
         headers = LEARNING_HEADERS
         groups = {}
@@ -3899,7 +3920,7 @@ def write_xlsx(items: list[dict], path: str, *, learning: bool = False):
         expected_id = f"{idx + 1:02d}"
         if str(item.get("id", "")).strip() != expected_id:
             deck_issues.append(f"row {idx + 1}: id 應為 {expected_id}")
-        for issue in _validation_issues(item):
+        for issue in _validation_issues(item, max_word_en_words=MAIN_WORD_LIMIT if curriculum_plan is not None else None):
             if learning and issue.startswith("tips has "):
                 continue
             deck_issues.append(f"{expected_id}: {issue}")
@@ -3996,6 +4017,10 @@ def _main(argv: list[str] | None = None):
         parser.error("非互動模式必須提供 --topic")
     if args.review:
         REVIEW_MODE = args.review
+
+    if not args.legacy:
+        import curriculum
+        return curriculum.run(args, parser, cli_mode)
 
     existing = _existing_topics()
     if existing:
@@ -4208,6 +4233,8 @@ def _main(argv: list[str] | None = None):
 
 
 if __name__ == "__main__":
+    # Shared helpers must use this same module, deadline and review configuration.
+    sys.modules["cards"] = sys.modules[__name__]
     try:
         main()
     except KeyboardInterrupt:

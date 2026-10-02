@@ -38,6 +38,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workbook")
     parser.add_argument("--source", required=True)
+    parser.add_argument("--report-dir", type=Path,
+                        default=Path(__file__).resolve().parents[2] / "temp" / "learning-preview",
+                        help="Keep disposable previews and reports out of the deliverables directory")
     parser.add_argument("--editorial", action="store_true", help="核對本機編修版，不宣稱外部API審稿通過")
     args = parser.parse_args()
     target = Path(args.workbook)
@@ -84,6 +87,8 @@ def main():
     assert f"$A$1:$L${len(rows)}" in str(sheet.print_area)
     assert all(cell.fill.fgColor.rgb == "004472C4" for cell in rows[0])
     assert all(cell.alignment.wrap_text for row in rows[1:] for cell in row)
+    report_directory = args.report_dir
+    report_directory.mkdir(parents=True, exist_ok=True)
     widths = [round(sheet.column_dimensions[cell.column_letter].width * 7 + 5) for cell in rows[0]]
     font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 15)
     # PIL does not apply the system font fallback that Excel uses for emoji.
@@ -118,7 +123,7 @@ def main():
                         draw.text((x + 5, y + 2 + line_number * 18), line, font=font, fill=color)
                     x += width
                 y += height
-            preview = target.parent / f"preview-{start:02d}-{name}.png"
+            preview = report_directory / f"preview-{start:02d}-{name}.png"
             image.save(preview)
             previews.append(preview.name)
     workbook.close()
@@ -128,7 +133,7 @@ def main():
               "external_api_review": state.get("external_api_review", "passed"),
               "basic_advanced_pairs": len(semantic), "scenarios": dict(Counter(x["Scenario"] for x in state["items"])),
               "previews": previews, "clipped_cells": clipped}
-    (target.parent / "verification.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (report_directory / "verification.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))
     assert not clipped, clipped
 

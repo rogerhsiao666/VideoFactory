@@ -96,6 +96,18 @@ class OpenAIProgressTests(unittest.TestCase):
         self.assertTrue(all(client.is_closed for client in self.clients))
         self.assertNotIn("test-only-key", "\n".join(self.messages))
 
+    def test_explicit_stage_budget_is_local_and_not_sent_to_api(self):
+        async def handler(request):
+            self.assertNotIn("budget_seconds", json.loads(request.content))
+            await asyncio.sleep(0.02)
+            return self.response()
+
+        self.mock_transport(handler)
+        with patch.object(cards, "API_REQUEST_TIMEOUT", 0.001):
+            response = cards._call_openai([], stage="大型教材審稿", model="test", budget_seconds=0.1)
+        self.assertEqual(response.choices[0].message.content, "ok")
+        self.assertLessEqual(self.client_options[0]["timeout"].read, 0.1)
+
     def test_timeouts_cancel_pending_requests_and_stop_after_two_attempts(self):
         cancelled = []
 
@@ -278,7 +290,7 @@ class OpenAIProgressTests(unittest.TestCase):
                 return real_client(**kwargs, http_client=client)
             openai.AsyncOpenAI = factory
             atexit.register(lambda: print("TEST_CLIENTS_CLOSED", all(c.is_closed for c in clients)))
-            sys.argv = ["cards.py", "--topic", "runtime_timeout_test", "--count", "5",
+            sys.argv = ["cards.py", "--legacy", "--topic", "runtime_timeout_test", "--count", "5",
                         "--output", sys.argv[1], "--no-youtube"]
             runpy.run_path("cards.py", run_name="__main__")
         ''')
