@@ -13,6 +13,9 @@ from unittest.mock import patch
 
 import httpx
 from openai import AsyncOpenAI, APITimeoutError, AuthenticationError, BadRequestError
+from prompt_toolkit import PromptSession
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 
 import cards
 from curated_blueprints import get_curated_blueprint
@@ -270,6 +273,55 @@ class OpenAIProgressTests(unittest.TestCase):
         with patch("builtins.print") as output:
             self.real_progress("test")
         self.assertTrue(output.call_args.kwargs["flush"])
+
+    def test_main_reports_ordered_stages_and_completion(self):
+        for existing, plan_only, no_youtube in (
+            (False, False, False),
+            (False, False, True),
+            (True, False, False),
+            (False, True, False),
+        ):
+            with self.subTest(existing=existing, plan_only=plan_only, no_youtube=no_youtube):
+                self.messages.clear()
+                with tempfile.TemporaryDirectory() as directory:
+                    output_path = Path(directory) / "test.xlsx"
+                    plan = cards.PainPointPlan([{"task": "Test now."}])
+                    items = [_item("Test", "Test now.")]
+                    if existing:
+                        output_path.touch()
+                    with (
+                        patch.object(cards, "_existing_topics", return_value=[]),
+                        patch.object(cards, "_load_reference_decks", return_value=([], [])),
+                        patch.object(cards, "_plan_pain_points", return_value=plan),
+                        patch.object(cards, "_save_pain_point_plan"),
+                        patch.object(cards, "_load_used_words", return_value=set()),
+                        patch.object(cards, "load_xlsx_items", return_value=items),
+                        patch.object(cards, "_review_deck", return_value={}),
+                        patch.object(cards, "generate", return_value=items) as generate,
+                        patch.object(cards, "write_xlsx") as write,
+                        patch.object(cards, "write_youtube_description") as youtube,
+                    ):
+                        arguments = ["--legacy", "--topic", "test", "--count", "1", "--output", str(output_path)]
+                        if plan_only:
+                            arguments.append("--plan-only")
+                        if no_youtube:
+                            arguments.append("--no-youtube")
+                        cards.main(arguments)
+
+                    self.assertIn("階段 1/3：", self.messages[1])
+                    self.assertIn("流程已完成", self.messages[-1])
+                    if plan_only:
+                        generate.assert_not_called()
+                        write.assert_not_called()
+                        youtube.assert_not_called()
+                        self.assertFalse(any("階段 2/3" in line for line in self.messages))
+                    else:
+                        stages = [next(i for i, line in enumerate(self.messages) if text in line)
+                                  for text in ("階段 1/3 完成", "階段 2/3：", "正在寫入 XLSX",
+                                               "階段 2/3 完成", "階段 3/3：", "流程已完成")]
+                        self.assertEqual(stages, sorted(stages))
+                        write.assert_called_once_with(items, str(output_path))
+                        self.assertEqual(youtube.call_count, 0 if no_youtube else 1)
 
     def test_cli_timeout_and_interrupt_print_status_close_clients_and_exit(self):
         script = textwrap.dedent('''
@@ -587,47 +639,84 @@ class ContentGateTests(unittest.TestCase):
 
     def test_interactive_topic_description_preserves_paragraph_breaks(self):
         with patch(
-            "builtins.input",
-            side_effect=[
-                "  電梯與派對的社交脫身  ",
-                "",
-                "  排除商務會議  ",
-                "",
-                "",
-            ],
+            "cards.terminal_prompt",
+            return_value="  電梯與派對的社交脫身\n\n排除商務會議  ",
         ):
             result = cards._prompt_topic_description()
 
         self.assertEqual(result, "電梯與派對的社交脫身\n\n排除商務會議")
 
     def test_interactive_topic_description_first_blank_still_skips(self):
-        with patch("builtins.input", side_effect=[""]):
+        with patch("cards.terminal_prompt", return_value=""):
             result = cards._prompt_topic_description()
 
         self.assertEqual(result, "")
 
-    def test_interactive_topic_description_accepts_done_command(self):
-        with patch(
-            "builtins.input",
-            side_effect=[
-                "第一段",
-                "",
-                "第二段",
-                ":DONE",
-            ],
+    def test_interactive_topic_description_treats_done_as_regular_text(self):
+        with patch("cards.terminal_prompt", return_value="第一段\n:DONE"):
+            result = cards._prompt_topic_description()
+
+        self.assertEqual(result, "第一段\n:DONE")
+
+    def test_interactive_topic_description_empty_eof_skips(self):
+        with patch("cards.terminal_prompt", side_effect=EOFError):
+            result = cards._prompt_topic_description()
+
+        self.assertEqual(result, "")
+
+    def test_interactive_description_shows_waiting_state_without_done_instructions(self):
+        with (
+            patch("cards.terminal_prompt", return_value="第一段\n\n第二段") as prompt,
+            patch("builtins.print") as output,
+            patch.object(cards, "_progress") as progress,
+            patch.object(cards, "_call_openai") as api,
         ):
             result = cards._prompt_topic_description()
 
         self.assertEqual(result, "第一段\n\n第二段")
+        prompt.assert_called_once()
+        messages = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("按 Enter 送出", messages)
+        self.assertNotIn(":done", messages)
+        statuses = [call.args[0] for call in progress.call_args_list]
+        self.assertIn("尚未開始 AI 生成", statuses[0])
+        self.assertIn("描述輸入已完成（8 字）", statuses[-1])
+        api.assert_not_called()
 
-    def test_interactive_topic_description_accepts_eof_after_paste(self):
-        with patch(
-            "builtins.input",
-            side_effect=["貼上的最後一行", EOFError],
+    def test_interactive_description_does_not_truncate_long_input(self):
+        paragraphs = ["長描述內容" * 1000, "Do not proceed without my approval. " * 200]
+        with (
+            patch("cards.terminal_prompt", return_value="\n".join(paragraphs)),
+            patch.object(cards, "_progress"),
         ):
             result = cards._prompt_topic_description()
 
-        self.assertEqual(result, "貼上的最後一行")
+        self.assertEqual(result, "\n".join(paragraphs).strip())
+
+    def test_terminal_description_paste_needs_only_one_enter(self):
+        descriptions = ["單行描述", "第一段\n\n\n第二段\n", "長描述內容" * 3000]
+        for description in descriptions:
+            with self.subTest(length=len(description)), create_pipe_input() as pipe:
+                def prompt_with_pipe(*args, **kwargs):
+                    return PromptSession(input=pipe, output=DummyOutput()).prompt(*args, **kwargs)
+
+                pipe.send_text("\x1b[200~" + description + "\x1b[201~\r")
+                with patch("cards.terminal_prompt", side_effect=prompt_with_pipe):
+                    result = cards._prompt_topic_description()
+
+                self.assertEqual(result, description.strip())
+
+    def test_terminal_description_manual_newline_and_empty_submit(self):
+        for keys, expected in (("\r", ""), ("第一段\x1b\r第二段\r", "第一段\n第二段")):
+            with self.subTest(keys=keys), create_pipe_input() as pipe:
+                def prompt_with_pipe(*args, **kwargs):
+                    return PromptSession(input=pipe, output=DummyOutput()).prompt(*args, **kwargs)
+
+                pipe.send_text(keys)
+                with patch("cards.terminal_prompt", side_effect=prompt_with_pipe):
+                    result = cards._prompt_topic_description()
+
+                self.assertEqual(result, expected)
 
     def test_generic_counterpart_must_use_the_planned_quote(self):
         item = _item(

@@ -19,7 +19,7 @@ def group(ids=None):
 def pair():
     shared = {"core": group()["core"], "Scenario": group()["scenario"], "Tone": "中立",
               "word_cn": "我需要書面報價。", "sentence_cn": "施工前，我需要書面報價。",
-              "tips": "中立：對方只口頭說價格時，先要求寫下金額，再確認是否接受施工。",
+              "tips": "對方只口頭報價時，先請他寫下金額。",
               "vocab": [{"en": "quote", "cn": "報價"}], "Core_Vocab": "quote 報價"}
     basic = dict(shared, id="01", tier="basic", Level="⭐", progression="",
                  word_en="I need a written quote.", word_ipa="/aɪ nid ə ˈrɪtən koʊt/",
@@ -81,10 +81,10 @@ class LearningEditorTests(unittest.TestCase):
             result = editor.generate_pair("test", group(), [pair()[0]])
         self.assertEqual([item["Level"] for item in result], ["⭐", "⭐⭐"])
 
-    def test_tips_prefix_is_derived_from_tone_without_changing_action(self):
+    def test_tips_tone_prefix_is_removed_without_changing_action(self):
         candidate = pair()
-        candidate[0]["tips"] = candidate[0]["tips"].split("：", 1)[1]
-        candidate[1]["tips"] = candidate[1]["tips"].replace("中立：", "委婉: ")
+        candidate[0]["tips"] = "中立：" + candidate[0]["tips"]
+        candidate[1]["tips"] = "委婉: " + candidate[1]["tips"]
         with patch.object(editor, "request_json", return_value={"items": candidate}):
             result = editor.generate_pair("test", group(), [pair()[0]])
         self.assertEqual([item["tips"] for item in result], [item["tips"] for item in pair()])
@@ -120,12 +120,21 @@ class LearningEditorTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 editor.validate_pair(group(), invalid)
 
-    def test_tips_must_be_actionable_and_tone_labeled(self):
+    def test_tips_must_be_actionable_without_repeating_tone(self):
         for tip in ("報價時使用。", "中立：當你想確認報價時使用。", "中立：先要求報價。"):
             invalid = copy.deepcopy(pair())
             invalid[0]["tips"] = tip
             with self.subTest(tip=tip), self.assertRaises(ValueError):
                 editor.validate_pair(group(), invalid)
+
+    def test_tips_limit_and_legacy_checkpoint_compatibility(self):
+        invalid = copy.deepcopy(pair())
+        invalid[0]["tips"] = "對方報價時，先要求寫下金額。" + "提醒" * 15
+        with self.assertRaisesRegex(ValueError, "精簡"):
+            editor.validate_pair(group(), invalid)
+        legacy = copy.deepcopy(pair())
+        legacy[0]["tips"] = "中立：對方只口頭說價格時，先要求寫下金額，再確認是否接受施工。"
+        editor.validate_pair(group(), legacy)
 
     def test_core_vocab_must_occur_in_spoken_line_and_have_chinese(self):
         for vocab in ([{"en": "authorize", "cn": "授權"}], [{"en": "quote", "cn": "quote"}], []):

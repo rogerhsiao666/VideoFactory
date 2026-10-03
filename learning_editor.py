@@ -18,6 +18,16 @@ LEARNING_HEADERS = ["id", "Scenario", "Level", "Tone", "word_en", "word_ipa",
                     "word_cn", "Core_Vocab", "tips", "sentence_en", "sentence_ipa", "sentence_cn"]
 LEVELS = {"basic": "⭐", "advanced": "⭐⭐"}
 TONES = ("委婉", "中立", "強硬")
+MAX_LEARNING_TIPS_CHARS = 30
+
+
+def strip_tip_tone(tip: str) -> str:
+    return re.sub(r"^(?:(?:委婉|中立|強硬)\s*[:：]\s*)+", "", tip.strip())
+
+
+def tip_length_limit(tip: str) -> int:
+    # Existing reviewed checkpoints used longer tips with a redundant tone prefix.
+    return 90 if strip_tip_tone(tip) != tip.strip() else MAX_LEARNING_TIPS_CHARS
 
 
 def request_json(prompt: str, stage: str) -> dict:
@@ -189,8 +199,8 @@ def validate_pair(group: dict, pair: list[dict]) -> None:
         if issues:
             raise ValueError("；".join(issues))
         tip = item["tips"]
-        if len(tip) > 90 or not tip.startswith(item["Tone"] + "："):
-            raise ValueError("Tips 須以語氣加冒號開頭且不超過90字")
+        if len(tip) > tip_length_limit(tip):
+            raise ValueError(f"Tips 須精簡至 {MAX_LEARNING_TIPS_CHARS} 字內，語氣只放在 Tone 欄位")
         action = tip.split("時", 1)[-1] if "時" in tip else tip
         if not re.search(r"(?:當|對方|看到|聽到|發現|遇到|準備)", tip) or not re.search(
             r"(?:先|請|要求|反問|指|拿|停|不要|別|確認|核對|拒絕|看|問|說|讀)", action
@@ -239,9 +249,10 @@ word_en必須是顧客當場能說的完整要求或問句，不只是名詞或�
 兩句語氣須一致；不要短句中立、例句卻改成Could you的委婉請求。
 中文自然、台灣繁體中文口語。word_cn 只翻譯 word_en，不补入例句條件。
 美式 IPA 逐字對應英文，斜線包裹。原句是待修訂素材，不沿用錯誤音標。
-Tips 為具體行動指令，最多85字。不加語氣前綴，程式會依Tone填入。
+Tips 只寫一句現場提示，最多{MAX_LEARNING_TIPS_CHARS}字。不加語氣前綴，語氣只放在Tone欄位。
 不能只說「當你想...時使用」或「要堅定」。必須有看得見的現場觸發及動作，例如：
-「對方指著零件說壞了時，先不要答應更換，指著零件問它的具體功能。」
+「對方說零件壞了時，先問具體功能。」
+只保留最關鍵的觸發及一個動作，避免重複通用提醒或再解釋句意。
 勿因需要報價就要求簽字、先付費；勿捏造法律或暗示單字永遠足以表達否定或授權。
 每張 vocab 提煉1-2個英文中實際出現的單字或短語及其中文意思，保留必要片語如 not interested。
 不要一整句當核心單字。Core_Vocab由程式填入。
@@ -265,8 +276,7 @@ vocab如 [{{"en":"estimate","cn":"估價單"}}]；advanced的progression說明�
                     if isinstance(item, dict) and item.get("tier") in LEVELS:
                         item["Level"] = LEVELS[item["tier"]]
                     if isinstance(item, dict) and item.get("Tone") in TONES and isinstance(item.get("tips"), str):
-                        body = re.sub(r"^(?:委婉|中立|強硬)\s*[:：]\s*", "", item["tips"].strip())
-                        item["tips"] = item["Tone"] + "：" + body
+                        item["tips"] = strip_tip_tone(item["tips"])
                     if isinstance(item, dict) and isinstance(item.get("vocab"), list):
                         item["Core_Vocab"] = "；".join(str(x.get("en", "")) + " " + str(x.get("cn", ""))
                                                        for x in item["vocab"] if isinstance(x, dict))

@@ -35,6 +35,8 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openai import AsyncOpenAI, APIConnectionError, APIError, APITimeoutError, AuthenticationError
 from curated_blueprints import get_curated_blueprint
 from dotenv import load_dotenv
+from prompt_toolkit import prompt as terminal_prompt
+from prompt_toolkit.key_binding import KeyBindings
 
 load_dotenv()
 
@@ -113,6 +115,10 @@ class PlanVersionError(ValueError):
 
 class GenerationTimeoutError(RuntimeError):
     """Stop all retries and fallbacks when the run exhausts its time budget."""
+
+
+class CheckpointGenerationError(RuntimeError):
+    """An expected generation failure with progress saved for resumption."""
 
 
 def _progress(message: str) -> None:
@@ -764,6 +770,14 @@ def _correct_known_locked_pronunciations(item: dict, point) -> dict:
     return corrected
 
 
+def _ipa_token_bounds(english: str) -> tuple[int, int]:
+    initialisms = {"ID", "ATM", "VIP", "TSA", "USA", "UK", "US", "EU", "ETA", "USB", "GPS", "SIM", "TV", "PC", "PDF", "CEO", "HR", "IT", "SMS"}
+    components = re.findall(r"[A-Za-z0-9]+", english)
+    maximum = sum(len(word) if word in initialisms else len(word) + 1 if word.isdigit()
+                  else 2 if word == "IDs" else 1 for word in components)
+    return _english_word_count(english), maximum
+
+
 def _locked_item_issue(item: dict, point, *, max_word_en_words: int | None = None) -> str | None:
     """Validate exact locked English before trusting dependent IPA fields."""
     normalized = _normalize_pain_point(point)
@@ -782,11 +796,7 @@ def _locked_item_issue(item: dict, point, *, max_word_en_words: int | None = Non
         ("word_en", "word_ipa"),
         ("sentence_en", "sentence_ipa"),
     ):
-        english_count = _english_word_count(item.get(english_field, ""))
-        initialisms = {"ID", "ATM", "VIP", "TSA", "USA", "UK", "US", "EU", "ETA", "USB", "GPS", "SIM", "TV", "PC", "PDF", "CEO", "HR", "IT", "SMS"}
-        components = re.findall(r"[A-Za-z0-9]+", item.get(english_field, ""))
-        component_count = sum(len(word) if word in initialisms else len(word) + 1 if word.isdigit()
-                              else 2 if word == "IDs" else 1 for word in components)
+        english_count, component_count = _ipa_token_bounds(item.get(english_field, ""))
         ipa_count = len(item.get(ipa_field, "").strip().strip("/").split())
         if not english_count <= ipa_count <= component_count:
             return (
@@ -3636,7 +3646,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--resume", action="store_true",
-        help="從輸出旁的 .curriculum.json 接續教材生成（--legacy 使用 .draft.json）",
+        help="接續策劃或教材檢查點；新版相同輸入重跑也會自動接續（--legacy 使用 .draft.json）",
     )
     parser.add_argument(
         "--force",
@@ -3660,26 +3670,26 @@ def _prompt_topic_description() -> str:
         "\n📝 請補充主題描述（建議填寫目標對象、具體情境、核心痛點、"
         "必教內容與不要包含的內容）"
     )
-    print("   可貼上多段文字；完成時在新的一行輸入 :done（也可連按兩次 Enter 或按 Ctrl+D）。")
-    print("   第一行直接 Enter 則略過。")
-    lines: list[str] = []
-    while True:
-        try:
-            line = input("> " if not lines else "描述（:done 結束）> ").strip()
-        except EOFError:
-            print()
-            break
-        if line.casefold() == ":done":
-            break
-        if not line:
-            if not lines:
-                break
-            if lines[-1] == "":
-                break
-            lines.append("")
-            continue
-        lines.append(line)
-    description = "\n".join(lines).strip()
+    print("   貼上整段描述後，按 Enter 送出；直接 Enter 則略過。")
+    print("   要手動換行可按 Esc 再按 Enter。")
+    _progress("等待輸入：主題描述；尚未開始 AI 生成，描述送出並確認卡片數量後才會開始")
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    def submit(event):
+        event.current_buffer.validate_and_handle()
+
+    @bindings.add("escape", "enter")
+    def newline(event):
+        event.current_buffer.insert_text("\n")
+
+    # Bracketed paste inserts the whole clipboard without treating its newlines as Enter.
+    try:
+        description = terminal_prompt(
+            "描述 > ", multiline=True, key_bindings=bindings,
+        ).strip()
+    except EOFError:
+        description = ""
     _progress(f"描述輸入已完成（{len(description)} 字），接下來確認卡片數量")
     return description
 
@@ -4069,6 +4079,7 @@ def _main(argv: list[str] | None = None):
     if cli_mode:
         count = args.count
     else:
+        _progress(f"等待輸入：卡片數量；按 Enter 使用預設 {DEFAULT_CARD_COUNT} 張並開始生成")
         raw_count = input(f"🔢 卡片數量（留空={DEFAULT_CARD_COUNT}）: ").strip()
         count = int(raw_count) if raw_count.isdigit() and int(raw_count) > 0 else DEFAULT_CARD_COUNT
 
@@ -4077,7 +4088,7 @@ def _main(argv: list[str] | None = None):
         f"開始處理「{topic}」：{count} 張；每 {PROGRESS_INTERVAL:g} 秒回報等待狀態，"
         f"流程時間預算 {GENERATION_TIMEOUT:g} 秒（不含輸入時間）"
     )
-    _progress("目前階段：載入或建立痛點策劃，完成後才開始生成卡片")
+    _progress("階段 1/3：載入或建立痛點策劃（含策劃審核），完成後才開始生成卡片")
 
     plan_path = (
         os.path.abspath(os.path.expanduser(args.plan_file))
@@ -4126,14 +4137,17 @@ def _main(argv: list[str] | None = None):
         print(f"🗺️  已保存痛點策劃：{plan_path}")
 
     youtube_context = _youtube_content_context(topic_description, pain_points)
+    _progress(f"階段 1/3 完成：痛點策劃共 {len(pain_points or [])} 項")
 
     if args.plan_only:
         if pain_points is None:
             pain_points = _plan_pain_points(generation_topic, count, reference_items)
             _save_pain_point_plan(generation_topic, pain_points, plan_path)
         print(f"✅ 策劃完成，共 {len(pain_points)} 個痛點；依 --plan-only 停止")
+        _progress(f"流程已完成：策劃檔 {plan_path}（未執行卡片生成）")
         return
 
+    _progress(f"階段 2/3：生成與 {REVIEW_MODE} 審稿，目標 {count} 張；退回的卡片會自動補寫")
     if xlsx_exists:
         existing_items = load_xlsx_items(xlsx_path)
         have = len(existing_items)
@@ -4177,6 +4191,7 @@ def _main(argv: list[str] | None = None):
                 checkpoint_path=xlsx_path + ".draft.json",
                 resume=args.resume,
             )
+            _progress(f"正在寫入 XLSX：{len(items)} 張 → {xlsx_path}")
             if pain_points and all(item.get("_pain_point") for item in items):
                 pain_points = PainPointPlan([item["_pain_point"] for item in items], contract=pain_points.contract)
                 _save_pain_point_plan(generation_topic, pain_points, plan_path)
@@ -4185,6 +4200,8 @@ def _main(argv: list[str] | None = None):
             print(f"\n✅ 已校驗並輸出 {len(items)} 個詞彙 → {xlsx_path}")
             print(f"📝 used_words.json 已更新（{used_before} → {used_after}）")
 
+        _progress(f"階段 2/3 完成：{len(items)}/{count} 張已通過審稿，XLSX 已就緒")
+        _progress("階段 3/3：處理 YouTube 標題、描述與標籤")
         if args.no_youtube:
             print("ℹ️  已依 --no-youtube 跳過 YouTube 描述")
         elif not yt_desc_exists:
@@ -4196,6 +4213,7 @@ def _main(argv: list[str] | None = None):
             )
         else:
             print(f"⚠️  YouTube 描述已存在，跳過：{yt_desc_path}")
+        _progress(f"流程已完成：{xlsx_path}")
         return
 
     used_before = len(_load_used_words())
@@ -4210,9 +4228,11 @@ def _main(argv: list[str] | None = None):
     )
 
     if not items:
+        _progress("流程失敗：未生成任何詞彙，未輸出 XLSX")
         print("❌ 未生成任何詞彙")
         return
 
+    _progress(f"正在寫入 XLSX：{len(items)} 張 → {xlsx_path}")
     if pain_points and all(item.get("_pain_point") for item in items):
         pain_points = PainPointPlan([item["_pain_point"] for item in items], contract=pain_points.contract)
         _save_pain_point_plan(generation_topic, pain_points, plan_path)
@@ -4221,6 +4241,8 @@ def _main(argv: list[str] | None = None):
     print(f"\n✅ 已生成 {len(items)} 個詞彙 → {xlsx_path}")
     print(f"📝 used_words.json 已更新（{used_before} → {used_after}）")
 
+    _progress(f"階段 2/3 完成：{len(items)}/{count} 張已通過審稿，XLSX 已就緒")
+    _progress("階段 3/3：處理 YouTube 標題、描述與標籤")
     if args.no_youtube:
         print("ℹ️  已依 --no-youtube 跳過 YouTube 描述")
     else:
@@ -4230,6 +4252,7 @@ def _main(argv: list[str] | None = None):
             yt_desc_path,
             content_context=youtube_context,
         )
+    _progress(f"流程已完成：{xlsx_path}")
 
 
 if __name__ == "__main__":
@@ -4242,4 +4265,7 @@ if __name__ == "__main__":
         raise SystemExit(130)
     except GenerationTimeoutError as exc:
         _progress(f"逾時停止：{exc}")
+        raise SystemExit(1)
+    except CheckpointGenerationError as exc:
+        _progress(f"生成停止：{exc}；請以相同輸入接續，勿加 --force。")
         raise SystemExit(1)

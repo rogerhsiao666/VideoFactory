@@ -38,8 +38,12 @@ effort with `OPENAI_CURRICULUM_SEMANTIC_REASONING` or the model with
 `OPENAI_CURRICULUM_SEMANTIC_MODEL`. Semantic
 review time budgets scale with deck size, capped at 300 seconds and bounded by
 the existing overall generation deadline.
-Candidate synonyms are verified pair by pair before groups are merged; shared
-labels alone cannot merge different requested information. Cached workbooks must
+Candidate synonyms are verified in batches of at most 32 pairs before groups are
+merged; shared labels alone cannot merge different requested information. Once
+confirmed equivalence connects two tasks, redundant comparisons inside that group
+are skipped. Planning stops the current audit as soon as confirmed duplicates
+violate the one-basic/one-advanced rule, then retries planning (at most three rounds).
+Progress reports show candidate counts, batch numbers and reused checks. Cached workbooks must
 have passed the current review version. Retries are bounded; failed review never
 publishes an unchecked workbook.
 AI audits are safeguards, not a guarantee of pedagogical correctness. Inspect the
@@ -48,12 +52,23 @@ it is not a completed workbook, and changing the model cannot fix missing API ac
 
 `--plan-only` saves an editable `.plan.json`; `--plan-file` loads that exact new
 curriculum plan. Old pain-point plans require `--legacy` and are never silently reused.
-`--resume` uses the adjacent `.curriculum.json` checkpoint. `--avoid` excludes
+New runs save each validated planning step in `.xlsx.planning.json`, including
+scenarios, tasks and the independent audit. Valid pair checks are saved in
+`.xlsx.pairs.json`, keyed by actual content, brief, model and review policy. A timeout
+or interruption retains these results; it does not reset the planning retry count.
+Rerunning with the same topic, description, count and output automatically continues
+unfinished planning or generation. `--resume` also works before a final plan exists.
+Changed inputs/settings invalidate planning checkpoints; explicit `--resume`
+rejects mismatched inputs. Exhausted planning retries require a revised brief/count
+or an explicit `--force`, not an unlimited automatic restart. The 900-second default
+overall deadline remains (`CARD_GENERATION_TIMEOUT` overrides it).
+`--resume` uses `.planning.json` or `.curriculum.json` as appropriate. `--avoid` excludes
 previous decks. Existing Excel files are not overwritten without `--force`.
 Final review rejections are saved so a resumed run fixes the rejected cards rather
 than starting the same complete-deck audit again. Replaced duplicate tasks must
 independently demonstrate a genuinely new outcome before they enter the plan.
-`--force` backs up the workbook, plan and checkpoint before rebuilding.
+`--force` backs up the workbook, plan, planning/generation checkpoints and pair
+checks before rebuilding.
 `--no-youtube` skips description generation. Rerunning an already verified deck
 without that flag generates a missing description without rebuilding its Excel.
 `--legacy` explicitly retains the
