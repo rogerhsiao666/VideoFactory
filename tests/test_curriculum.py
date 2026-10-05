@@ -9,6 +9,7 @@ from unittest.mock import patch
 import cards
 import curriculum
 from learning_editor import LEARNING_HEADERS
+from artifact_paths import cached_artifact
 
 
 SOURCE = Path(cards.BASE_DIR) / "output" / "\u63a8\u92b7\u8207\u96b1\u5f62\u6572\u8a50.xlsx.editor.json"
@@ -148,10 +149,10 @@ class CurriculumContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 curriculum.validate_deck(items, self.plan, reviewed=True)
 
-    def test_vocabulary_and_tone_must_match(self):
-        for change in (lambda i: i.update(Tone="invalid"), lambda i: i.update(Core_Vocab="wrong"),
-                       lambda i: i.update(tips="Use it whenever you like."),
-                       lambda i: i.update(vocab=[{"en": "nonexistent", "cn": "\u932f\u8aa4"}])):
+    def test_only_video_fields_are_validated(self):
+        unused = dict(self.items[0], Tone="invalid", Core_Vocab="wrong", sentence_ipa="bad", vocab=[])
+        curriculum.validate_item(unused, self.plan["jobs"][0])
+        for change in (lambda i: i.update(tips="Use it whenever you like."),):
             items = copy.deepcopy(self.items)
             change(items[0])
             with self.assertRaises(ValueError):
@@ -424,11 +425,13 @@ class CurriculumContractTests(unittest.TestCase):
     def test_independent_review_checks_every_semantic_assignment(self, _field_review):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
                                      "progression": item["progression"]} for item in self.items], "reject": []}
-        with patch.object(curriculum, "request_json", side_effect=[{"reject": []}, semantic, {"groups": []}]):
+        with patch.object(curriculum, "request_json", return_value=dict(semantic, groups=[])) as api:
             self.assertEqual(curriculum.review_deck(self.plan, self.items, []), {})
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.args[1], "教材綜合審查")
         incomplete = copy.deepcopy(semantic)
         incomplete["assignments"].pop()
-        with patch.object(curriculum, "request_json", side_effect=[{"reject": []}, incomplete]), self.assertRaises(ValueError):
+        with patch.object(curriculum, "request_json", return_value=dict(incomplete, groups=[])), self.assertRaises(ValueError):
             curriculum.review_deck(self.plan, self.items, [])
 
     @patch.object(curriculum, "review_field_difficulty", return_value={})
@@ -436,12 +439,12 @@ class CurriculumContractTests(unittest.TestCase):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
                                      "progression": item["progression"]} for item in self.items], "reject": []}
         with patch.object(curriculum, "request_json", side_effect=[
-            {"reject": [{"id": "01", "reason": "I prefer a different phrasing"}]},
-            {"checks": [{"id": "01", "valid": True, "reason": ""}]}, semantic, {"groups": []}]):
+            dict(semantic, groups=[], reject=[{"id": "01", "reason": "I prefer a different phrasing"}]),
+            {"checks": [{"id": "01", "valid": True, "reason": ""}]}]):
             self.assertEqual(curriculum.review_deck(self.plan, self.items, []), {})
         with patch.object(curriculum, "request_json", side_effect=[
-            {"reject": [{"id": "01", "reason": "IPA wrong"}]},
-            {"checks": [{"id": "01", "valid": False, "reason": "Missing a word in the IPA"}]}, semantic, {"groups": []}]):
+            dict(semantic, groups=[], reject=[{"id": "01", "reason": "IPA wrong"}]),
+            {"checks": [{"id": "01", "valid": False, "reason": "Missing a word in the IPA"}]}]):
             self.assertEqual(curriculum.review_deck(self.plan, self.items, [])["01"], "Missing a word in the IPA")
 
     @patch.object(curriculum, "review_field_difficulty", return_value={})
@@ -449,9 +452,8 @@ class CurriculumContractTests(unittest.TestCase):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
                                      "progression": item["progression"]} for item in self.items], "reject": []}
         with patch.object(curriculum, "request_json", side_effect=[
-            {"reject": [{"id": "01", "reason": "Must ask What/When/Where"}]},
-            {"checks": [{"id": "01", "valid": True, "reason": "Natural yes/no question"}]},
-            semantic, {"groups": []}]) as api:
+            dict(semantic, groups=[], reject=[{"id": "01", "reason": "Must ask What/When/Where"}]),
+            {"checks": [{"id": "01", "valid": True, "reason": "Natural yes/no question"}]}]) as api:
             self.assertEqual(curriculum.review_deck(self.plan, self.items, []), {})
         self.assertIn("What/When/Where question is NOT mandatory", api.call_args_list[0].args[0])
         self.assertIn("Do NOT require What/When/Where", api.call_args_list[1].args[0])
@@ -465,8 +467,9 @@ class CurriculumContractTests(unittest.TestCase):
     def test_fidelity_rejection_cannot_be_cleared_by_coarse_reviews(self, _field_review):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
                                      "progression": item["progression"]} for item in self.items], "reject": []}
-        with patch.object(curriculum, "review_task_fidelity", return_value={"01": "Permission is not obligation"}), \
-                patch.object(curriculum, "request_json", side_effect=[{"reject": []}, semantic, {"groups": []}]):
+        with patch.object(curriculum, "request_json", side_effect=[
+                dict(semantic, groups=[], reject=[{"id": "01", "reason": "Permission is not obligation"}]),
+                {"checks": [{"id": "01", "valid": False, "reason": "Permission is not obligation"}]}]):
             self.assertEqual(curriculum.review_deck(self.plan, self.items, [])["01"], "Permission is not obligation")
 
     @patch.object(curriculum, "review_field_difficulty", return_value={"01": "word_en is actually advanced"})
@@ -474,14 +477,14 @@ class CurriculumContractTests(unittest.TestCase):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
                                      "progression": item["progression"]} for item in self.items], "reject": []}
         semantic["assignments"][0].update(level="advanced", progression="New idiom")
-        with patch.object(curriculum, "request_json", side_effect=[{"reject": []}, semantic, {"groups": []}]):
+        with patch.object(curriculum, "request_json", return_value=dict(semantic, groups=[])):
             self.assertIn("01", curriculum.review_deck(self.plan, self.items, []))
 
     def test_coarse_card_guess_cannot_override_successful_individual_field_review(self):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": "basic",
                                      "progression": "coarse guess"} for item in self.items], "reject": []}
         with patch.object(curriculum, "review_field_difficulty", return_value={}), \
-                patch.object(curriculum, "request_json", side_effect=[{"reject": []}, semantic, {"groups": []}]):
+                patch.object(curriculum, "request_json", return_value=dict(semantic, groups=[])):
             self.assertEqual(curriculum.review_deck(self.plan, self.items, []), {})
         self.assertTrue(all(item["_semantic_level"] == item["tier"] for item in self.items))
 
@@ -491,7 +494,7 @@ class CurriculumContractTests(unittest.TestCase):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": "basic",
                                      "progression": ""} for item in self.items], "reject": []}
         with patch.object(curriculum, "review_field_difficulty", return_value={}), \
-                patch.object(curriculum, "request_json", side_effect=[{"reject": []}, semantic, {"groups": []},
+                patch.object(curriculum, "request_json", side_effect=[dict(semantic, groups=[]),
                     {"checks": {"01:03": {"equivalent": True, "reason": "Same outcome"}}}]):
             self.assertEqual(curriculum.review_deck(self.plan, self.items, []), {})
 
@@ -499,8 +502,8 @@ class CurriculumContractTests(unittest.TestCase):
     def test_cross_label_audit_catches_equivalent_lines_with_different_labels(self, _field_review):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
                                      "progression": item["progression"]} for item in self.items], "reject": []}
-        with patch.object(curriculum, "request_json", side_effect=[{"reject": []}, semantic,
-            {"groups": [{"ids": ["01", "02"], "purpose": "Same outcome under different labels"}]},
+        with patch.object(curriculum, "request_json", side_effect=[dict(semantic,
+            groups=[{"ids": ["01", "02"], "purpose": "Same outcome under different labels"}]),
             {"checks": {"01:02": {"equivalent": True, "reason": "Same concrete result"}}}]):
             rejected = curriculum.review_deck(self.plan, self.items, [])
         self.assertTrue(rejected["02"].startswith("語意重複："))
@@ -510,7 +513,7 @@ class CurriculumContractTests(unittest.TestCase):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
                                      "progression": item["progression"]} for item in self.items], "reject": []}
         semantic["assignments"][1]["purpose"] = semantic["assignments"][0]["purpose"]
-        with patch.object(curriculum, "request_json", side_effect=[{"reject": []}, semantic, {"groups": []},
+        with patch.object(curriculum, "request_json", side_effect=[dict(semantic, groups=[]),
             {"checks": {"01:02": {"equivalent": False, "reason": "Name and dates are different information"}}}]):
             self.assertEqual(curriculum.review_deck(self.plan, self.items, []), {})
         self.assertNotEqual(self.items[0]["_semantic_group"], self.items[1]["_semantic_group"])
@@ -526,8 +529,8 @@ class CurriculumContractTests(unittest.TestCase):
     def test_difficulty_retries_preserve_valid_checks_and_fail_closed_per_field(self):
         valid = {"id": "01", "level": "basic", "progression": "Simple daily words"}
         invalid = {"id": "02", "level": "advanced", "progression": "Could makes it polite"}
-        with patch.object(curriculum, "request_json", side_effect=[{"checks": [valid, invalid]},
-                {"checks": [invalid]}, {"checks": [invalid]}]) as request:
+        with patch.object(curriculum, "request_json", side_effect=[{"checks": [valid, invalid]}]
+                + [{"checks": [invalid]}] * (curriculum.STALLED_RETRY_LIMIT + 1)) as request:
             checks = curriculum.confirm_difficulty([{"id": "01"}, {"id": "02"}])
         self.assertEqual(request.call_args_list[1].kwargs["job_ids"], ["02"])
         self.assertEqual(checks[0], valid)
@@ -572,7 +575,7 @@ class CurriculumContractTests(unittest.TestCase):
         semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
                                      "progression": item["progression"]} for item in self.items], "reject": []}
         with patch.object(curriculum, "review_field_difficulty", return_value={"03": "sentence_en is too basic"}), \
-                patch.object(curriculum, "request_json", side_effect=[{"reject": []}, semantic, {"groups": []}]):
+                patch.object(curriculum, "request_json", return_value=dict(semantic, groups=[])):
             self.assertIn("sentence_en is too basic", curriculum.review_deck(self.plan, self.items, [])["03"])
 
     def test_only_new_curriculum_allows_natural_main_lines_over_eight_words(self):
@@ -655,14 +658,14 @@ class CurriculumContractTests(unittest.TestCase):
             self.assertEqual(result["scenarios"], plan["scenarios"])
             self.assertTrue(all(topic in call.args[0] for call in request.call_args_list))
 
-    def test_export_preserves_all_twelve_columns_and_video_loader_compatibility(self):
+    def test_export_has_seven_video_columns_and_video_loader_compatibility(self):
         import main
         with tempfile.TemporaryDirectory() as directory:
             target = str(Path(directory) / "cards.xlsx")
             cards.write_xlsx(self.items, target, curriculum_plan=self.plan)
             actual = cards.load_xlsx_items(target)
-            self.assertEqual(list(actual[0]), LEARNING_HEADERS)
-            self.assertEqual(actual, [{key: item[key] for key in LEARNING_HEADERS} for item in self.items])
+            self.assertEqual(list(actual[0]), curriculum.VIDEO_HEADERS)
+            self.assertEqual(actual, [{key: item[key] for key in curriculum.VIDEO_HEADERS} for item in self.items])
             self.assertEqual(len(main.import_review_excel(target)), 10)
 
     def test_invalid_export_never_writes_workbook(self):
@@ -680,9 +683,43 @@ class CurriculumContractTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(request.call_count, 3)
 
+    def test_batch_can_succeed_after_three_distinct_failed_proposals(self):
+        failures = [{"items": [{"id": str(index)}]} for index in range(3)]
+        with patch.object(curriculum, "request_json", side_effect=failures + [{"items": self.items[:1]}]) as request:
+            result = curriculum.generate_batch(self.plan, self.plan["jobs"][:1], [])
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(result[0]["id"], "01")
+
+    def test_final_review_can_succeed_after_three_repaired_rounds(self):
+        corrected = [dict(self.items[0], word_en="What does this mean?"),
+                     dict(self.items[0], word_en="What does it mean?"), self.items[0]]
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "checkpoint.json"
+            with patch.object(curriculum, "generate_batch", side_effect=[self.items[:8], self.items[8:]]
+                    + [[item] for item in corrected]), \
+                    patch.object(curriculum, "review_deck", side_effect=[{"01": "Incorrect English"}] * 3 + [{}]) as review:
+                result = curriculum.generate_deck(self.plan, checkpoint, [])
+        self.assertTrue(result["review_passed"])
+        self.assertEqual(review.call_count, 4)
+
+    def test_api_budget_stop_keeps_finished_cards_and_resume_only_fills_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "checkpoint.json"
+            with patch.object(curriculum, "generate_batch", side_effect=[self.items[:8], cards.APIBudgetError("test budget")]), \
+                    self.assertRaises(cards.APIBudgetError):
+                curriculum.generate_deck(self.plan, checkpoint, [])
+            saved = json.loads(checkpoint.read_text())
+            self.assertEqual(saved["items"], self.items[:8])
+            self.assertFalse(saved["review_passed"])
+            with patch.object(curriculum, "generate_batch", return_value=self.items[8:]) as generate, \
+                    patch.object(curriculum, "review_deck", return_value={}):
+                result = curriculum.generate_deck(self.plan, checkpoint, [], resume=True)
+            self.assertEqual([job["id"] for job in generate.call_args.args[1]], ["09", "10"])
+            self.assertTrue(result["review_passed"])
+
     def test_batch_retry_only_rewrites_invalid_rows(self):
         invalid = copy.deepcopy(self.items[:2])
-        invalid[0]["Tone"] = "invalid"
+        invalid[0]["sentence_en"] = "I need to say there is no hot water."
         with patch.object(curriculum, "request_json", side_effect=[{"items": invalid}, {"items": self.items[:1]}]) as request:
             result = curriculum.generate_batch(self.plan, self.plan["jobs"][:2], [])
         self.assertEqual([item["id"] for item in result], ["01", "02"])
@@ -696,16 +733,19 @@ class CurriculumContractTests(unittest.TestCase):
                     vocab=[{"en": "nonexistent", "cn": "錯誤"}], Core_Vocab="nonexistent 錯誤")
         with self.assertRaises(curriculum.FieldValidationError) as failure:
             curriculum.validate_item(item, self.plan["jobs"][0])
-        self.assertEqual(failure.exception.fields, ["word_ipa", "tips", "vocab"])
+        self.assertEqual(failure.exception.fields, ["word_ipa", "tips"])
 
-    def test_batch_repairs_only_wrong_vocabulary_and_keeps_both_english_lines(self):
+    def test_batch_drops_unused_metadata_without_repair_api_call(self):
         original = copy.deepcopy(self.items[0])
         original.update(vocab=[{"en": "nonexistent", "cn": "錯誤"}], Core_Vocab="nonexistent 錯誤")
         correction = {"id": "01", "vocab": self.items[0]["vocab"]}
         with patch.object(curriculum, "request_json", side_effect=[{"items": [original]},
                 {"items": [correction]}]) as request:
             result = curriculum.generate_batch(self.plan, self.plan["jobs"][:1], [])
-        self.assertEqual(request.call_args.kwargs["repairs"]["01"]["fields"], ["vocab"])
+        self.assertEqual(request.call_count, 1)
+        self.assertNotIn("vocab", result[0])
+        self.assertNotIn("sentence_ipa", result[0])
+        self.assertNotIn("Tone", result[0])
         self.assertEqual(result[0]["word_en"], self.items[0]["word_en"])
         self.assertEqual(result[0]["sentence_en"], self.items[0]["sentence_en"])
         self.assertEqual(result[0]["word_ipa"], self.items[0]["word_ipa"])
@@ -714,30 +754,26 @@ class CurriculumContractTests(unittest.TestCase):
     def test_field_repair_schema_excludes_every_unchanged_field(self):
         from types import SimpleNamespace
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-            content=json.dumps({"items": {"01": {"vocab": self.items[0]["vocab"]}}})))])
-        repair = {"01": {"item": self.items[0], "fields": ["vocab"], "reason": "absent word"}}
+            content=json.dumps({"items": {"01": {"tips": self.items[0]["tips"]}}})))])
+        repair = {"01": {"item": self.items[0], "fields": ["tips"], "reason": "unclear situation"}}
         with patch.object(cards, "_call_openai", return_value=response) as api:
             curriculum.request_json("Fix vocabulary", "教材生成 01-01", "gpt-4o-mini",
                 job_ids=["01"], repairs=repair)
         schema = api.call_args.kwargs["response_format"]["json_schema"]["schema"]
         item_schema = schema["properties"]["items"]["properties"]["01"]
-        self.assertEqual(set(item_schema["properties"]), {"vocab"})
-        self.assertEqual(item_schema["required"], ["vocab"])
+        self.assertEqual(set(item_schema["properties"]), {"tips"})
+        self.assertEqual(item_schema["required"], ["tips"])
         self.assertFalse(item_schema["additionalProperties"])
 
-    def test_field_repair_schema_limits_vocabulary_to_original_english(self):
+    def test_generation_schema_does_not_require_unused_fields(self):
         from types import SimpleNamespace
         source = dict(self.items[0], word_en="Nice try, but that's private.",
                       sentence_en="Nice try; I'm keeping that private.")
-        repair = {"01": {"item": source, "fields": ["vocab"], "reason": "topic is absent"}}
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"items":{}}'))])
         with patch.object(cards, "_call_openai", return_value=response) as api:
-            curriculum.request_json("Fix", "教材生成 01-01", "gpt-4o-mini", job_ids=["01"], repairs=repair)
+            curriculum.request_json("Generate", "教材生成 01-01", "gpt-4o-mini", job_ids=["01"])
         fields = api.call_args.kwargs["response_format"]["json_schema"]["schema"]["properties"]["items"]["properties"]["01"]["properties"]
-        terms = fields["vocab"]["items"]["properties"]["en"]["enum"]
-        self.assertIn("private", terms)
-        self.assertNotIn("topic", terms)
-        self.assertNotIn("boundary", terms)
+        self.assertEqual(set(fields), set(curriculum.VIDEO_HEADERS) - {"id"} | {"progression"})
 
     def test_ipa_repair_schema_locks_dictionary_pronunciation_instead_of_padding_tokens(self):
         from types import SimpleNamespace
@@ -775,9 +811,9 @@ class CurriculumContractTests(unittest.TestCase):
 
     def test_field_repair_cannot_sneak_in_changed_english(self):
         original = copy.deepcopy(self.items[0])
-        original.update(vocab=[{"en": "nonexistent", "cn": "錯誤"}], Core_Vocab="nonexistent 錯誤")
-        changed = {"id": "01", "vocab": self.items[0]["vocab"], "word_en": "Do something else."}
-        correction = {"id": "01", "vocab": self.items[0]["vocab"]}
+        original.update(tips="保持禮貌。")
+        changed = {"id": "01", "tips": self.items[0]["tips"], "word_en": "Do something else."}
+        correction = {"id": "01", "tips": self.items[0]["tips"]}
         with patch.object(curriculum, "request_json", side_effect=[{"items": [original]},
                 {"items": [changed]}, {"items": [correction]}]):
             result = curriculum.generate_batch(self.plan, self.plan["jobs"][:1], [])
@@ -844,7 +880,8 @@ class CurriculumContractTests(unittest.TestCase):
         item = copy.deepcopy(next(item for item in self.items if item["id"] == basic["id"]))
         invalid = {"lines": [{"id": advanced["id"], "word_en": "Could you help me?",
             "sentence_en": "Could you help me, please?", "progression": "Could is polite"}]}
-        with patch.object(curriculum, "request_json", side_effect=[invalid, invalid, invalid, {"items": [item]}]), \
+        with patch.object(curriculum, "request_json", side_effect=[invalid] * (curriculum.STALLED_RETRY_LIMIT + 1)
+                + [{"items": [item]}]), \
                 self.assertRaises(curriculum.BatchGenerationError) as failure:
             curriculum.generate_batch(self.plan, [basic, advanced], [])
         self.assertEqual([row["id"] for row in failure.exception.items], [basic["id"]])
@@ -864,8 +901,8 @@ class CurriculumContractTests(unittest.TestCase):
         job = next(job for job in self.plan["jobs"] if job["tier"] == "advanced")
         line = {"id": job["id"], "word_en": "Could my boarding pass be issued?",
                 "sentence_en": "Could my onward boarding pass be issued here?", "progression": "Could is polite"}
-        with patch.object(curriculum, "request_json", side_effect=[{"lines": [line]}, ValueError("stop"),
-                ValueError("stop"), ValueError("stop")]) as request, self.assertRaises(curriculum.BatchGenerationError):
+        with patch.object(curriculum, "request_json", side_effect=[{"lines": [line]}]
+                + [ValueError("stop")] * (curriculum.STALLED_RETRY_LIMIT + 1)) as request, self.assertRaises(curriculum.BatchGenerationError):
             curriculum.generate_batch(self.plan, [job], [])
         self.assertIn("passive voice", request.call_args_list[1].kwargs["anchors"][job["id"]]["progression"])
         self.assertEqual(request.call_args_list[1].args[1], "教材生成 " + job["id"] + "-" + job["id"])
@@ -883,10 +920,10 @@ class CurriculumContractTests(unittest.TestCase):
 
     def test_failed_field_repairs_are_checkpointed_and_resumed_without_redrafting(self):
         original = copy.deepcopy(self.items[0])
-        original.update(vocab=[{"en": "nonexistent", "cn": "錯誤"}], Core_Vocab="nonexistent 錯誤")
-        wrong = {"id": "01", "vocab": original["vocab"]}
-        with patch.object(curriculum, "request_json", side_effect=[{"items": [original]},
-                {"items": [wrong]}, {"items": [wrong]}]), self.assertRaises(curriculum.BatchGenerationError) as failure:
+        original.update(tips="保持禮貌。")
+        wrong = {"id": "01", "tips": original["tips"]}
+        with patch.object(curriculum, "request_json", side_effect=[{"items": [original]}]
+                + [{"items": [wrong]}] * (curriculum.STALLED_RETRY_LIMIT + 1)), self.assertRaises(curriculum.BatchGenerationError) as failure:
             curriculum.generate_batch(self.plan, self.plan["jobs"][:1], [])
         self.assertEqual(failure.exception.repairs["01"]["item"]["word_en"], original["word_en"])
         with tempfile.TemporaryDirectory() as directory:
@@ -895,7 +932,7 @@ class CurriculumContractTests(unittest.TestCase):
                     self.assertRaises(curriculum.BatchGenerationError):
                 curriculum.generate_deck(self.plan, checkpoint, [])
             saved = json.loads(checkpoint.read_text())
-            self.assertEqual(saved["pending_field_repairs"]["01"]["fields"], ["vocab"])
+            self.assertEqual(saved["pending_field_repairs"]["01"]["fields"], ["tips"])
             def generate_requested(plan, jobs, accepted, feedback, **kwargs):
                 return [item for item in self.items if item["id"] in {job["id"] for job in jobs}]
             with patch.object(curriculum, "generate_batch", side_effect=generate_requested) as generate, \
@@ -929,7 +966,7 @@ class CurriculumContractTests(unittest.TestCase):
 
     def test_timeout_during_field_repair_keeps_valid_cards_and_invalid_draft(self):
         original = copy.deepcopy(self.items[:2])
-        original[0].update(vocab=[{"en": "nonexistent", "cn": "錯誤"}], Core_Vocab="nonexistent 錯誤")
+        original[0].update(tips="保持禮貌。")
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "checkpoint.json"
             with patch.object(curriculum, "BATCH_SIZE", 2), \
@@ -939,13 +976,14 @@ class CurriculumContractTests(unittest.TestCase):
                 curriculum.generate_deck(self.plan, checkpoint, [])
             state = json.loads(checkpoint.read_text())
             self.assertEqual([item["id"] for item in state["items"]], ["02"])
-            self.assertEqual(state["pending_field_repairs"]["01"]["fields"], ["vocab"])
+            self.assertEqual(state["pending_field_repairs"]["01"]["fields"], ["tips"])
             self.assertFalse(state["review_passed"])
 
     def test_final_rejection_is_saved_and_resume_rewrites_only_failed_card(self):
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "checkpoint.json"
-            with patch.object(curriculum, "generate_batch", side_effect=[self.items[:8], self.items[8:], self.items[:1], self.items[:1]]), \
+            with patch.object(curriculum, "generate_batch", side_effect=[self.items[:8], self.items[8:]]
+                    + [self.items[:1]] * curriculum.STALLED_RETRY_LIMIT), \
                     patch.object(curriculum, "review_deck", return_value={"01": "Incorrect English"}), \
                     self.assertRaises(RuntimeError):
                 curriculum.generate_deck(self.plan, checkpoint, [])
@@ -1046,7 +1084,7 @@ class CurriculumContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "checkpoint.json"
             invalid = copy.deepcopy(self.items)
-            invalid[0]["Tone"] = "invalid"
+            invalid[0]["tips"] = "保持禮貌。"
             curriculum.save_json(checkpoint, {"version": curriculum.VERSION,
                 "fingerprint": curriculum.fingerprint_for(self.plan, []), "plan": {"stale": True},
                 "items": invalid, "review_passed": False})
@@ -1064,7 +1102,7 @@ class CurriculumContractTests(unittest.TestCase):
                  patch.object(curriculum, "review_deck", side_effect=ValueError("missing assignments")) as audit:
                 with self.assertRaises(RuntimeError):
                     curriculum.generate_deck(self.plan, checkpoint, [])
-            self.assertEqual(audit.call_count, 3)
+            self.assertEqual(audit.call_count, curriculum.STALLED_RETRY_LIMIT + 1)
             self.assertFalse(json.loads(checkpoint.read_text())["review_passed"])
 
     def test_default_cli_runs_curriculum_pipeline_and_reuses_verified_workbook(self):
@@ -1082,6 +1120,55 @@ class CurriculumContractTests(unittest.TestCase):
                  patch.object(cards, "write_youtube_description"):
                 cards.main(["--topic", self.plan["topic"], "--count", "10", "--output", str(output)])
             plan.assert_not_called()
+
+    def test_old_twelve_column_workbook_and_checkpoint_are_preserved_without_api_calls(self):
+        import openpyxl
+        with tempfile.TemporaryDirectory() as directory, patch.object(cards, "BASE_DIR", directory):
+            output = Path(directory) / "old.xlsx"
+            workbook = openpyxl.Workbook()
+            workbook.active.append(LEARNING_HEADERS)
+            for item in self.items:
+                workbook.active.append([item[key] for key in LEARNING_HEADERS])
+                item["_semantic_review_version"] = 11
+            workbook.save(output)
+            legacy = Path(str(output) + ".curriculum.json")
+            curriculum.save_json(legacy, {"version": curriculum.VERSION, "review_passed": True,
+                "review_version": 11, "fingerprint": curriculum.fingerprint_for(self.plan, []),
+                "plan": self.plan, "items": self.items})
+            original_excel, original_json = output.read_bytes(), legacy.read_bytes()
+            with patch.object(cards, "REVIEW_MODE", "hybrid"), \
+                    patch.object(cards, "_call_openai", side_effect=AssertionError("Paid API must not run")), \
+                    patch.object(curriculum, "plan_curriculum") as planner:
+                cards.main(["--topic", self.plan["topic"], "--count", "10", "--output", str(output), "--no-youtube"])
+            planner.assert_not_called()
+            self.assertEqual(output.read_bytes(), original_excel)
+            self.assertEqual(legacy.read_bytes(), original_json)
+            cached = cached_artifact(legacy, directory, "curriculum")
+            self.assertEqual(cached.read_bytes(), original_json)
+
+    def test_old_unused_field_repairs_can_resume_without_api_calls(self):
+        source = dict(self.items[0], vocab=[], Core_Vocab="", sentence_ipa="bad", Tone="bad")
+        repairs = {"01": {"item": source, "fields": ["vocab", "sentence_ipa"], "reason": "legacy rejection"}}
+        with patch.object(curriculum, "request_json", side_effect=AssertionError("Unneeded field repair")):
+            result = curriculum.generate_batch(self.plan, self.plan["jobs"][:1], [], repairs=repairs)
+        self.assertEqual(result[0]["word_en"], source["word_en"])
+
+    def test_consolidated_review_missing_groups_is_not_treated_as_success(self):
+        semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
+                                     "progression": item["progression"]} for item in self.items], "reject": []}
+        with patch.object(curriculum, "request_json", return_value=semantic), \
+                patch.object(curriculum, "review_field_difficulty", return_value={}), self.assertRaisesRegex(ValueError, "groups"):
+            curriculum.review_deck(self.plan, self.items, [])
+
+    def test_consolidated_review_schema_requires_complete_decisions(self):
+        from types import SimpleNamespace
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{}'))])
+        with patch.object(cards, "_call_openai", return_value=response) as api:
+            curriculum.request_json("Review", "教材綜合審查", "gpt-5-nano", job_ids=["01", "02"])
+        schema = api.call_args.kwargs["response_format"]["json_schema"]["schema"]
+        self.assertEqual(set(schema["required"]), {"assignments", "reject", "groups"})
+        self.assertEqual(schema["properties"]["assignments"]["minItems"], 2)
+        self.assertFalse(schema["additionalProperties"])
 
     def test_cached_workbook_can_generate_missing_caption_without_regeneration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1121,7 +1208,8 @@ class CurriculumContractTests(unittest.TestCase):
             generate.assert_not_called()
             youtube.assert_not_called()
             self.assertFalse(output.exists())
-            self.assertTrue(output.with_suffix(".plan.json").exists())
+            self.assertTrue(cached_artifact(output.with_suffix(".plan.json"), cards.BASE_DIR, "curriculum").exists())
+            self.assertFalse(output.with_suffix(".plan.json").exists())
 
 
 class PlanningRecoveryTests(unittest.TestCase):
@@ -1168,6 +1256,121 @@ class PlanningRecoveryTests(unittest.TestCase):
                                for key in kwargs["job_ids"]}}
         return respond
 
+    def test_targeted_fifty_card_group_has_linear_candidate_count(self):
+        plan, items, semantic = self.dense_candidates()
+        with patch.object(curriculum, "request_json", side_effect=self.checks(False)) as request:
+            curriculum.verify_semantic_pairs(plan, items, semantic, {"groups": []}, targeted=True)
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(sum(len(call.kwargs["job_ids"]) for call in request.call_args_list), 97)
+        self.assertEqual(len({entry["purpose"] for entry in semantic["assignments"]}), 50)
+
+    def test_targeted_review_does_not_expand_shared_verbs_or_planner_labels(self):
+        plan, items, semantic = self.dense_candidates()
+        for item, entry in zip(items, semantic["assignments"]):
+            item["word_en"] = item["sentence_en"] = "Please respect " + item["id"]
+            entry["purpose"] = "different outcome " + item["id"]
+        with patch.object(curriculum, "request_json") as request:
+            curriculum.verify_semantic_pairs(plan, items, semantic, {"groups": []}, targeted=True)
+        request.assert_not_called()
+
+    def test_review_version_upgrade_reuses_completed_planning(self):
+        with patch.object(curriculum, "SEMANTIC_REVIEW_VERSION", 11), \
+                patch.object(curriculum, "request_json", side_effect=self.responses()):
+            curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
+        with patch.object(curriculum, "request_json") as api:
+            plan = curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint, resume=True)
+        api.assert_not_called()
+        curriculum.validate_plan(plan, self.plan["topic"], 10)
+
+    def test_duplicate_planning_repairs_only_surplus_id_and_reuses_other_audits(self):
+        duplicate = copy.deepcopy(self.plan)
+        duplicate["jobs"][1].update(core=duplicate["jobs"][0]["core"], task="Ask what that means.")
+        replacement = dict(duplicate["jobs"][1], core="report broken lock", task="Report the broken lock.")
+        repaired = False
+
+        def respond(prompt, stage, model, **kwargs):
+            nonlocal repaired
+            if stage == "主題情境策劃":
+                return {"scenarios": duplicate["scenarios"]}
+            if stage == "逐句教材策劃":
+                return {"jobs": duplicate["jobs"]}
+            if stage == "替換重複教材目的":
+                self.assertEqual(kwargs["job_ids"], ["02"])
+                repaired = True
+                return {"jobs": [replacement]}
+            if stage == "教材退回複核":
+                return {"checks": [{"id": "02", "valid": True, "reason": "New repair report"}]}
+            if stage == "教材策劃獨立審查":
+                jobs = [replacement] if repaired else duplicate["jobs"]
+                return self.audit(dict(duplicate, jobs=jobs))
+            if stage == "教材同義逐對複核":
+                return {"checks": {key: {"equivalent": key == "01:02" and not repaired,
+                                          "reason": "Same request" if key == "01:02" else "Distinct outcome"}
+                                   for key in kwargs["job_ids"]}}
+            self.fail(stage)
+
+        pair_token = curriculum._pair_review_store.set((Path(self.directory.name) / "pairs.json", {}))
+        self.addCleanup(curriculum._pair_review_store.reset, pair_token)
+        with patch.object(curriculum, "request_json", side_effect=respond) as request:
+            result = curriculum.plan_curriculum(duplicate["topic"], 10, [], checkpoint=self.checkpoint)
+        calls = request.call_args_list
+        self.assertEqual(sum(call.args[1] == "逐句教材策劃" for call in calls), 1)
+        audits = [call.kwargs["job_ids"] for call in calls if call.args[1] == "教材策劃獨立審查"]
+        self.assertEqual(audits, [[job["id"] for job in duplicate["jobs"]], ["02"]])
+        for before, after in zip(duplicate["jobs"], result["jobs"]):
+            self.assertEqual(after["task"], replacement["task"] if after["id"] == "02" else before["task"])
+        self.assertTrue(json.loads(self.checkpoint.read_text())["complete_plan"])
+
+    def test_replacement_can_succeed_on_fourth_new_proposal(self):
+        proposals = [dict(self.plan["jobs"][0], core=f"new-result-{index}", task=f"Report problem {index}.")
+                     for index in range(4)]
+        with patch.object(curriculum, "request_json", side_effect=[{"jobs": [job]} for job in proposals]) as request, \
+                patch.object(curriculum, "validate_replacement_outcomes", side_effect=[ValueError("Overlap")] * 3 + [None]):
+            result = curriculum.repair_duplicate_jobs(self.plan, {"01"}, {"01": "Duplicate"}, [])
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(result[0]["task"], proposals[-1]["task"])
+        self.assertEqual(result[1:], self.plan["jobs"][1:])
+
+    def test_old_attempt_three_checkpoint_can_continue_without_force(self):
+        with patch.object(curriculum, "request_json", side_effect=cards.APIBudgetError("test budget")):
+            with self.assertRaises(cards.APIBudgetError):
+                curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
+        saved = json.loads(self.checkpoint.read_text())
+        saved["attempt"] = 3
+        curriculum.save_json(self.checkpoint, saved)
+        with patch.object(curriculum, "request_json", side_effect=self.responses()) as request:
+            result = curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
+        self.assertEqual(request.call_count, 3)
+        curriculum.validate_plan(result, self.plan["topic"], 10)
+
+    def test_relabeling_the_same_failed_task_does_not_count_as_progress(self):
+        guard = curriculum.RepeatedFailureGuard()
+        for index in range(curriculum.STALLED_RETRY_LIMIT):
+            guard.reject({"task": "Ask for permission.", "core": f"label-{index}", "reason": str(index)}, "Rejected")
+        with self.assertRaisesRegex(cards.CheckpointGenerationError, "沒有進展"):
+            guard.reject({"task": "Ask for permission.", "core": "yet another label"}, "Different review wording")
+
+    def test_budget_exhaustion_during_replacement_keeps_plan_and_pending_repair(self):
+        rejection = curriculum.PlanningTaskError("Duplicate 01/02", {"02": "Duplicate 01/02"})
+        with patch.object(curriculum, "request_json", side_effect=self.responses()) as request, \
+                patch.object(curriculum, "verify_semantic_pairs", side_effect=rejection), \
+                patch.object(curriculum, "repair_duplicate_jobs", side_effect=cards.APIBudgetError("test budget")):
+            with self.assertRaises(cards.APIBudgetError):
+                curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
+        saved = json.loads(self.checkpoint.read_text())
+        self.assertEqual(saved["pending_task_repairs"], rejection.rejected)
+        self.assertEqual(saved["jobs"], self.plan["jobs"])
+        self.assertNotIn("complete_plan", saved)
+        updated = copy.deepcopy(self.plan["jobs"])
+        updated[1].update(core="new-result", task="Report a broken lock.")
+        with patch.object(curriculum, "repair_duplicate_jobs", return_value=updated) as repair, \
+                patch.object(curriculum, "verify_semantic_pairs"), \
+                patch.object(curriculum, "request_json", return_value=self.audit(dict(self.plan, jobs=updated[1:2]))) as request:
+            result = curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
+        self.assertEqual(request.call_args.kwargs["job_ids"], ["02"])
+        self.assertEqual(result["jobs"][1]["task"], updated[1]["task"])
+        repair.assert_called_once()
+
     def test_fifty_duplicate_tasks_fail_in_one_batch_not_thirty_nine(self):
         plan, items, semantic = self.dense_candidates()
         with patch.object(curriculum, "request_json", side_effect=self.checks(True)) as request:
@@ -1184,7 +1387,7 @@ class PlanningRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "01,02,03"):
                 curriculum.verify_semantic_pairs(plan, items, semantic, {"groups": []}, fail_fast=True)
 
-    def test_fifty_duplicate_tasks_have_bounded_replans_and_never_export(self):
+    def test_fifty_duplicate_tasks_stop_repeated_failed_repairs_and_never_export(self):
         plan, _, _ = self.dense_candidates()
         plan.update(version=curriculum.VERSION, count=50, scenarios=["a", "b", "c", "d"])
         for job in plan["jobs"]:
@@ -1199,6 +1402,11 @@ class PlanningRecoveryTests(unittest.TestCase):
                 return {"jobs": plan["jobs"]}
             if stage == "教材策劃獨立審查":
                 return self.audit(plan)
+            if stage == "替換重複教材目的":
+                return {"jobs": [job for job in plan["jobs"] if job["id"] in kwargs["job_ids"]]}
+            if stage == "教材退回複核":
+                return {"checks": [{"id": identifier, "valid": False, "reason": "Same old task"}
+                                   for identifier in kwargs["job_ids"]]}
             return self.checks(True)(prompt, stage, model, **kwargs)
 
         output = Path(self.directory.name) / "privacy.xlsx"
@@ -1207,17 +1415,23 @@ class PlanningRecoveryTests(unittest.TestCase):
              patch.object(curriculum, "request_json", side_effect=respond), \
              patch.object(curriculum, "generate_deck") as generate, \
              patch.object(cards, "write_xlsx") as export:
-            with self.assertRaisesRegex(RuntimeError, "三次未通過"):
+            with self.assertRaisesRegex(cards.CheckpointGenerationError, "沒有進展"):
                 cards.main(arguments)
-        self.assertEqual(stages.count("主題情境策劃"), 3)
+        self.assertEqual(stages.count("主題情境策劃"), 1)
+        self.assertEqual(stages.count("逐句教材策劃"), 1)
+        self.assertEqual(stages.count("替換重複教材目的"), curriculum.STALLED_RETRY_LIMIT + 1)
         self.assertEqual(stages.count("教材同義逐對複核"), 1)
         generate.assert_not_called()
         export.assert_not_called()
         self.assertFalse(output.exists())
-        with patch.object(cards, "REVIEW_MODE", "hybrid"), patch.object(curriculum, "request_json") as request:
-            with self.assertRaises(RuntimeError):
+        saved = json.loads(cached_artifact(Path(str(output) + ".planning.json"), cards.BASE_DIR, "curriculum").read_text())
+        self.assertEqual(len(saved["jobs"]), 50)
+        self.assertEqual(set(saved["pending_task_repairs"]), {"02"})
+        with patch.object(cards, "REVIEW_MODE", "hybrid"), \
+                patch.object(curriculum, "request_json", side_effect=cards.APIBudgetError("test budget")) as request:
+            with self.assertRaises(cards.APIBudgetError):
                 cards.main(arguments)
-        request.assert_not_called()
+        self.assertEqual(request.call_args.args[1], "替換重複教材目的")
 
     def test_confirmed_equivalence_skips_redundant_pairs_in_full_deck_review(self):
         plan, items, semantic = self.dense_candidates()
@@ -1335,20 +1549,21 @@ class PlanningRecoveryTests(unittest.TestCase):
                         curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=checkpoint)
                     request.assert_not_called()
 
-    def test_planning_retry_count_survives_restart_and_exhaustion_is_terminal(self):
+    def test_planning_retry_count_survives_restart_without_permanent_exhaustion(self):
         with patch.object(curriculum, "request_json", side_effect=[
             {"scenarios": ["invalid"]}, cards.GenerationTimeoutError("test timeout")]):
             with self.assertRaises(cards.GenerationTimeoutError):
                 curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
         self.assertEqual(json.loads(self.checkpoint.read_text())["attempt"], 1)
         with patch.object(curriculum, "request_json", return_value={"scenarios": []}) as request:
-            with self.assertRaisesRegex(RuntimeError, "縮小句數"):
+            with self.assertRaisesRegex(cards.CheckpointGenerationError, "沒有進展"):
                 curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
-            self.assertEqual(request.call_count, 2)
-        with patch.object(curriculum, "request_json") as request:
-            with self.assertRaises(RuntimeError):
-                curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
-        request.assert_not_called()
+            self.assertEqual(request.call_count, curriculum.STALLED_RETRY_LIMIT + 1)
+        self.assertGreater(json.loads(self.checkpoint.read_text())["attempt"], 3)
+        with patch.object(curriculum, "request_json", side_effect=self.responses()) as request:
+            result = curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
+        curriculum.validate_plan(result, self.plan["topic"], 10)
+        self.assertEqual(request.call_count, 3)
 
     def test_changed_planning_inputs_rejected_on_explicit_resume_and_replanned_otherwise(self):
         with patch.object(curriculum, "request_json", side_effect=self.responses()):
@@ -1394,12 +1609,12 @@ class PlanningRecoveryTests(unittest.TestCase):
             with self.assertRaises(cards.GenerationTimeoutError):
                 cards.main(arguments)
         self.assertFalse(output.with_suffix(".plan.json").exists())
-        self.assertTrue(Path(str(output) + ".planning.json").exists())
+        self.assertTrue(cached_artifact(Path(str(output) + ".planning.json"), cards.BASE_DIR, "curriculum").exists())
         with patch.object(cards, "REVIEW_MODE", "hybrid"), \
              patch.object(curriculum, "request_json", return_value=self.audit()) as request:
             cards.main(arguments + ["--resume"])
         self.assertEqual(request.call_count, 1)
-        self.assertTrue(output.with_suffix(".plan.json").exists())
+        self.assertTrue(cached_artifact(output.with_suffix(".plan.json"), cards.BASE_DIR, "curriculum").exists())
         self.assertFalse(output.exists())
         self.assertIsNone(curriculum._pair_review_store.get())
 
@@ -1412,7 +1627,7 @@ class PlanningRecoveryTests(unittest.TestCase):
             with self.assertRaises(cards.GenerationTimeoutError):
                 cards.main(arguments)
         self.assertFalse(output.exists())
-        saved = json.loads(Path(str(output) + ".curriculum.json").read_text())
+        saved = json.loads(cached_artifact(Path(str(output) + ".curriculum.json"), cards.BASE_DIR, "curriculum").read_text())
         self.assertEqual(len(saved["items"]), 8)
         with patch.object(cards, "REVIEW_MODE", "hybrid"), \
              patch.object(curriculum, "plan_curriculum") as planner, \
@@ -1425,8 +1640,8 @@ class PlanningRecoveryTests(unittest.TestCase):
 
     def test_force_backs_up_planning_and_pair_checkpoints_and_starts_fresh(self):
         output = Path(self.directory.name) / "topic.xlsx"
-        planning = Path(str(output) + ".planning.json")
-        pairs = Path(str(output) + ".pairs.json")
+        planning = cached_artifact(Path(str(output) + ".planning.json"), self.directory.name, "curriculum")
+        pairs = cached_artifact(Path(str(output) + ".pairs.json"), self.directory.name, "curriculum")
         with patch.object(curriculum, "request_json", side_effect=self.responses()):
             curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=planning)
         curriculum.save_json(pairs, {"version": 1, "checks": {"old": {"equivalent": True, "reason": "old"}}})

@@ -26,6 +26,8 @@ Topic → OpenAI → Pexels → TTS → Pillow → MoviePy → Final MP4 + SRT +
 """
 
 import glob
+import argparse
+from pathlib import Path
 import json
 import math
 import os
@@ -48,6 +50,7 @@ from moviepy.audio.AudioClip import AudioClip, concatenate_audioclips
 from dotenv import load_dotenv
 import openpyxl
 from openpyxl.styles import Font as XlFont, PatternFill, Alignment
+from artifact_paths import VIDEO_HEADERS, cached_artifact
 
 load_dotenv()
 
@@ -58,13 +61,14 @@ ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 TEMP_DIR   = os.path.join(BASE_DIR, "temp")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 IMAGES_DIR = os.path.join(TEMP_DIR, "images")
-DATA_FILE  = os.path.join(OUTPUT_DIR, "data.json")
+DATA_FILE  = os.path.join(TEMP_DIR, "cache", "video", "data.json")
 CARDS_DIR  = os.path.join(BASE_DIR, "cards")
 
 os.makedirs(TEMP_DIR,   exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(IMAGES_DIR, exist_ok=True)
 os.makedirs(CARDS_DIR,  exist_ok=True)
+os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
 
 FONT_EN     = os.path.join(ASSETS_DIR, "font_en.ttf")
 FONT_CN     = os.path.join(ASSETS_DIR, "font_cn.otf")
@@ -315,8 +319,7 @@ def export_review_excel(data_list: list, topic: str) -> str:
     ws = wb.active
     ws.title = "Review"
 
-    headers = ["id", "word_en", "word_ipa", "word_cn", "tips",
-               "sentence_en", "sentence_ipa", "sentence_cn"]
+    headers = VIDEO_HEADERS
 
     # 標題列格式
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
@@ -338,7 +341,8 @@ def export_review_excel(data_list: list, topic: str) -> str:
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     safe_topic = re.sub(r'[^\w\u4e00-\u9fff-]', '_', topic)
-    path = os.path.join(OUTPUT_DIR, f"review_{safe_topic}.xlsx")
+    path = str(cached_artifact(Path(OUTPUT_DIR) / f"review_{safe_topic}.xlsx", BASE_DIR, "reviews"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     wb.save(path)
     return path
 
@@ -561,6 +565,9 @@ def load_local_cards(topic: str) -> list:
         available = sorted(
             name for name in os.listdir(directory)
             if name.lower().endswith((".xlsx", ".json"))
+            and not name.endswith((".plan.json", ".planning.json", ".pairs.json", ".curriculum.json",
+                                   ".editor.json", ".checkpoint.json"))
+            and name != "data.json" and not name.startswith("review_")
         )
         if available:
             print(f"   📂 {label}/ 資料夾中可用的卡片：")
@@ -1965,7 +1972,7 @@ def _flush_stdin() -> None:
             pass
 
 
-async def main():
+async def main(*, subtitles: bool = False):
     print("=" * 55)
     print("  🚀 VideoFactory Enterprise Edition")
     print("=" * 55)
@@ -2308,7 +2315,8 @@ async def main():
     shutil.copy(merged_path, output_file)
 
     # ── 10. 輸出 SRT + YouTube 發布內容 ────────────────
-    write_srt(srt_entries, srt_path)
+    if subtitles:
+        write_srt(srt_entries, srt_path)
     write_youtube_description(topic, chapter_entries, srt_entries, yt_desc_path)
 
     # ── 11. 格式 3：發布至 Firestore（分類由來源決定）──
@@ -2320,11 +2328,14 @@ async def main():
   🎉 製作完成！
 {'=' * 55}
   🎬 影片  : {output_file}
-  📝 字幕  : {srt_path}
+  📝 字幕  : {srt_path if subtitles else '未啟用'}
   📄 YouTube: {yt_desc_path}
 {'=' * 55}
 """)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="VideoFactory video production")
+    parser.add_argument("--subtitles", action="store_true", help="另外輸出 SRT 字幕檔")
+    args = parser.parse_args()
+    asyncio.run(main(subtitles=args.subtitles))

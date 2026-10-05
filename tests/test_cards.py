@@ -82,6 +82,71 @@ class OpenAIProgressTests(unittest.TestCase):
             [{"role": "user", "content": "test"}], stage="測試策劃", model="test"
         )
 
+    def budget(self, requests=80, tokens=300000):
+        budget = cards.APIBudget(requests, tokens)
+        token = cards._api_budget.set(budget)
+        self.addCleanup(cards._api_budget.reset, token)
+        return budget
+
+    def test_request_budget_blocks_before_sending_an_extra_request(self):
+        budget = self.budget(requests=1)
+        self.mock_transport(lambda request: self.response())
+        self.call()
+        with self.assertRaises(cards.APIBudgetError):
+            self.call()
+        self.assertEqual(budget.requests, 1)
+        self.assertEqual(len(self.clients), 1)
+
+    def test_failed_transport_retry_consumes_the_same_request_budget(self):
+        budget = self.budget(requests=1)
+        self.mock_transport(lambda request: httpx.Response(500, json={
+            "error": {"message": "temporary error", "type": "server_error"}}))
+        with self.assertRaises(cards.APIBudgetError):
+            self.call()
+        self.assertEqual(budget.requests, 1)
+        self.assertGreater(budget.tokens, 4096)
+        self.assertEqual(len(self.clients), 1)
+
+    def test_token_budget_reserves_input_schema_and_completion_before_send(self):
+        budget = self.budget(tokens=1000)
+        self.mock_transport(lambda request: self.response())
+        with self.assertRaises(cards.APIBudgetError):
+            cards._call_openai([{"role": "user", "content": "測試" * 100}], model="test",
+                               max_tokens=500, response_format={"type": "json_object"})
+        self.assertEqual(budget.requests, 0)
+        self.assertEqual(len(self.clients), 0)
+
+    def test_success_usage_refunds_unused_reservation_and_keeps_output_capped(self):
+        budget = self.budget(tokens=5000)
+
+        def handler(request):
+            self.assertEqual(json.loads(request.content)["max_tokens"], 4096)
+            payload = json.loads(self.response().content)
+            payload["usage"] = {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}
+            return httpx.Response(200, json=payload)
+
+        self.mock_transport(handler)
+        self.call()
+        self.call()
+        self.assertEqual(budget.tokens, 40)
+        self.assertEqual(budget.requests, 2)
+
+    def test_missing_usage_keeps_the_conservative_token_reservation(self):
+        budget = self.budget()
+        self.mock_transport(lambda request: self.response())
+        self.call()
+        self.assertGreater(budget.tokens, 4096)
+
+    def test_nested_scopes_do_not_reset_budget_and_main_restores_context(self):
+        budget = self.budget(requests=1)
+        with cards.api_budget_scope():
+            with cards.api_budget_scope():
+                self.assertIs(cards._api_budget.get(), budget)
+        with patch.object(cards, "_main", side_effect=cards.APIBudgetError("test")):
+            with self.assertRaises(cards.APIBudgetError):
+                cards.main([])
+        self.assertIs(cards._api_budget.get(), budget)
+
     def test_success_reports_start_wait_and_finish_without_leaking_stage_to_api(self):
         async def handler(request):
             self.assertNotIn("stage", json.loads(request.content))

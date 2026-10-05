@@ -26,6 +26,7 @@ import sys
 import time
 from collections import Counter
 from contextvars import ContextVar
+from contextlib import contextmanager
 from datetime import datetime
 from difflib import SequenceMatcher
 
@@ -105,6 +106,18 @@ API_MAX_ATTEMPTS = 2
 API_RETRY_DELAY = 2
 _generation_deadline: ContextVar[float | None] = ContextVar("generation_deadline", default=None)
 
+
+def _positive_integer(name: str, default: int) -> int:
+    value = int(os.getenv(name, str(default)))
+    if value <= 0:
+        raise ValueError(f"{name} 必須是大於零的整數")
+    return value
+
+
+API_MAX_REQUESTS = _positive_integer("CARD_API_MAX_REQUESTS", 80)
+API_TOKEN_BUDGET = _positive_integer("CARD_API_TOKEN_BUDGET", 300000)
+_api_budget: ContextVar["APIBudget | None"] = ContextVar("api_budget", default=None)
+
 HEADERS = ["id", "word_en", "word_ipa", "word_cn", "tips",
            "sentence_en", "sentence_ipa", "sentence_cn"]
 
@@ -119,6 +132,48 @@ class GenerationTimeoutError(RuntimeError):
 
 class CheckpointGenerationError(RuntimeError):
     """An expected generation failure with progress saved for resumption."""
+
+
+class APIBudgetError(CheckpointGenerationError):
+    """Stop before sending a request that would exceed the run's API budget."""
+
+
+class APIBudget:
+    def __init__(self, max_requests: int, token_limit: int):
+        self.max_requests = max_requests
+        self.token_limit = token_limit
+        self.requests = 0
+        self.tokens = 0
+
+    def reserve(self, messages: list, kwargs: dict) -> int:
+        # UTF-8 bytes conservatively bound text tokens, including JSON schemas.
+        input_bound = len(json.dumps([messages, kwargs], ensure_ascii=False).encode("utf-8")) + 64 * (len(messages) + 1)
+        output_bound = kwargs.get("max_completion_tokens", kwargs.get("max_tokens", 4096))
+        reservation = input_bound + output_bound
+        if self.requests >= self.max_requests or self.tokens + reservation > self.token_limit:
+            raise APIBudgetError(
+                f"本輪 API 預算已達上限：已請求 {self.requests}/{self.max_requests} 次，"
+                f"已計入 {self.tokens}/{self.token_limit} tokens；下一次最多需 {reservation} tokens。"
+                "已停止新請求並保留進度；相同輸入重跑可接續，不需 --force。"
+            )
+        self.requests += 1
+        self.tokens += reservation
+        return reservation
+
+    def settle(self, reservation: int, response) -> None:
+        usage = getattr(response, "usage", None)
+        actual = getattr(usage, "total_tokens", None)
+        if type(actual) is int and actual >= 0:
+            self.tokens += actual - reservation
+
+
+@contextmanager
+def api_budget_scope():
+    token = _api_budget.set(_api_budget.get() or APIBudget(API_MAX_REQUESTS, API_TOKEN_BUDGET))
+    try:
+        yield
+    finally:
+        _api_budget.reset(token)
 
 
 def _progress(message: str) -> None:
@@ -190,10 +245,18 @@ async def _call_openai_async(messages: list, stage: str, kwargs: dict, budget_se
             break
         key_index = min(attempt, len(OPENAI_KEYS) - 1)
         timeout = min(budget_seconds if budget_seconds is not None else API_REQUEST_TIMEOUT, remaining)
+        budget = _api_budget.get()
+        if budget is not None:
+            if "max_tokens" not in kwargs and "max_completion_tokens" not in kwargs:
+                kwargs = dict(kwargs)
+                kwargs["max_completion_tokens" if str(kwargs.get("model", "")).startswith("gpt-5")
+                       else "max_tokens"] = 4096
+            reservation = budget.reserve(messages, kwargs)
         _progress(
             f"{stage}：開始請求 {attempt + 1}/{API_MAX_ATTEMPTS}，"
             f"模型 {kwargs.get('model', CARD_MODEL)}，金鑰 #{key_index + 1}，"
             f"本次上限 {timeout:.0f} 秒"
+            + (f"；本輪 API {budget.requests}/{budget.max_requests} 次" if budget is not None else "")
         )
         try:
             async with AsyncOpenAI(
@@ -201,6 +264,8 @@ async def _call_openai_async(messages: list, stage: str, kwargs: dict, budget_se
                 timeout=httpx.Timeout(timeout, connect=min(10, timeout)),
             ) as client:
                 response = await _request_with_progress(client, messages, kwargs, stage, timeout)
+            if budget is not None:
+                budget.settle(reservation, response)
             _check_generation_deadline()
             _progress(f"{stage}：API 回應完成，累計 {time.monotonic() - started:.1f} 秒")
             return response
@@ -256,9 +321,12 @@ def _english_word_count(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", text or ""))
 
 
-def _validation_issues(item: dict, *, max_word_en_words: int | None = None) -> list[str]:
+def _validation_issues(item: dict, *, max_word_en_words: int | None = None,
+                       sentence_ipa_required: bool = True) -> list[str]:
     issues: list[str] = []
     required_keys = ["word_en", "word_ipa", "word_cn", "tips", "sentence_en", "sentence_ipa", "sentence_cn"]
+    if not sentence_ipa_required:
+        required_keys.remove("sentence_ipa")
     for key in required_keys:
         val = item.get(key)
         if not val or not isinstance(val, str) or not val.strip():
@@ -300,17 +368,13 @@ def _validation_issues(item: dict, *, max_word_en_words: int | None = None) -> l
     if word_en_clean == word_ipa_clean:
         issues.append("word_ipa contains English spelling")
         
-    sentence_en_clean = _normalize_key(item["sentence_en"])
-    sentence_ipa_clean = _normalize_key(item["sentence_ipa"])
-    if sentence_en_clean == sentence_ipa_clean:
+    if sentence_ipa_required and _normalize_key(item["sentence_en"]) == _normalize_key(item["sentence_ipa"]):
         issues.append("sentence_ipa contains English spelling")
-        
-    if len(item["word_ipa"].strip()) < 2 or len(item["sentence_ipa"].strip()) < 2:
-        issues.append("IPA is empty")
-    if not item["word_ipa"].strip().startswith("/") or not item["word_ipa"].strip().endswith("/"):
-        issues.append("word_ipa is not wrapped in slashes")
-    if not item["sentence_ipa"].strip().startswith("/") or not item["sentence_ipa"].strip().endswith("/"):
-        issues.append("sentence_ipa is not wrapped in slashes")
+    for field in ("word_ipa", "sentence_ipa") if sentence_ipa_required else ("word_ipa",):
+        if len(item[field].strip()) < 2:
+            issues.append("IPA is empty")
+        if not item[field].strip().startswith("/") or not item[field].strip().endswith("/"):
+            issues.append(f"{field} is not wrapped in slashes")
 
     return issues
 
@@ -778,7 +842,8 @@ def _ipa_token_bounds(english: str) -> tuple[int, int]:
     return _english_word_count(english), maximum
 
 
-def _locked_item_issue(item: dict, point, *, max_word_en_words: int | None = None) -> str | None:
+def _locked_item_issue(item: dict, point, *, max_word_en_words: int | None = None,
+                       sentence_ipa_required: bool = True) -> str | None:
     """Validate exact locked English before trusting dependent IPA fields."""
     normalized = _normalize_pain_point(point)
     if not normalized or not normalized.get("target_phrase"):
@@ -789,13 +854,16 @@ def _locked_item_issue(item: dict, point, *, max_word_en_words: int | None = Non
     ):
         if _spoken_line_key(item.get(field, "")) != _spoken_line_key(target):
             return f"{field} 未逐字使用鎖定英文"
-    issues = _validation_issues(item, max_word_en_words=max_word_en_words)
+    issues = _validation_issues(item, max_word_en_words=max_word_en_words,
+                                sentence_ipa_required=sentence_ipa_required)
     if issues:
         return ", ".join(issues)
     for english_field, ipa_field in (
         ("word_en", "word_ipa"),
         ("sentence_en", "sentence_ipa"),
     ):
+        if ipa_field == "sentence_ipa" and not sentence_ipa_required:
+            continue
         english_count, component_count = _ipa_token_bounds(item.get(english_field, ""))
         ipa_count = len(item.get(ipa_field, "").strip().strip("/").split())
         if not english_count <= ipa_count <= component_count:
@@ -3908,11 +3976,10 @@ def write_xlsx(items: list[dict], path: str, *, learning: bool = False, curricul
 
     headers = HEADERS
     if curriculum_plan is not None:
-        from curriculum import MAIN_WORD_LIMIT, validate_deck
-        from learning_editor import LEARNING_HEADERS
+        from curriculum import MAIN_WORD_LIMIT, VIDEO_HEADERS, validate_deck
         validate_deck(items, curriculum_plan, reviewed=True)
         learning = True
-        headers = LEARNING_HEADERS
+        headers = VIDEO_HEADERS
     elif learning:
         from learning_editor import LEARNING_HEADERS, validate_pair
         headers = LEARNING_HEADERS
@@ -3930,7 +3997,8 @@ def write_xlsx(items: list[dict], path: str, *, learning: bool = False, curricul
         expected_id = f"{idx + 1:02d}"
         if str(item.get("id", "")).strip() != expected_id:
             deck_issues.append(f"row {idx + 1}: id 應為 {expected_id}")
-        for issue in _validation_issues(item, max_word_en_words=MAIN_WORD_LIMIT if curriculum_plan is not None else None):
+        for issue in _validation_issues(item, max_word_en_words=MAIN_WORD_LIMIT if curriculum_plan is not None else None,
+                                       sentence_ipa_required=curriculum_plan is None):
             if learning and issue.startswith("tips has "):
                 continue
             deck_issues.append(f"{expected_id}: {issue}")
@@ -3969,13 +4037,15 @@ def write_xlsx(items: list[dict], path: str, *, learning: bool = False, curricul
         "G": 48,
         "H": 34,
     }
-    if learning:
+    if curriculum_plan is not None:
+        column_widths = dict(zip("ABCDEFG", (6, 34, 38, 24, 30, 44, 34)))
+    elif learning:
         column_widths = dict(zip("ABCDEFGHIJKL", (6, 24, 9, 9, 34, 38, 24, 30, 52, 44, 48, 34)))
     for column, width in column_widths.items():
         ws.column_dimensions[column].width = width
 
-    last_column = "L" if learning else "H"
-    ws.freeze_panes = "E2" if learning else "A2"
+    last_column = "G" if curriculum_plan is not None else "L" if learning else "H"
+    ws.freeze_panes = "B2" if curriculum_plan is not None else "E2" if learning else "A2"
     ws.auto_filter.ref = f"A1:{last_column}{ws.max_row}"
     ws.row_dimensions[1].height = 24
     for row_idx in range(2, ws.max_row + 1):
@@ -4011,7 +4081,8 @@ def write_xlsx(items: list[dict], path: str, *, learning: bool = False, curricul
 def main(argv: list[str] | None = None):
     token = _generation_deadline.set(None)
     try:
-        return _main(argv)
+        with api_budget_scope():
+            return _main(argv)
     finally:
         _generation_deadline.reset(token)
 

@@ -1,13 +1,15 @@
 import json
+import asyncio
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, ExitStack
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import main
+from artifact_paths import VIDEO_HEADERS, cached_artifact, preserve_legacy_cache
 
 
 def _write_json(path: Path, word: str) -> None:
@@ -18,6 +20,24 @@ def _write_json(path: Path, word: str) -> None:
 
 
 class LocalCardPathTests(unittest.TestCase):
+    def test_checkpoints_and_snapshots_are_not_listed_as_decks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "output"
+            output_dir.mkdir()
+            _write_json(output_dir / "deck.json", "real card")
+            for name in ("data.json", "deck.plan.json", "deck.xlsx.curriculum.json",
+                         "deck.xlsx.pairs.json", "deck.xlsx.planning.json", "review_deck.xlsx"):
+                (output_dir / name).touch()
+            stream = StringIO()
+            with patch.object(main, "OUTPUT_DIR", str(output_dir)), \
+                    patch.object(main, "CARDS_DIR", str(Path(directory) / "cards")), \
+                    redirect_stdout(stream), self.assertRaises(FileNotFoundError):
+                main.load_local_cards("missing")
+            self.assertIn("deck.json", stream.getvalue())
+            self.assertNotIn("data.json", stream.getvalue())
+            self.assertNotIn("planning.json", stream.getvalue())
+            self.assertNotIn("review_deck.xlsx", stream.getvalue())
+
     def test_output_deck_takes_priority_over_legacy_cards_deck(self):
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory) / "output"
@@ -193,6 +213,87 @@ class YouTubeDescriptionTests(unittest.TestCase):
             main.write_youtube_description("測試", [], [], str(output_path))
             description = output_path.read_text(encoding="utf-8")
         self.assertEqual(description.count("00:00 "), 4)
+
+
+class VideoContractTests(unittest.TestCase):
+    def card(self):
+        return dict(zip(VIDEO_HEADERS, ("01", "Can you help me?", "/kæn ju hɛlp mi/", "你能幫我嗎？",
+                                      "當需要協助時，直接開口。", "Can you help me with this?", "你能幫我處理這個嗎？")))
+
+    def test_review_excel_exports_only_video_fields_in_cache(self):
+        card = self.card()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(main, "BASE_DIR", directory), \
+                patch.object(main, "OUTPUT_DIR", str(Path(directory) / "output")):
+            path = main.export_review_excel([dict(card, sentence_ipa="unused", Core_Vocab="unused")], "test")
+            self.assertTrue(Path(path).is_relative_to(Path(directory) / "temp" / "cache" / "reviews"))
+            self.assertEqual(main.import_review_excel(path), [card])
+            self.assertEqual(list(Path(directory, "output").iterdir()), [])
+
+    def test_cache_identity_uses_full_path_and_legacy_copy_does_not_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "one" / "same.xlsx.curriculum.json"
+            other = Path(directory) / "two" / source.name
+            cached = cached_artifact(source, directory, "curriculum")
+            self.assertNotEqual(cached, cached_artifact(other, directory, "curriculum"))
+            source.parent.mkdir()
+            source.write_text("original")
+            preserve_legacy_cache(source, cached)
+            self.assertEqual(source.read_text(), "original")
+            self.assertEqual(cached.read_text(), "original")
+            cached.write_text("new progress")
+            preserve_legacy_cache(source, cached)
+            self.assertEqual(cached.read_text(), "new progress")
+
+    def test_seven_fields_render_both_main_and_example_images(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(main, "_create_base_image", side_effect=lambda _: Image.new("RGB", (1920, 1080), "black")):
+            for renderer in (main.create_word_card_image, main.create_sentence_card_image):
+                path = Path(directory) / (renderer.__name__ + ".png")
+                renderer(self.card(), str(path), [])
+                with Image.open(path) as rendered:
+                    self.assertEqual(rendered.size, (1920, 1080))
+                    self.assertIsNotNone(rendered.getbbox())
+
+    def test_video_workflow_keeps_timing_with_subtitles_off_and_on(self):
+        for subtitles in (False, True):
+            with self.subTest(subtitles=subtitles), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                root = Path(directory)
+                output = root / "output"
+                output.mkdir()
+                stack.enter_context(redirect_stdout(StringIO()))
+                for name, value in (("TEMP_DIR", directory), ("OUTPUT_DIR", str(output)),
+                                    ("BASE_DIR", directory), ("DATA_FILE", str(root / "snapshot.json")),
+                                    ("INTRO_VIDEO", str(root / "no-intro.mp4")),
+                                    ("BREAK_VIDEO", str(root / "no-break.mp4")),
+                                    ("OUTRO_VIDEO", str(root / "no-outro.mp4")), ("PEXELS_KEY", "")):
+                    stack.enter_context(patch.object(main, name, value))
+                stack.enter_context(patch("builtins.input", side_effect=["Test", "", "2", "", "", ""]))
+                stack.enter_context(patch.object(main, "route_input", return_value=("", "normal")))
+                stack.enter_context(patch.object(main, "_flush_stdin"))
+                stack.enter_context(patch.object(main, "check_assets", return_value=True))
+                stack.enter_context(patch.object(main, "load_local_cards", return_value=[self.card()]))
+
+                async def group(data, group_idx, images, cumulative, timing, chapters, **kwargs):
+                    timing.append((cumulative, cumulative + 10, "English", "中文"))
+                    chapters.append((cumulative, "Test"))
+                    return [str(root / "chunk.mp4")], cumulative + 10
+
+                stack.enter_context(patch.object(main, "process_group", side_effect=group))
+                def ffmpeg(*args, **kwargs):
+                    (root / "merged_no_bgm.mp4").write_bytes(b"offline simulated video")
+                    return Mock(returncode=0)
+                stack.enter_context(patch.object(main.subprocess, "run", side_effect=ffmpeg))
+                srt = stack.enter_context(patch.object(main, "write_srt"))
+                youtube = stack.enter_context(patch.object(main, "write_youtube_description"))
+                asyncio.run(main.main(subtitles=True) if subtitles else main.main())
+                self.assertEqual(srt.call_count, int(subtitles))
+                youtube.assert_called_once()
+                self.assertEqual(len(youtube.call_args.args[2]), 2)
+                self.assertTrue((output / "final_test.mp4").exists())
+                self.assertFalse((output / "data.json").exists())
+                self.assertEqual(len(list(output.iterdir())), 1)
 
 
 if __name__ == "__main__":

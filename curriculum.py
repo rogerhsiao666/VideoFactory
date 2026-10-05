@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cards
+from artifact_paths import VIDEO_HEADERS, cached_artifact, preserve_legacy_cache
 from american_pronunciation import dictionary_ipa
 from nltk.stem.snowball import EnglishStemmer
 from opencc import OpenCC
@@ -25,10 +26,10 @@ from learning_editor import LEARNING_HEADERS, LEVELS, TONES, MAX_LEARNING_TIPS_C
 VERSION = 1
 BATCH_SIZE = 8
 MAIN_WORD_LIMIT = 12
-SEMANTIC_REVIEW_VERSION = 11
-MAX_ATTEMPTS = 3
+SEMANTIC_REVIEW_VERSION = 12
 PLANNING_CHECKPOINT_VERSION = 1
 PAIR_BATCH_SIZE = 32
+STALLED_RETRY_LIMIT = cards._positive_integer("CARD_STALLED_RETRY_LIMIT", 4)
 _pair_review_store: ContextVar[tuple[Path, dict] | None] = ContextVar("pair_review_store", default=None)
 _unavailable_models: ContextVar[set[str] | None] = ContextVar("curriculum_unavailable_models", default=None)
 AUTHOR_MODEL = os.getenv("OPENAI_CURRICULUM_AUTHOR_MODEL", "gpt-5-nano")
@@ -94,7 +95,7 @@ def unusable_task_rejections(plan: dict) -> dict[str, str]:
 class BatchGenerationError(cards.CheckpointGenerationError):
     def __init__(self, items: list[dict], feedback: str, repairs: dict | None = None,
                  anchors: dict | None = None):
-        super().__init__("教材生成三次未通過本地校驗，已保留通過的卡片與修正回饋")
+        super().__init__("教材修正反覆重交未通過內容，已保留通過的卡片與修正回饋")
         self.items = items
         self.feedback = feedback
         self.repairs = repairs or {}
@@ -107,9 +108,50 @@ class FieldValidationError(ValueError):
         self.fields = fields
 
 
+class PlanningTaskError(ValueError):
+    def __init__(self, message: str, rejected: dict[str, str]):
+        super().__init__(message)
+        self.rejected = rejected
+
+
+class RepeatedFailureGuard:
+    def __init__(self):
+        self.seen = set()
+        self.repeated = 0
+
+    def reject(self, proposal, reason: str) -> None:
+        def content(value):
+            if isinstance(value, dict):
+                return {key: content(item) for key, item in value.items()
+                        if key not in {"reason", "progression", "core", "purpose"}}
+            if isinstance(value, list):
+                return [content(item) for item in value]
+            return value
+
+        signature = fingerprint_for({"proposal": content(proposal)}, [])
+        self.repeated = self.repeated + 1 if signature in self.seen else 0
+        self.seen.add(signature)
+        if self.repeated >= STALLED_RETRY_LIMIT:
+            raise cards.CheckpointGenerationError(
+                f"修正連續 {self.repeated} 次重交已退回內容，沒有進展，已停止以避免浪費 API 費用。"
+                f"最新原因：{reason}。進度已保留，相同輸入重跑可接續，不需 --force。"
+            )
+
+
+def surplus_task_ids(jobs: list[dict]) -> set[str]:
+    retained_tiers = set()
+    surplus = set()
+    for job in jobs:
+        if job["tier"] in retained_tiers:
+            surplus.add(job["id"])
+        else:
+            retained_tiers.add(job["tier"])
+    return surplus
+
+
 def repair_pronunciation(item: dict) -> dict:
     corrected = dict(item)
-    for field, english_field in (("word_ipa", "word_en"), ("sentence_ipa", "sentence_en")):
+    for field, english_field in (("word_ipa", "word_en"),):
         english, previous = item.get(english_field), item.get(field, "")
         if not isinstance(english, str) or not isinstance(previous, str):
             continue
@@ -133,6 +175,10 @@ def request_json(prompt: str, stage: str, model: str, *, job_ids: list[str] | No
               {"role": "user", "content": prompt + "\nReturn valid JSON only."}],
               "model": model, "response_format": {"type": "json_object"}}
     kwargs["max_completion_tokens" if model.startswith("gpt-5") else "max_tokens"] = 10000
+    if job_ids and stage in ("替換重複教材目的", "教材策劃獨立審查", "教材同義逐對複核", "教材同義複核確認"):
+        per_item = 500 if stage == "教材同義複核確認" else 250
+        kwargs["max_completion_tokens" if model.startswith("gpt-5") else "max_tokens"] = min(
+            10000, max(1500, len(job_ids) * per_item))
     if repairs and job_ids and all(identifier in repairs for identifier in job_ids):
         kwargs["max_completion_tokens" if model.startswith("gpt-5") else "max_tokens"] = max(
             500, sum(len(repairs[identifier]["fields"]) for identifier in job_ids) * 250)
@@ -176,14 +222,12 @@ def request_json(prompt: str, stage: str, model: str, *, job_ids: list[str] | No
                 "required": ["lines"], "additionalProperties": False}}}
     elif stage.startswith("教材生成 "):
         fields = {name: {"type": "string"} for name in (
-            "id", "word_en", "word_ipa", "word_cn", "tips", "sentence_en", "sentence_ipa", "sentence_cn", "progression")}
-        fields["Tone"] = {"type": "string", "enum": list(TONES)}
+            "id", "word_en", "word_ipa", "word_cn", "tips", "sentence_en", "sentence_cn", "progression")}
         descriptions = {
             "word_en": f"The MAIN complete spoken English sentence (maximum {MAIN_WORD_LIMIT} words), NEVER a vocabulary word or fragment. It must fulfill the assigned task at the assigned difficulty.",
             "word_ipa": "Full General American IPA for EVERY word in word_en, enclosed in slashes. NEVER use British ɒ or əʊ; choose the actual American vowel for each word.",
             "word_cn": "Natural Traditional Chinese translation of the complete word_en sentence.",
             "sentence_en": "A complete spoken paraphrase by the SAME speaker with the SAME intent, role, tone and difficulty (maximum 14 words). NEVER the listener's reply to word_en.",
-            "sentence_ipa": "Full General American IPA for EVERY word in sentence_en, enclosed in slashes. NEVER use British ɒ or əʊ; choose the actual American vowel for each word.",
             "sentence_cn": "Natural Traditional Chinese translation of sentence_en.",
             "tips": f"ONE concise Traditional Chinese situational cue and practical action: 當…時，…. Maximum {MAX_LEARNING_TIPS_CHARS} characters. No tone prefix, grammar explanation, translation repetition or generic boilerplate.",
         }
@@ -193,14 +237,7 @@ def request_json(prompt: str, stage: str, model: str, *, job_ids: list[str] | No
         fields["progression"]["description"] = (
             "For advanced slots explain the actual English idiom, vocabulary or grammar used, "
             "e.g. '使用片語 leave out 表示省略配料'. Never return a tier label. For basic slots return an empty string.")
-        fields["vocab"] = {"type": "array", "minItems": 1, "maxItems": 2, "items": {
-            "type": "object", "properties": {"en": {"type": "string", "description":
-                "Select a useful word or phrase that actually occurs in word_en or sentence_en. Do not invent a topic label."},
-                "cn": {"type": "string"}},
-            "required": ["en", "cn"], "additionalProperties": False}}
-        vocab_schema = fields.pop("vocab")
         fields.pop("id")
-        fields["vocab"] = {"$ref": "#/$defs/vocab"}
         keyed_items = {}
         for identifier in job_ids:
             item_fields = dict(fields)
@@ -209,15 +246,7 @@ def request_json(prompt: str, stage: str, model: str, *, job_ids: list[str] | No
                 item_fields = {name: fields[name] for name in repairs[identifier]["fields"]}
                 source = repairs[identifier]["item"]
             if source:
-                if "vocab" in item_fields:
-                    terms = set()
-                    for field in ("word_en", "sentence_en"):
-                        words = cards._similarity_text(source.get(field, "")).split()
-                        terms.update(" ".join(words[start:start + size]) for size in range(1, 5)
-                                     for start in range(len(words) - size + 1))
-                    item_fields["vocab"] = copy.deepcopy(vocab_schema)
-                    item_fields["vocab"]["items"]["properties"]["en"]["enum"] = sorted(terms)
-                for field, english_field in (("word_ipa", "word_en"), ("sentence_ipa", "sentence_en")):
+                for field, english_field in (("word_ipa", "word_en"),):
                     if field in item_fields and source.get(english_field):
                         known = dictionary_ipa(source[english_field], source.get(field, ""))
                         item_fields[field] = dict(fields[field], enum=[known]) if known else dict(
@@ -232,7 +261,7 @@ def request_json(prompt: str, stage: str, model: str, *, job_ids: list[str] | No
                                        "required": list(item_fields), "additionalProperties": False}
         kwargs["response_format"] = {"type": "json_schema", "json_schema": {
             "name": "curriculum_cards", "strict": True, "schema": {
-                "type": "object", "$defs": {"vocab": vocab_schema},
+                "type": "object",
                 "properties": {"items": {"type": "object", "properties": keyed_items,
                     "required": list(keyed_items), "additionalProperties": False}},
                 "required": ["items"], "additionalProperties": False}}}
@@ -309,7 +338,7 @@ def request_json(prompt: str, stage: str, model: str, *, job_ids: list[str] | No
                     "maxItems": len(job_ids), "items": {"type": "object", "properties": fields,
                         "required": list(fields), "additionalProperties": False}}},
                 "required": ["checks"], "additionalProperties": False}}}
-    elif stage in ("教材策劃獨立審查", "教材全欄位獨立審查", "教材完整語意分組"):
+    elif stage in ("教材策劃獨立審查", "教材全欄位獨立審查", "教材完整語意分組", "教材綜合審查"):
         identifier = {"type": "string", "enum": job_ids} if job_ids else {"type": "string"}
         rejection = {"type": "array", "items": {"type": "object", "properties": {
             "id": identifier, "reason": {"type": "string"}},
@@ -333,6 +362,11 @@ def request_json(prompt: str, stage: str, model: str, *, job_ids: list[str] | No
                 properties["assignments"].update(minItems=len(job_ids), maxItems=len(job_ids))
         if stage != "教材策劃獨立審查":
             properties["reject"] = rejection
+        if stage == "教材綜合審查":
+            group_fields = {"ids": {"type": "array", "minItems": 2, "items": identifier},
+                            "purpose": {"type": "string"}}
+            properties["groups"] = {"type": "array", "items": {"type": "object",
+                "properties": group_fields, "required": list(group_fields), "additionalProperties": False}}
         kwargs["response_format"] = {"type": "json_schema", "json_schema": {
             "name": "curriculum_review", "strict": True, "schema": {
                 "type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}}}
@@ -340,7 +374,7 @@ def request_json(prompt: str, stage: str, model: str, *, job_ids: list[str] | No
         array = kwargs["response_format"]["json_schema"]["schema"]["properties"]["jobs"]
         array.update(minItems=len(job_ids), maxItems=len(job_ids))
     budget = min(300, max(cards.API_CALL_TIMEOUT, len(job_ids or []) * 5)) if stage in (
-        "教材完整語意分組", "教材跨標籤同義複核") else None
+        "教材完整語意分組", "教材跨標籤同義複核", "教材綜合審查") else None
     try:
         response = cards._call_openai(stage=stage, budget_seconds=budget, **kwargs)
     except cards.APIError as exc:
@@ -435,7 +469,8 @@ def validate_plan(plan: dict, topic: str, count: int, *, semantic: bool = True) 
         cores[cards._similarity_text(job["core"])].append(job)
     for core, group in cores.items() if semantic else ():
         if len(group) > 2 or (len(group) == 2 and {job["tier"] for job in group} != {"basic", "advanced"}):
-            raise ValueError(f"{core}: 編號 {','.join(job['id'] for job in group)} 同意思最多一基礎、一進階；其餘改成新資訊或行動")
+            reason = f"{core}: 編號 {','.join(job['id'] for job in group)} 同意思最多一基礎、一進階；其餘改成新資訊或行動"
+            raise PlanningTaskError(reason, {identifier: reason for identifier in surplus_task_ids(group)})
 
 
 def parse_rejections(payload: dict, ids: set[str]) -> dict[str, str]:
@@ -453,24 +488,28 @@ def parse_rejections(payload: dict, ids: set[str]) -> dict[str, str]:
     return result
 
 
+@cards.api_budget_scope()
 def plan_curriculum(topic: str, count: int, references: list[dict], *,
                     checkpoint: Path | None = None, resume: bool = False, restart: bool = False) -> dict:
     basic_count(count)
-    fingerprint = fingerprint_for({"topic": topic, "count": count,
+    identity = {"topic": topic, "count": count,
         "version": VERSION, "review_version": SEMANTIC_REVIEW_VERSION,
         "checkpoint_version": PLANNING_CHECKPOINT_VERSION,
         "models": [PLAN_MODEL, REPAIR_MODEL, REVIEW_MODEL],
         "policies": [cards.SEMANTIC_DUPLICATE_POLICY, PURPOSE_POLICY, DIFFICULTY_POLICY,
-                     SPOKEN_TASK_POLICY]}, references)
+                     SPOKEN_TASK_POLICY]}
+    fingerprint = fingerprint_for(identity, references)
+    compatible_fingerprints = {fingerprint, fingerprint_for(dict(identity, review_version=11), references)}
     state = {"version": PLANNING_CHECKPOINT_VERSION, "fingerprint": fingerprint,
              "attempt": 0, "feedback": ""}
     if checkpoint and checkpoint.exists() and not restart:
         saved = json.loads(checkpoint.read_text(encoding="utf-8"))
         if not isinstance(saved, dict):
             raise ValueError("策劃檢查點不是有效物件，請以 --force 備份後重建")
-        if (saved.get("version"), saved.get("fingerprint")) == (PLANNING_CHECKPOINT_VERSION, fingerprint):
+        if saved.get("version") == PLANNING_CHECKPOINT_VERSION and saved.get("fingerprint") in compatible_fingerprints:
             state = saved
-            if type(state.get("attempt")) is not int or not 0 <= state["attempt"] <= MAX_ATTEMPTS:
+            state["fingerprint"] = fingerprint
+            if type(state.get("attempt")) is not int or state["attempt"] < 0:
                 raise ValueError("策劃檢查點重試次數無效")
             if not isinstance(state.get("feedback"), str):
                 raise ValueError("策劃檢查點缺少有效的修正回饋")
@@ -483,7 +522,7 @@ def plan_curriculum(topic: str, count: int, references: list[dict], *,
                         + json.dumps(unusable, ensure_ascii=False))
                 cards._progress("已載入通過審查的策劃檢查點，不重複請求")
                 return state["complete_plan"]
-            cards._progress(f"接續策劃檢查點：第 {min(state['attempt'] + 1, MAX_ATTEMPTS)}/{MAX_ATTEMPTS} 輪")
+            cards._progress(f"接續策劃檢查點：第 {state['attempt'] + 1} 輪，不再因三次退回鎖住進度")
         elif resume:
             raise ValueError("策劃檢查點的主題描述、句數、模型或參考牌組已變更")
         else:
@@ -507,12 +546,28 @@ def plan_curriculum(topic: str, count: int, references: list[dict], *,
 只輸出 {{"scenarios":["子情境名稱", "..."]}}，scenarios 是剛好 {scenario_count} 個名稱的字串陣列。
 """
     feedback = state["feedback"]
-    for attempt in range(state["attempt"], MAX_ATTEMPTS):
+    failures = RepeatedFailureGuard()
+    while True:
+        attempt = state["attempt"]
         cards._check_generation_deadline()
-        cards._progress(f"教材策劃：第 {attempt + 1}/{MAX_ATTEMPTS} 輪，目標 {count} 句")
+        cards._progress(f"教材策劃：第 {attempt + 1} 輪，目標 {count} 句；受 API 與時間預算限制")
         raw_jobs = None
+        plan = None
+        jobs_validated = False
         try:
             model = REPAIR_MODEL if attempt else PLAN_MODEL
+            if state.get("pending_task_repairs"):
+                saved_plan = {"version": VERSION, "topic": topic, "count": count,
+                              "scenarios": state["scenarios"], "jobs": state["jobs"]}
+                rejected = state["pending_task_repairs"]
+                cards._progress(f"策劃局部修正：保留 {count - len(rejected)}/{count} 項，只替換 {','.join(sorted(rejected))}")
+                updated = repair_duplicate_jobs(saved_plan, set(rejected), rejected, references, planning=True)
+                state["jobs"] = updated
+                if state.get("audit"):
+                    state["audit"]["assignments"] = [entry for entry in state["audit"]["assignments"]
+                                                     if entry["id"] not in rejected]
+                state.pop("pending_task_repairs")
+                persist()
             scenarios = state.get("scenarios")
             if scenarios is None:
                 scenarios = request_json(prompt + feedback, "主題情境策劃", model).get("scenarios")
@@ -561,14 +616,18 @@ Learner-only means the learner's spoken lines, including truthful replies to sta
             plan = {"version": VERSION, "topic": topic, "count": count,
                     "scenarios": scenarios, "jobs": [dict(by_id[slot["id"]], **slot) for slot in slots]}
             validate_plan(plan, topic, count, semantic=False)
+            jobs_validated = True
             unusable = unusable_task_rejections(plan)
             if unusable:
-                raise ValueError(json.dumps(unusable, ensure_ascii=False))
+                raise PlanningTaskError(json.dumps(unusable, ensure_ascii=False), unusable)
             state["jobs"] = raw_jobs
             persist()
             audit = state.get("audit")
-            if audit is None:
-                audit = request_json(
+            cached_assignments = audit.get("assignments", []) if audit else []
+            cached_ids = {entry["id"] for entry in cached_assignments}
+            pending_jobs = [job for job in plan["jobs"] if job["id"] not in cached_ids]
+            if pending_jobs:
+                new_audit = request_json(
                     f"獨立審核此 ESL 策劃是否符合精確主題：{topic}\n"
                     + cards.SEMANTIC_DUPLICATE_POLICY + PURPOSE_POLICY + SPOKEN_TASK_POLICY + reference_note
                     + "\n核對情境是否真實、tasks 是否偏題、跨 core 是否是假同義拆組。"
@@ -584,28 +643,40 @@ Learner-only means the learner's spoken lines, including truthful replies to sta
                     "in_scope=false 僅限明顯違反 brief，不可因同義或難度理由設成 false。"
                     "只輸出 {\"assignments\":[{\"id\":\"01\",\"purpose\":\"實際目的\","
                     "\"in_scope\":true,\"reason\":\"\"}]}\n"
-                    + json.dumps(plan, ensure_ascii=False), "教材策劃獨立審查", REVIEW_MODEL,
-                    job_ids=[slot["id"] for slot in slots])
+                    + json.dumps(dict(plan, jobs=pending_jobs), ensure_ascii=False)
+                    + "\n已審查且不可更動的任務：" + json.dumps(cached_assignments, ensure_ascii=False),
+                    "教材策劃獨立審查", REVIEW_MODEL,
+                    job_ids=[job["id"] for job in pending_jobs])
+                additions = new_audit.get("assignments")
+                if (not isinstance(additions, list) or len(additions) != len(pending_jobs)
+                        or any(not isinstance(entry, dict) for entry in additions)
+                        or {entry.get("id") for entry in additions} != {job["id"] for job in pending_jobs}):
+                    raise ValueError("策劃独立分組有重複、缺漏或不明編號")
+                audit = {"assignments": cached_assignments + additions}
             assignments = audit.get("assignments")
             if not isinstance(assignments, list) or len(assignments) != count:
                 raise ValueError("策劃独立分組未完整列齊")
             by_id = {entry.get("id"): entry for entry in assignments if isinstance(entry, dict)}
             if len(by_id) != count or set(by_id) != {slot["id"] for slot in slots}:
                 raise ValueError("策劃独立分組有重複、缺漏或不明編號")
+            out_of_scope = {}
             for job in plan["jobs"]:
                 assignment = by_id[job["id"]]
                 if assignment.get("in_scope") is not True:
-                    raise ValueError(str(assignment.get("reason", "任務未確認在主題範圍內")))
+                    reason = str(assignment.get("reason", "任務未確認在主題範圍內"))
+                    out_of_scope[job["id"]] = reason
                 purpose = assignment.get("purpose")
                 if not isinstance(purpose, str) or not purpose.strip():
                     raise ValueError("策劃独立分組缺少實際目的")
                 job["core"] = purpose.strip()
             state["audit"] = audit
             persist()
+            if out_of_scope:
+                raise PlanningTaskError(json.dumps(out_of_scope, ensure_ascii=False), out_of_scope)
             prospective = [{"id": job["id"], "word_en": job["task"], "sentence_en": job["task"]}
                            for job in plan["jobs"]]
             grouped = {"assignments": [{"id": job["id"], "purpose": job["core"]} for job in plan["jobs"]]}
-            verify_semantic_pairs(plan, prospective, grouped, {"groups": []}, fail_fast=True)
+            verify_semantic_pairs(plan, prospective, grouped, {"groups": []}, fail_fast=True, targeted=True)
             verified_cores = {entry["id"]: entry["purpose"] for entry in grouped["assignments"]}
             for job in plan["jobs"]:
                 job["core"] = verified_cores[job["id"]]
@@ -616,16 +687,18 @@ Learner-only means the learner's spoken lines, including truthful replies to sta
         except (ValueError, TypeError, KeyError) as exc:
             feedback = (f"\n前次不合格：{exc}，請重新輸出完整情境與策劃。"
                         + "\n以下是失敗策劃，必須修正而非照抄：" + json.dumps(raw_jobs, ensure_ascii=False))
-            cards._progress(f"教材策劃退回 {attempt + 1}/{MAX_ATTEMPTS}：{exc}")
+            cards._progress(f"教材策劃退回 {attempt + 1}：{exc}")
             state.update(attempt=attempt + 1, feedback=feedback)
-            for key in ("scenarios", "jobs", "audit"):
-                state.pop(key, None)
+            if isinstance(exc, PlanningTaskError) and plan is not None:
+                state["jobs"] = plan["jobs"]
+                state["pending_task_repairs"] = exc.rejected
+            else:
+                # Keep validated scenarios/tasks when only the audit response is malformed.
+                if not jobs_validated:
+                    state.pop("jobs", None)
+                    state.pop("audit", None)
             persist()
-    raise RuntimeError(
-        "教材策劃三次未通過，已停止自動重試且未輸出未審核教材。"
-        "請縮小句數或補充真正不同的溝通任務；僅改語氣或措辭不算新目的。"
-        "調整輸入後可重跑；相同輸入要重新策劃請用 --force。"
-    )
+            failures.reject(raw_jobs, str(exc))
 
 
 def vocab_occurs(term: str, spoken: str) -> bool:
@@ -710,19 +783,20 @@ def normalize_chinese(item: dict) -> dict:
 def validate_item(item: dict, job: dict) -> None:
     if not isinstance(item, dict) or any(item.get(key) != job[key] for key in ("id", "Scenario", "tier", "core")):
         raise ValueError("卡片不能改動指派編號、情境、難度或核心目的")
-    if item.get("Level") != LEVELS[job["tier"]] or item.get("Tone") not in TONES:
+    if item.get("Level", LEVELS[job["tier"]]) != LEVELS[job["tier"]]:
         raise ValueError("難度或語氣標籤無效")
-    issues = [issue for issue in cards._validation_issues(item, max_word_en_words=MAIN_WORD_LIMIT)
+    issues = [issue for issue in cards._validation_issues(item, max_word_en_words=MAIN_WORD_LIMIT,
+                                                        sentence_ipa_required=False)
               if not issue.startswith("tips has ")]
     if issues:
-        editable = ("word_ipa", "sentence_ipa", "word_cn", "sentence_cn", "tips")
+        editable = ("word_ipa", "word_cn", "sentence_cn", "tips")
         fields = [field for field in editable if any(
             issue.startswith((field + " ", "missing " + field)) for issue in issues)]
         if fields and all(any(issue.startswith((field + " ", "missing " + field))
                              for field in fields) for issue in issues):
             raise FieldValidationError("；".join(issues), fields)
         raise ValueError("；".join(issues))
-    if normalize_chinese(item) != item:
+    if any(normalize_chinese(item).get(field) != item.get(field) for field in ("word_cn", "sentence_cn", "tips")):
         raise ValueError("中文輸出必須統一使用繁體中文")
     for field in ("word_en", "sentence_en"):
         if re.search(r"\brecheck[ -]?in\b", item[field], re.I):
@@ -736,35 +810,19 @@ def validate_item(item: dict, job: dict) -> None:
     if listener_request and listener_reply:
         raise ValueError("sentence_en 不能是店員對 word_en 的回答；必須保持原說話者提出相同請求")
     field_issues, repair_fields = [], []
-    for field in ("word_ipa", "sentence_ipa"):
+    for field in ("word_ipa",):
         if "ɒ" in item[field]:
             field_issues.append(f"{field}：請用一般美式 IPA；ɒ 是此處的英式記法，依實詞改用 ɑ 或 ɔ")
             repair_fields.append(field)
     tip = item["tips"]
     if len(tip) > tip_length_limit(tip):
-        field_issues.append(f"Tips 請精簡至 {MAX_LEARNING_TIPS_CHARS} 字內，語氣只放在 Tone 欄位")
+        field_issues.append(f"Tips 請精簡至 {MAX_LEARNING_TIPS_CHARS} 字內，不加語氣前綴")
         repair_fields.append("tips")
     if not re.search(r"(?:當|對方|看到|聽到|發現|遇到|準備|詢問|回答|要求|需要|想要|確認|時)", tip):
         field_issues.append(f"{job['id']} Tips {tip!r} 缺少具體現場使用時機；請用『當…時，…』描述")
         repair_fields.append("tips")
-    vocab = item.get("vocab")
-    if not isinstance(vocab, list) or not 1 <= len(vocab) <= 2:
-        field_issues.append("必須提供 1 至 2 個核心單字或片語")
-        repair_fields.append("vocab")
-    spoken = [" " + cards._similarity_text(item[field]) + " " for field in ("word_en", "sentence_en")]
-    for entry in vocab if isinstance(vocab, list) else ():
-        if not isinstance(entry, dict) or not isinstance(entry.get("en"), str) or not isinstance(entry.get("cn"), str):
-            field_issues.append("核心單字缺少英文或繁體中文")
-            repair_fields.append("vocab")
-            continue
-        term = cards._similarity_text(entry["en"])
-        if not term or len(term.split()) > 4 or not any(vocab_occurs(term, line) for line in spoken) or not re.search(r"[\u4e00-\u9fff]", entry["cn"]):
-            field_issues.append(f"{job['id']} 核心詞 {entry['en']!r} 必須出現在英文中（允許字形變化與可分離片語），附中文且至多4詞")
-            repair_fields.append("vocab")
     if field_issues:
         raise FieldValidationError("；".join(field_issues), list(dict.fromkeys(repair_fields)))
-    if item.get("Core_Vocab") != "；".join(entry["en"] + " " + entry["cn"] for entry in vocab):
-        raise ValueError("Core_Vocab 與核心單字不一致")
     if job["tier"] == "advanced":
         validate_progression(item.get("progression"))
     else:
@@ -774,7 +832,8 @@ def validate_item(item: dict, job: dict) -> None:
                 raise ValueError(f"{field} 必須保持基礎難度，請用 Can I / Do I need / 簡單直述句，不用 " + ", ".join(features))
     point = {"target_phrase": item["word_en"], "target_sentence": item["sentence_en"],
              "task": item["sentence_en"], "category": job["Scenario"]}
-    ipa_issue = cards._locked_item_issue(dict(item, tips="現場提示"), point, max_word_en_words=MAIN_WORD_LIMIT)
+    ipa_issue = cards._locked_item_issue(dict(item, tips="現場提示"), point, max_word_en_words=MAIN_WORD_LIMIT,
+                                        sentence_ipa_required=False)
     if ipa_issue:
         for field in ("word_ipa", "sentence_ipa", "word_cn", "sentence_cn"):
             if ipa_issue.startswith(field):
@@ -782,7 +841,8 @@ def validate_item(item: dict, job: dict) -> None:
         raise ValueError(ipa_issue)
 
 
-def validate_deck(items: list[dict], plan: dict, *, reviewed: bool = False) -> None:
+def validate_deck(items: list[dict], plan: dict, *, reviewed: bool = False,
+                  review_version: int = SEMANTIC_REVIEW_VERSION) -> None:
     validate_plan(plan, plan["topic"], plan["count"])
     if len(items) != plan["count"]:
         raise ValueError("輸出句數與請求不一致")
@@ -797,7 +857,7 @@ def validate_deck(items: list[dict], plan: dict, *, reviewed: bool = False) -> N
         if reviewed:
             if not item.get("_semantic_group") or item.get("_semantic_level") != job["tier"]:
                 raise ValueError("独立語意審稿的難度或群組尚未通過")
-            if item.get("_semantic_review_version") != SEMANTIC_REVIEW_VERSION:
+            if item.get("_semantic_review_version") != review_version:
                 raise ValueError("卡片尚未通過現行逐對同義複核")
             semantic[item["_semantic_group"]].append(item)
     for group in semantic.values():
@@ -805,6 +865,7 @@ def validate_deck(items: list[dict], plan: dict, *, reviewed: bool = False) -> N
             raise ValueError("跨標籤同義句超額或缺乏難度差異")
 
 
+@cards.api_budget_scope()
 def generate_batch(plan: dict, jobs: list[dict], accepted: list[dict], feedback: str = "", *,
                    repairs: dict | None = None, anchors: dict | None = None, on_progress=None) -> list[dict]:
     repairs = copy.deepcopy(repairs or {})
@@ -870,7 +931,10 @@ def generate_batch(plan: dict, jobs: list[dict], accepted: list[dict], feedback:
             + "\nPrevious objective issues: " + json.dumps(draft_feedback, ensure_ascii=False))
         pending_drafts = list(advanced)
         lines = []
-        for attempt in range(MAX_ATTEMPTS):
+        draft_guard = RepeatedFailureGuard()
+        attempt = 0
+        while pending_drafts:
+            cards._check_generation_deadline()
             draft_prompt = (draft_base + "\nTasks: " + json.dumps([
                 {key: job[key] for key in ("id", "task", "role", "speaker", "Scenario")}
                 for job in pending_drafts], ensure_ascii=False)
@@ -923,7 +987,13 @@ def generate_batch(plan: dict, jobs: list[dict], accepted: list[dict], feedback:
                 cards._progress(f"進階骨架保留 {len(anchors)}/{len(advanced)} 句，重試：" + json.dumps(draft_failures, ensure_ascii=False))
             except (ValueError, TypeError, KeyError) as exc:
                 draft_failures = {job["id"]: str(exc) for job in pending_drafts}
-                cards._progress(f"進階骨架退回 {attempt + 1}/{MAX_ATTEMPTS}：{exc}")
+                cards._progress(f"進階骨架退回 {attempt + 1}：{exc}")
+            attempt += 1
+            try:
+                draft_guard.reject({"pending": [job["id"] for job in pending_drafts],
+                                    "lines": lines}, json.dumps(draft_failures, ensure_ascii=False))
+            except cards.CheckpointGenerationError:
+                break
     ready_jobs = [job for job in jobs if job["id"] not in completed
                   and (job["tier"] == "basic" or job["id"] in anchors)]
     draft_feedback = json.dumps({"stage": "advanced_draft", "issues": draft_failures}, ensure_ascii=False)
@@ -958,19 +1028,15 @@ basic 僅用國中程度的日常詞，最短直接說法；advanced 用自然�
 word_en 最多 {MAIN_WORD_LIMIT} 個單字，sentence_en 最多 14 個單字。例句補現場條件，不改意思或角色。
 不得捏造規定或保證食物過敏安全。保留 brief 的必教句、對象與禁止內容。
 美式 IPA 完整逐字對應，斜線包裹；中文用台灣繁體中文日常口語。
-Tone 按真實措辭選委婉/中立/強硬；短句和例句語氣一致，不把普通問句標成委婉。
+短句和例句都遵守 brief 要求的語氣，兩者一致；不另外產生語氣標籤。
 tips 只寫一句具體使用時機及一個現場動作，最多 {MAX_LEARNING_TIPS_CHARS} 字。
-不加語氣前綴，語氣只放在 Tone 欄位；不要重複句意或套用冗長的通用提醒。
+不加語氣前綴；不要重複句意或套用冗長的通用提醒。
 例如「當被問薪水時，停兩秒再反問。」
-vocab 提煉實際出現在英文中的 1-2 個核心單字或片語，每項 en/cn；不要整句。
-If a core vocabulary term is missing after simplifying the English, replace the vocab entry.
-NEVER add a harder word back into a basic sentence merely to match an old vocabulary entry.
-For a BASIC ingredients task, use 'What is in this product?' with vocab 'product', NOT 'ingredients'.
 advanced 的 progression 寫具體進階用法，不能只是加 please 或補理由；basic 填空字串。
 progression 範例："使用片語 on the side 表示醬料分開放"；絕不可填 "advanced"。
-保留指派 id。Scenario、tier、core、Level、Core_Vocab 由程式填入，不要輸出。
-每項欄位：id, Tone, word_en, word_ipa, word_cn, tips,
-sentence_en, sentence_ipa, sentence_cn, vocab, progression。
+保留指派 id。Scenario、tier、core 是內部策劃資料，不要輸出額外標籤。
+每項欄位：id, word_en, word_ipa, word_cn, tips, sentence_en, sentence_cn, progression。
+不產生 sentence_ipa、vocab 或任何額外標籤。
 sentence_en 不是對 word_en 的回答。两個欄位都由同一個人說；請求的例句仍須是請求。
 已保留卡片不可重出：{json.dumps(retained_lines, ensure_ascii=False)}
 前次退回回饋：{feedback}
@@ -981,21 +1047,23 @@ progression 使用其具體依據；兩句已在起稿階段自然改寫，且�
 """
     pending = list(ready_jobs)
     last_feedback = ""
-    for attempt in range(MAX_ATTEMPTS):
+    field_guard = RepeatedFailureGuard()
+    attempt = 0
+    while pending:
+        cards._check_generation_deadline()
+        payload = None
         try:
             model = REPAIR_MODEL if attempt or feedback else AUTHOR_MODEL
             batch_prompt = prompt + "\n本次只輸出以下尚未通過的任務：" + json.dumps(pending, ensure_ascii=False)
             if last_feedback:
                 batch_prompt += ("\nLATEST correction, overriding earlier failed drafts: " + last_feedback
-                    + "\nFix ONLY unresolved errors. Preserve the assigned tier. Change vocabulary entries to "
-                    "match simplified English, not the other way around. Never reintroduce an advanced word into BASIC.")
+                    + "\nFix ONLY unresolved errors. Preserve the assigned tier. Never reintroduce an advanced word into BASIC.")
             if repairs:
                 repair_prompt = ("FIELD-ONLY REPAIRS: For these IDs return ONLY the listed fields. "
                     "The saved English, translations, tone and all other fields are immutable. "
                     "Correct the actual American pronunciation word by word; never blindly replace every vowel. "
                     "Separate EACH spoken word with a space, including words across punctuation. "
-                    "For vocab choose a useful word/phrase FROM the saved English, not a label such as topic. "
-                    "Do not change the English to match vocabulary.\n" + json.dumps(repairs, ensure_ascii=False))
+                    "Do not change the saved English.\n" + json.dumps(repairs, ensure_ascii=False))
                 if all(job["id"] in repairs for job in pending):
                     batch_prompt = repair_prompt + "\nReturn JSON items keyed by ID, with only the requested fields."
                 else:
@@ -1027,14 +1095,12 @@ progression 使用其具體依據；兩句已在起稿階段自然改寫，且�
                         continue
                     item = dict(repair["item"], **item)
                 item.update({key: job[key] for key in ("id", "Scenario", "tier", "core")})
-                item["Level"] = LEVELS[job["tier"]]
+                for obsolete in ("sentence_ipa", "vocab", "Core_Vocab", "Level", "Tone"):
+                    item.pop(obsolete, None)
                 item = normalize_chinese(item)
                 item = repair_pronunciation(item)
-                if item.get("Tone") in TONES and isinstance(item.get("tips"), str):
+                if isinstance(item.get("tips"), str):
                     item["tips"] = strip_tip_tone(item["tips"])
-                if isinstance(item.get("vocab"), list):
-                    item["Core_Vocab"] = "；".join(entry.get("en", "") + " " + entry.get("cn", "")
-                                                       for entry in item["vocab"] if isinstance(entry, dict))
                 point = {"target_phrase": item.get("word_en", ""), "target_sentence": item.get("sentence_en", ""),
                          "task": item.get("sentence_en", ""), "category": job["Scenario"]}
                 item = cards._correct_known_locked_pronunciations(item, point)
@@ -1071,7 +1137,12 @@ progression 使用其具體依據；兩句已在起稿階段自然改寫，且�
             raise ValueError("；".join(issues))
         except (ValueError, TypeError, KeyError) as exc:
             last_feedback = str(exc)
-            cards._progress(f"教材本地校驗退回 {attempt + 1}/{MAX_ATTEMPTS}：{exc}")
+            attempt += 1
+            cards._progress(f"教材本地校驗退回 {attempt}：{exc}")
+            try:
+                field_guard.reject({"pending": [job["id"] for job in pending], "payload": payload}, str(exc))
+            except cards.CheckpointGenerationError:
+                break
     raise BatchGenerationError(list(completed.values()), last_feedback + ("\n" + draft_feedback if draft_failures else ""), repairs, anchors)
 
 
@@ -1159,15 +1230,21 @@ def confirm_equivalent_pairs(targets: list[dict], checks: dict) -> dict:
 
 
 def verify_semantic_pairs(plan: dict, items: list[dict], semantic: dict, equivalents: dict, *,
-                          fail_fast: bool = False) -> None:
+                          fail_fast: bool = False, targeted: bool = False) -> None:
     candidates = copy.deepcopy(semantic)
     merge_equivalent_groups(candidates, equivalents)
-    reconcile_semantic_groups(plan, candidates)
+    if not targeted:
+        reconcile_semantic_groups(plan, candidates)
     groups = defaultdict(list)
     for entry in candidates["assignments"]:
         groups[cards._similarity_text(entry["purpose"])].append(entry["id"])
-    pair_set = {tuple(sorted((left, right))) for identifiers in groups.values()
-                for index, left in enumerate(identifiers) for right in identifiers[index + 1:]}
+    if targeted:
+        # Audit proposes groups; confirm a spanning set plus adjacent links, not n*(n-1)/2.
+        pair_set = {tuple(sorted(pair)) for identifiers in groups.values() for pair in (
+            [(identifiers[0], other) for other in identifiers[1:]] + list(zip(identifiers, identifiers[1:])))}
+    else:
+        pair_set = {tuple(sorted((left, right))) for identifiers in groups.values()
+                    for index, left in enumerate(identifiers) for right in identifiers[index + 1:]}
     stopwords = {"i", "you", "we", "my", "your", "our", "me", "us", "this", "that", "the", "a", "an",
                  "can", "could", "may", "will", "would", "should", "must", "do", "does", "did", "am", "is",
                  "are", "was", "were", "be", "to", "need", "have", "it", "there", "possible", "please",
@@ -1178,7 +1255,7 @@ def verify_semantic_pairs(plan: dict, items: list[dict], semantic: dict, equival
             content = [token for token in cards._similarity_text(item[field]).split() if token not in stopwords]
             if content and content[0].isascii() and content[0].isalpha():
                 actions[VOCAB_STEMMER.stem(content[0])].add(item["id"])
-    for identifiers in actions.values():
+    for identifiers in actions.values() if not targeted else ():
         ordered = sorted(identifiers)
         pair_set.update((left, right) for index, left in enumerate(ordered) for right in ordered[index + 1:])
     pairs = sorted(pair_set)
@@ -1236,10 +1313,10 @@ def verify_semantic_pairs(plan: dict, items: list[dict], semantic: dict, equival
         if fail_fast:
             group = [identifier for identifier in by_id if root(identifier) == root(left)]
             if len(group) > 2 or (len(group) == 2 and tiers[group[0]] == tiers[group[1]]):
-                raise ValueError(
-                    f"已確認語意重複：編號 {','.join(group)} 同意思最多一基礎、一進階；"
-                    f"立即退回，不繼續審查其餘配對。{left}/{right} 複核理由：{check['reason']}"
-                )
+                reason = (f"已確認語意重複：編號 {','.join(group)} 同意思最多一基礎、一進階；"
+                          f"立即退回，不繼續審查其餘配對。{left}/{right} 複核理由：{check['reason']}")
+                group_jobs = [job for job in plan["jobs"] if job["id"] in group]
+                raise PlanningTaskError(reason, {identifier: reason for identifier in surplus_task_ids(group_jobs)})
 
     cards._progress(f"教材同義複核：{len(pairs)} 對候選，每批最多 {PAIR_BATCH_SIZE} 對；已確認同組的配對不重查")
     position = cached = skipped = requests = 0
@@ -1294,6 +1371,7 @@ def verify_semantic_pairs(plan: dict, items: list[dict], semantic: dict, equival
         entry["purpose"] = representative + ": " + names[representative]
 
 
+@cards.api_budget_scope()
 def confirm_difficulty(mismatches: list[dict], *, model: str | None = None) -> list[dict]:
     prompt = ("Independently classify the ACTUAL difficulty of EACH SINGLE English line_en. "
         "These lines have no main/example role and are NOT paired. IDs and order are arbitrary. "
@@ -1314,7 +1392,11 @@ def confirm_difficulty(mismatches: list[dict], *, model: str | None = None) -> l
     ids = {item["id"] for item in mismatches}
     completed = {}
     errors = {}
-    for attempt in range(MAX_ATTEMPTS):
+    guard = RepeatedFailureGuard()
+    attempt = 0
+    while True:
+        cards._check_generation_deadline()
+        response = None
         try:
             pending_ids = ids - set(completed)
             response = request_json(prompt + "\nReview ONLY these IDs: " + json.dumps(sorted(pending_ids)),
@@ -1340,10 +1422,15 @@ def confirm_difficulty(mismatches: list[dict], *, model: str | None = None) -> l
                 return [completed[item["id"]] for item in mismatches]
             raise ValueError(json.dumps({key: value for key, value in errors.items() if key not in completed}, ensure_ascii=False))
         except (ValueError, TypeError, KeyError) as exc:
-            cards._progress(f"難度複核格式退回 {attempt + 1}/{MAX_ATTEMPTS}：{exc}")
+            attempt += 1
+            cards._progress(f"難度複核格式退回 {attempt}：{exc}")
+            try:
+                guard.reject({"pending": sorted(ids - set(completed)), "response": response}, str(exc))
+            except cards.CheckpointGenerationError:
+                break
             prompt += f"\nCorrect this response error: {exc}"
     return [completed.get(item["id"], {"id": item["id"], "level": "basic", "_valid": False,
-            "progression": errors.get(item["id"], "難度複核三次未提供完整具體依據")}) for item in mismatches]
+            "progression": errors.get(item["id"], "難度複核重交未提供完整具體依據")}) for item in mismatches]
 
 
 def review_field_difficulty(items: list[dict]) -> dict[str, str]:
@@ -1459,7 +1546,8 @@ def review_deck(plan: dict, items: list[dict], references: list[dict]) -> dict[s
     audit = request_json(
         f"You are an independent ESL copy editor. Exact topic and brief: {plan['topic']}\n"
         "Check grammar, natural spoken English, Traditional Chinese translation, complete American IPA, "
-        "tone, actionable tips, vocabulary, and faithful completion of the assigned task and role. "
+        "brief-required tone, actionable tips, and faithful completion of the assigned task and role. "
+        "Only word_ipa requires IPA; sentence_ipa and vocabulary metadata are not needed. "
         "Reject ONLY objective errors, not stylistic preferences. Both English fields must fulfill the task. "
         "Both English fields must convey the SAME result; context may be added but the result cannot change. "
         "A double room (usually one double bed) and a twin room (two single beds) are not interchangeable. "
@@ -1474,17 +1562,26 @@ def review_deck(plan: dict, items: list[dict], references: list[dict]) -> dict[s
         "In an airline check-in task use check-in/status, not registration (a different process). "
         "The planning task/core may be Chinese; these are editor metadata, not English card fields. "
         "Never reject a card just because its planning metadata is Chinese. "
-        "Do NOT judge difficulty or semantic duplication: a separate independent review handles these. "
+        "Also assign each card its literal communication purpose and actual difficulty. "
+        "Compare ALL cards across scenario and purpose labels and propose ALL equivalent groups, "
+        "including valid basic/advanced pairs; group sizes are enforced by code after confirmation. "
+        "A shared topic, social motive, verb or tone is NOT equivalence. Only interchangeable concrete "
+        "requested actions/information outcomes count. Both English fields must support the assigned rating. "
         "Do not suggest adding products or please as a difficulty improvement. "
         "Do not invent allergy safety guarantees. Only the following explicitly required English phrases are locked "
         f"verbatim; if this list is empty, there are NO locked phrases: {cards._required_focus_phrases(plan['topic'])}. "
-        'Return {"reject":[{"id":"01","reason":"具體客觀錯誤及修正方向"}]}; empty reject means no objective errors.\n'
+        + DIFFICULTY_POLICY + PURPOSE_POLICY + cards._reference_prompt_note(references)
+        + '\nReturn {"assignments":[{"id":"01","purpose":"precise action/result","level":"basic",'
+        '"progression":"actual English evidence"}], "reject":[{"id":"01","reason":"objective error"}], '
+        '"groups":[{"ids":["01","02"],"purpose":"same concrete result"}]}. '
+        'List every ID once in assignments. Empty reject means no language/task/reference errors; '
+        'empty groups means every card has a different outcome. Do not draft alternatives.\n'
         + json.dumps({"jobs": [{key: job[key] for key in ("id", "Scenario", "task", "role", "speaker")} for job in plan["jobs"]],
-            "items": [{key: item[key] for key in LEARNING_HEADERS} for item in items]}, ensure_ascii=False),
-        "教材全欄位獨立審查", REVIEW_MODEL, job_ids=[item["id"] for item in items])
+            "items": [{key: item[key] for key in VIDEO_HEADERS} for item in items]}, ensure_ascii=False),
+        "教材綜合審查", REVIEW_MODEL, job_ids=[item["id"] for item in items])
     rejected = parse_rejections(audit, {item["id"] for item in items})
     if rejected:
-        targets = [{"job": job, "card": {key: item[key] for key in LEARNING_HEADERS}}
+        targets = [{"job": job, "card": {key: item[key] for key in VIDEO_HEADERS}}
                    for job, item in zip(plan["jobs"], items) if item["id"] in rejected]
         confirmation = request_json(
             f"Independently copy-edit these ESL cards. Exact brief: {plan['topic']}\n"
@@ -1532,29 +1629,7 @@ def review_deck(plan: dict, items: list[dict], references: list[dict]) -> dict[s
                 rejected[identifier] = check["reason"]
             else:
                 raise ValueError("語言複核缺少明確判定或客觀錯誤理由")
-    rejected.update(review_task_fidelity(plan, items))
-    compact = [{key: item[key] for key in ("id", "word_en", "sentence_en", "sentence_cn")} for item in items]
-    semantic = request_json(
-        f"Independently classify each ESL CARD's communication purpose and difficulty. Topic: {plan['topic']}\n"
-        "One card contains a main spoken line and an example of that SAME intent; these are NOT a basic/advanced pair. "
-        "Return exactly one assignment per ID, with a precise underlying action/information outcome as purpose. "
-        "Use an IDENTICAL purpose label for equal outcomes, regardless of wording, products, reasons or place. "
-        "For example, declaring souvenirs and declaring food both declare carried items; requesting a quote, "
-        "estimate or written cost details all obtain written pricing. Do not hide duplicates by changing labels. "
-        "Different questions/outcomes such as table availability, wait time and seat location stay distinct. "
-        "Classify the entire card basic or advanced from the ACTUAL ENGLISH, ignoring assigned levels. "
-        "The main line AND example must both meet the rating. A simple main line cannot be rescued by a harder example. "
-        "For advanced, progression must cite a real nontrivial phrase/word/grammar in the MAIN line. "
-        "Could instead of can, please/sorry, added products/reasons/location, and repeated common words are NOT advancement. "
-        "Simple comparatives such as less spicy and by the window are basic; tone down the spice and be seated "
-        "(passive voice) are genuinely advanced. State the actual level, even if the author might prefer another. "
-        + DIFFICULTY_POLICY + PURPOSE_POLICY + cards._reference_prompt_note(references)
-        + "\nReturn complete assignments plus reject. Only use reject for duplicates of a provided reference deck; "
-        "Keep progression concise: for advanced cite its actual feature; for basic briefly state why it is basic. "
-        "Do NOT draft alternative lines here; a targeted follow-up handles difficulty mismatches. "
-        "when there are no references, reject is empty. The program enforces group sizes and difficulty quotas.\n"
-        + json.dumps(compact, ensure_ascii=False), "教材完整語意分組", SEMANTIC_MODEL,
-        job_ids=[item["id"] for item in items])
+    semantic = copy.deepcopy(audit)
     if not isinstance(semantic.get("reject"), list):
         raise ValueError("語意審稿缺少 reject 陣列")
     sales = items if any(marker in plan["topic"].casefold() for marker in ("推銷", "敲詐", "upsell")) else None
@@ -1574,28 +1649,10 @@ def review_deck(plan: dict, items: list[dict], references: list[dict]) -> dict[s
             assigned[item["id"]]["progression"] = item["progression"]
     for identifier, reason in field_rejections.items():
         rejected[identifier] = rejected.get(identifier, "") + reason
-    equivalents = request_json(
-        "Independently find every group of cards with the SAME underlying communication outcome. "
-        "Compare the actual English, NOT scenario labels or purpose labels from another editor. "
-        "Different words such as ask/check/confirm/get details do NOT automatically mean different outcomes. "
-        "Changing the object, product, reason, or location alone does not create a new outcome. "
-        "For example 'Can I check the gate?' and 'Can I get gate information?' both obtain gate information. "
-        "'Take this out' and 'take out my laptop for screening' both ask about removing an item for screening. "
-        "Permission to bring this, medicine or liquids is the same carry-permission question unless the actual "
-        "line asks a substantively different policy detail such as a quantity limit. "
-        "Keep genuinely different outcomes separate: permission vs quantity limits, fees vs payment, "
-        "a gate number vs walking directions to that gate, wait time vs seat availability. "
-        "List ALL equivalent groups with at least two IDs, INCLUDING valid basic/advanced pairs. "
-        "Do not decide which cards to keep or judge difficulty; code applies those rules. "
-        "Return {\"groups\":[{\"ids\":[\"01\",\"02\"],\"purpose\":\"shared concrete outcome\"}]}; "
-        "empty groups ONLY if every card has a genuinely distinct outcome.\n"
-        + PURPOSE_POLICY + "\n" + json.dumps(compact, ensure_ascii=False),
-        "教材跨標籤同義複核", SEMANTIC_MODEL, job_ids=[item["id"] for item in items])
-    verify_semantic_pairs(plan, items, semantic, equivalents)
+    verify_semantic_pairs(plan, items, semantic, {"groups": audit.get("groups")}, targeted=True)
     grouped_rejections = cards._semantic_group_rejections(semantic, len(items), sales)
     for index, reason in grouped_rejections.items():
         rejected[items[index]["id"]] = reason
-    rejected.update(parse_rejections(semantic, {item["id"] for item in items}))
     assignments = {entry["id"]: entry for entry in semantic["assignments"]}
     for original in items:
         checked = assignments[original["id"]]
@@ -1640,7 +1697,9 @@ def backup_generation(paths: list[Path]) -> Path | None:
     return directory
 
 
-def repair_duplicate_jobs(plan: dict, duplicate_ids: set[str], rejected: dict, references: list[dict]) -> list[dict]:
+@cards.api_budget_scope()
+def repair_duplicate_jobs(plan: dict, duplicate_ids: set[str], rejected: dict, references: list[dict], *,
+                          planning: bool = False) -> list[dict]:
     retained = [job for job in plan["jobs"] if job["id"] not in duplicate_ids]
     withdrawn = [job for job in plan["jobs"] if job["id"] in duplicate_ids]
     prompt = (f"修正 ESL 教材策劃。精確主題：{plan['topic']}\n" + cards.SEMANTIC_DUPLICATE_POLICY
@@ -1659,7 +1718,11 @@ def repair_duplicate_jobs(plan: dict, duplicate_ids: set[str], rejected: dict, r
             "empty_slots_to_fill": [{key: job[key] for key in ("id", "Scenario", "tier", "role", "speaker")}
                                     for job in withdrawn],
             "reasons": rejected}, ensure_ascii=False))
-    for attempt in range(MAX_ATTEMPTS):
+    failures = RepeatedFailureGuard()
+    attempt = 0
+    while True:
+        cards._check_generation_deadline()
+        repair = None
         try:
             repair = request_json(prompt, "替換重複教材目的", REPAIR_MODEL,
                                   job_ids=sorted(duplicate_ids))
@@ -1675,18 +1738,19 @@ def repair_duplicate_jobs(plan: dict, duplicate_ids: set[str], rejected: dict, r
                 if any(incoming.get(key) != job[key] for key in ("id", "Scenario", "tier", "role", "speaker")):
                     raise ValueError("替換不能改動情境、難度或角色")
                 updated.append(incoming)
-            validate_plan(dict(plan, jobs=updated), plan["topic"], plan["count"])
+            validate_plan(dict(plan, jobs=updated), plan["topic"], plan["count"], semantic=not planning)
             unusable = unusable_task_rejections(dict(plan, jobs=updated))
             if any(identifier in duplicate_ids for identifier in unusable):
                 raise ValueError(json.dumps(unusable, ensure_ascii=False))
             validate_replacement_outcomes(plan, updated, duplicate_ids)
             return updated
         except (ValueError, TypeError, KeyError) as exc:
-            cards._progress(f"替換目的退回 {attempt + 1}/{MAX_ATTEMPTS}：{exc}")
+            attempt += 1
+            cards._progress(f"替換目的退回 {attempt}：{exc}")
+            failures.reject(repair, str(exc))
             prompt += f"\n上次提案未通過：{exc}；請用新的具體目的修正，不要重交錯誤提案。"
-            if "repair" in locals():
+            if repair is not None:
                 prompt += "\n已退回且禁止重交的提案：" + json.dumps(repair, ensure_ascii=False)
-    raise cards.CheckpointGenerationError("替換目的三次未通過，保留原策劃與檢查點")
 
 
 def validate_replacement_outcomes(plan: dict, updated: list[dict], replacement_ids: set[str]) -> None:
@@ -1720,6 +1784,7 @@ def validate_replacement_outcomes(plan: dict, updated: list[dict], replacement_i
         raise ValueError("；".join(errors))
 
 
+@cards.api_budget_scope()
 def generate_deck(plan: dict, checkpoint: Path, references: list[dict], resume: bool = False) -> dict:
     validate_plan(plan, plan["topic"], plan["count"])
     fingerprint = fingerprint_for(plan, references)
@@ -1780,7 +1845,10 @@ def generate_deck(plan: dict, checkpoint: Path, references: list[dict], resume: 
         state.pop("pending_review_rejections", None)
         state.pop("pending_review_rejections_version", None)
         save_json(checkpoint, state)
-    for attempt in range(MAX_ATTEMPTS):
+    review_guard = RepeatedFailureGuard()
+    attempt = 0
+    while True:
+        cards._check_generation_deadline()
         present = {item["id"] for item in state["items"]}
         missing = [job for job in plan["jobs"] if job["id"] not in present]
         repair_jobs = [job for job in missing if job["id"] in state.get("pending_field_repairs", {})]
@@ -1825,9 +1893,9 @@ def generate_deck(plan: dict, checkpoint: Path, references: list[dict], resume: 
         try:
             rejected = review_deck(plan, state["items"], references)
         except (ValueError, KeyError, TypeError) as exc:
-            cards._progress(f"獨立審稿格式退回 {attempt + 1}/{MAX_ATTEMPTS}：{exc}")
-            if attempt + 1 == MAX_ATTEMPTS:
-                raise cards.CheckpointGenerationError("獨立審稿未完整通過，拒絕輸出") from exc
+            attempt += 1
+            cards._progress(f"獨立審稿格式退回 {attempt}：{exc}")
+            review_guard.reject({"review_error": str(exc)}, str(exc))
             continue
         if not rejected:
             validate_deck(state["items"], plan, reviewed=True)
@@ -1843,8 +1911,8 @@ def generate_deck(plan: dict, checkpoint: Path, references: list[dict], resume: 
         state["pending_review_rejections_version"] = SEMANTIC_REVIEW_VERSION
         save_json(checkpoint, state)
         cards._progress("教材退回原因：" + feedback)
-        if attempt + 1 == MAX_ATTEMPTS:
-            raise cards.CheckpointGenerationError("教材審稿三次未通過，拒絕輸出：" + json.dumps(rejected, ensure_ascii=False))
+        attempt += 1
+        review_guard.reject(json.loads(feedback), json.dumps(rejected, ensure_ascii=False))
         duplicate_ids = {key for key, reason in rejected.items() if reason.startswith("語意重複：")}
         if duplicate_ids:
             plan["jobs"] = repair_duplicate_jobs(plan, duplicate_ids, rejected, references)
@@ -1854,14 +1922,17 @@ def generate_deck(plan: dict, checkpoint: Path, references: list[dict], resume: 
         state.pop("pending_review_rejections_version", None)
         save_json(checkpoint, state)
         cards._progress(f"教材審稿退回 {len(rejected)} 句，自動補寫")
-    raise RuntimeError("教材未完成")
 
 
 def run(args, parser, cli_mode: bool) -> None:
     token = _pair_review_store.set(None)
     model_token = _unavailable_models.set(set())
     try:
-        return _run(args, parser, cli_mode)
+        with cards.api_budget_scope():
+            return _run(args, parser, cli_mode)
+    except cards.APIBudgetError:
+        cards._progress("本輪 API 預算用完；已保存策劃、卡片與配對進度，不輸出未審核教材。")
+        raise
     except cards.GenerationTimeoutError:
         cards._progress("本輪時間已用完；已完成的策劃步驟、卡片和配對結果會保留。"
                         "重新執行相同主題、描述與句數即可接續；不會無限重試。")
@@ -1894,25 +1965,34 @@ def _run(args, parser, cli_mode: bool) -> None:
     output = Path(args.output).expanduser().resolve() if args.output else Path(cards.OUTPUT_DIR) / (cards._topic_to_slug(topic) + ".xlsx")
     if output.suffix.lower() != ".xlsx":
         output = output.with_name(output.name + ".xlsx")
-    plan_path = Path(args.plan_file).expanduser().resolve() if args.plan_file else output.with_suffix(".plan.json")
-    checkpoint = Path(str(output) + ".curriculum.json")
-    planning_checkpoint = Path(str(output) + ".planning.json")
-    pair_checkpoint = Path(str(output) + ".pairs.json")
+    legacy_plan = output.with_suffix(".plan.json")
+    plan_path = Path(args.plan_file).expanduser().resolve() if args.plan_file else cached_artifact(
+        legacy_plan, cards.BASE_DIR, "curriculum")
+    legacy_sidecars = [Path(str(output) + suffix) for suffix in (".curriculum.json", ".planning.json", ".pairs.json")]
+    checkpoint, planning_checkpoint, pair_checkpoint = [cached_artifact(path, cards.BASE_DIR, "curriculum")
+                                                       for path in legacy_sidecars]
     if len({path.resolve() for path in (output, plan_path, checkpoint, planning_checkpoint, pair_checkpoint)}) != 5:
         parser.error("Excel、策劃與檢查點必須使用不同路徑")
     references, paths = cards._load_reference_decks(args.avoid)
     if str(output.resolve()) in paths:
         parser.error("輸出不能同時列入 --avoid")
+    if not args.force:
+        for source, target in zip(legacy_sidecars, (checkpoint, planning_checkpoint, pair_checkpoint)):
+            preserve_legacy_cache(source, target)
+        if not args.plan_file:
+            preserve_legacy_cache(legacy_plan, plan_path)
     if output.exists() and not args.force and not args.plan_only:
         if checkpoint.exists():
             saved = json.loads(checkpoint.read_text(encoding="utf-8"))
             if (saved.get("review_passed") is True and saved.get("version") == VERSION
-                    and saved.get("review_version") == SEMANTIC_REVIEW_VERSION
+                    and saved.get("review_version") in (11, SEMANTIC_REVIEW_VERSION)
                     and saved.get("fingerprint") == fingerprint_for(saved.get("plan"), references)):
                 validate_plan(saved["plan"], brief, count)
-                validate_deck(saved["items"], saved["plan"], reviewed=True)
-                expected = [{key: item[key] for key in LEARNING_HEADERS} for item in saved["items"]]
-                if cards.load_xlsx_items(str(output)) == expected:
+                validate_deck(saved["items"], saved["plan"], reviewed=True, review_version=saved["review_version"])
+                actual = cards.load_xlsx_items(str(output))
+                existing_headers = list(actual[0]) if actual else []
+                expected = [{key: item.get(key, "") for key in existing_headers} for item in saved["items"]]
+                if existing_headers in (VIDEO_HEADERS, LEARNING_HEADERS) and actual == expected:
                     cards._progress(f"已完成且內容一致，保留既有教材：{output}")
                     caption = output.with_name("youtube_" + output.stem + ".txt")
                     if not args.no_youtube and not caption.exists():
@@ -1935,6 +2015,7 @@ def _run(args, parser, cli_mode: bool) -> None:
         save_json(pair_checkpoint, {"version": PLANNING_CHECKPOINT_VERSION, "checks": {}})
     cards._generation_deadline.set(time.monotonic() + cards.GENERATION_TIMEOUT)
     cards._progress(f"本輪流程時間預算 {cards.GENERATION_TIMEOUT:g} 秒；策劃檢查點：{planning_checkpoint}")
+    cards._progress(f"本輪 API 上限 {cards.API_MAX_REQUESTS} 次／{cards.API_TOKEN_BUDGET} tokens；包含失敗重試，非美元報價")
     cards._progress(f"階段 1/3：教材策劃；{count} 句，基礎 {basic}／進階 {count - basic}")
     resume_generation = checkpoint.exists() and not args.force
     if args.plan_file or (plan_path.exists() and not args.force and (args.resume or resume_generation)):
@@ -1960,11 +2041,11 @@ def _run(args, parser, cli_mode: bool) -> None:
     with tempfile.TemporaryDirectory(prefix=".curriculum-export-", dir=output.parent) as directory:
         temporary = Path(directory) / output.name
         cards.write_xlsx(state["items"], str(temporary), curriculum_plan=plan)
-        expected = [{key: item[key] for key in LEARNING_HEADERS} for item in state["items"]]
+        expected = [{key: item[key] for key in VIDEO_HEADERS} for item in state["items"]]
         if cards.load_xlsx_items(str(temporary)) != expected:
             raise RuntimeError("Excel 回讀與審核內容不符，拒絕發布")
         temporary.replace(output)
-    cards._progress(f"階段 2/3 完成：12 欄 Excel 已回讀核對 → {output}")
+    cards._progress(f"階段 2/3 完成：7 欄 Excel 已回讀核對 → {output}")
     cards._progress("階段 3/3：YouTube 描述")
     if not args.no_youtube:
         context = focus + "\n教材情境：" + "、".join(plan["scenarios"])
