@@ -18,15 +18,15 @@ def group(ids=None):
 
 def pair():
     shared = {"core": group()["core"], "Scenario": group()["scenario"], "Tone": "中立",
-              "word_cn": "我需要書面報價。", "sentence_cn": "施工前，我需要書面報價。",
-              "tips": "對方只口頭報價時，先請他寫下金額。",
+              "word_cn": "書面報價", "sentence_cn": "施工前，我需要書面報價。",
+              "tips": "語氣中立，書面紀錄能減少口頭承諾的爭議。",
               "vocab": [{"en": "quote", "cn": "報價"}], "Core_Vocab": "quote 報價"}
     basic = dict(shared, id="01", tier="basic", Level="⭐", progression="",
-                 word_en="I need a written quote.", word_ipa="/aɪ nid ə ˈrɪtən koʊt/",
+                 word_en="a written quote", word_ipa="/ə ˈrɪtən koʊt/",
                  sentence_en="I need a written quote before you start.",
                  sentence_ipa="/aɪ nid ə ˈrɪtən koʊt bɪˈfɔr ju stɑrt/")
     advanced = dict(shared, id="02", tier="advanced", Level="⭐⭐", progression="使用片語put in writing",
-                    word_en="Put the quote in writing.", word_ipa="/pʊt ðə koʊt ɪn ˈraɪtɪŋ/",
+                    word_en="put the quote in writing", word_ipa="/pʊt ðə koʊt ɪn ˈraɪtɪŋ/", word_cn="把報價寫下來",
                     sentence_en="Put the quote in writing before I approve the work.",
                     sentence_ipa="/pʊt ðə koʊt ɪn ˈraɪtɪŋ bɪˈfɔr aɪ əˈpruv ðə wɜrk/")
     return [basic, advanced]
@@ -190,6 +190,7 @@ class LearningEditorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "edit.json"
             def semantic_review(topic, items):
+                self.assertEqual([item["tips"] for item in items], [item["tips"] for item in pair()])
                 for item in items:
                     item.update(_semantic_group="書面報價", _semantic_level=item["tier"])
                 return {}

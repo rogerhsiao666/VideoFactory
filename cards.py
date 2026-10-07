@@ -2,7 +2,7 @@
 """
 cards.py — 詞彙卡片語料前置生成工具
 輸入主題與主題描述 → OpenAI 生成 → 輸出 output/{topic}.xlsx（12 欄）
-3–4 個真實情境均分，基礎／進階 60/40，同意思最多兩句。
+按句數分配真實情境（50 句分 10 情境），基礎／進階 60/40，同意思最多兩句。
 --legacy 保留舊版 8 欄痛點流程；已完成教材只在內容核對一致時跳過。
 
 第二集可指定一個或多個參考牌組，讓痛點規劃、生成與審稿都避開舊內容：
@@ -35,6 +35,11 @@ import httpx
 from openpyxl.styles import Font, PatternFill, Alignment
 from openai import AsyncOpenAI, APIConnectionError, APIError, APITimeoutError, AuthenticationError
 from curated_blueprints import get_curated_blueprint
+from card_contract import (CONTENT_RULES, MAX_WORD_EN_WORDS, MAX_SENTENCE_EN_WORDS,
+                           MAX_TIPS_CHARS, chunk_issues, content_issues)
+from topic_rules import (configured_communication_intent, default_content_issues, default_rule_text,
+                         get_topic_rules, matches_rule, topic_messages,
+                         topic_rule_text, with_topic_rules)
 from dotenv import load_dotenv
 from prompt_toolkit import prompt as terminal_prompt
 from prompt_toolkit.key_binding import KeyBindings
@@ -49,9 +54,6 @@ GENERATE_CHUNK  = 10
 REFILL_CANDIDATE_MULTIPLIER = 3
 MAX_REFILL_CANDIDATE_MULTIPLIER = 6
 DEFAULT_CARD_COUNT = 50
-MAX_WORD_EN_WORDS = 8
-MAX_SENTENCE_EN_WORDS = 14
-MAX_TIPS_CHARS = 36
 MAX_SENTENCE_CN_CHARS = 52
 MAX_REVIEW_REPLACEMENTS = 8
 REFERENCE_WORD_SIMILARITY = 0.88
@@ -68,7 +70,7 @@ SEMANTIC_DUPLICATE_POLICY = """嚴格語意去重（整副牌共同遵守）：
 - 必須同時檢查 word_en 和 sentence_en；短句看似不同，但情境例句完成同一目的，仍納入同組。
 - 不得用同義改寫、換商品或新增理由填補句數；多出的名額要留給尚未涵蓋的實際溝通目的。
 """
-PLAN_VERSION = 6
+PLAN_VERSION = 7
 PLAN_MIN_EXTRA_CANDIDATES = 20
 PLAN_MAX_CATEGORY_SHARE = 0.35
 PLAN_MIN_CATEGORIES = 5
@@ -114,8 +116,8 @@ def _positive_integer(name: str, default: int) -> int:
     return value
 
 
-API_MAX_REQUESTS = _positive_integer("CARD_API_MAX_REQUESTS", 80)
-API_TOKEN_BUDGET = _positive_integer("CARD_API_TOKEN_BUDGET", 300000)
+API_MAX_REQUESTS = _positive_integer("CARD_API_MAX_REQUESTS", 200)
+API_TOKEN_BUDGET = _positive_integer("CARD_API_TOKEN_BUDGET", 450000)
 _api_budget: ContextVar["APIBudget | None"] = ContextVar("api_budget", default=None)
 
 HEADERS = ["id", "word_en", "word_ipa", "word_cn", "tips",
@@ -199,13 +201,13 @@ class PainPointPlan(list):
 FIELD_SPEC = """Return a JSON object with a single key "items" whose value is an array of objects.
 Each object MUST have exactly these keys:
 - "purpose_id" : the integer number of the assigned pain point in the approved blueprint
-- "word_en"     : a high-utility English phrase or response the learner can actually say in the target situation; maximum 8 English words; avoid generic category labels
+- "word_en"     : a practical 2-6 word lexical chunk, verb phrase or idiom; NEVER a complete sentence; hard maximum 8 words
 - "word_ipa"    : IPA pronunciation of the word/phrase, enclosed in forward slashes (e.g., "/tʃɑp ˈvɛdʒtəblz/")
-- "word_cn"     : Traditional Chinese translation (繁體中文)
-- "tips"        : 極短一句實戰提示，不要 emoji。明確標示委婉、中立或強硬，並指出使用時機；禁止字典式解釋和重複 word_cn。
-- "sentence_en" : a natural line of maximum 14 English words that a customer/user or staff member would genuinely say in the exact target situation; not a textbook explanation
+- "word_cn"     : 台灣繁體中文，只翻譯詞塊本身，不是整句話
+- "tips"        : 36 字元內的語感、情緒微調或文化背景；不用「當…時，請…」模板，不重複翻譯
+- "sentence_en" : a natural complete spoken sentence of maximum 14 words applying word_en naturally, allowing case/punctuation differences and mild inflections, with contextual emotion
 - "sentence_ipa": full IPA pronunciation of the example sentence, enclosed in forward slashes (e.g., "/kæn juː hɛlp miː.../")
-- "sentence_cn" : 台灣繁體中文口語意譯（非逐字翻譯）"""
+- "sentence_cn" : 台灣繁體中文整句情境意譯，必須不同於 word_cn""" + "\n" + CONTENT_RULES
 
 
 async def _request_with_progress(client, messages: list, kwargs: dict, stage: str, timeout: float):
@@ -340,7 +342,7 @@ def _validation_issues(item: dict, *, max_word_en_words: int | None = None,
 
     word_count = _english_word_count(item["word_en"])
     sentence_count = _english_word_count(item["sentence_en"])
-    word_limit = MAX_WORD_EN_WORDS if max_word_en_words is None else max_word_en_words
+    word_limit = min(MAX_WORD_EN_WORDS, max_word_en_words) if max_word_en_words is not None else MAX_WORD_EN_WORDS
     if word_count > word_limit:
         issues.append(f"word_en has {word_count}>{word_limit} words")
     if sentence_count > MAX_SENTENCE_EN_WORDS:
@@ -349,9 +351,8 @@ def _validation_issues(item: dict, *, max_word_en_words: int | None = None,
         issues.append(f"tips has {len(item['tips'].strip())}>{MAX_TIPS_CHARS} chars")
     if len(item["sentence_cn"].strip()) > MAX_SENTENCE_CN_CHARS:
         issues.append(f"sentence_cn has {len(item['sentence_cn'].strip())}>{MAX_SENTENCE_CN_CHARS} chars")
-    allergy_text = f'{item["word_en"]} {item["sentence_en"]}'.lower()
-    if re.search(r"\b(?:allergen|allergy|peanut|sesame|gluten)[ -]free\b", allergy_text):
-        issues.append("unsafe allergy-free guarantee; ask about ingredients and cross-contact instead")
+    issues.extend(issue for issue in content_issues(item) if issue not in issues)
+    issues.extend(default_content_issues(f'{item["word_en"]} {item["sentence_en"]}'))
     if re.match(r"^(?:thank you|thanks)\b", item["word_en"].strip(), re.IGNORECASE):
         issues.append("generic gratitude is filler, not a topic-specific pain point")
     meta_text = f'{item["word_en"]} {item["sentence_en"]}'.lower()
@@ -485,14 +486,16 @@ def _exact_generation_point(point) -> dict | None:
     normalized = _normalize_pain_point(point)
     if not normalized:
         return None
-    if normalized.get("target_phrase") and normalized.get("target_sentence"):
+    if normalized.get("target_sentence"):
+        if chunk_issues(normalized.get("target_phrase", "")):
+            normalized["target_phrase"] = ""
         return normalized
     if normalized.get("role_type") != "counterpart_line":
         return None
     quote = _quoted_english_line(normalized.get("task", ""))
     if not quote:
         return None
-    normalized["target_phrase"] = _short_locked_phrase(quote)
+    normalized["target_phrase"] = ""
     normalized["target_sentence"] = quote
     return normalized
 
@@ -604,22 +607,9 @@ def _topic_contract_issues(contract: dict) -> list[str]:
 
 def _topic_specific_contract_issues(topic: str, contract: dict) -> list[str]:
     """Keep topic categories aligned with the promised user action."""
-    if "polite complaints" not in topic.casefold():
-        return []
     categories = _normalize_topic_contract(contract).get("pain_categories", [])
-    issues = []
-    if not any(
-        "不合理" in category
-        and any(marker in category for marker in ("方案", "補救", "解決"))
-        for category in categories
-    ):
-        issues.append("pain_categories 必須包含拒絕不合理補救方案，不可寫成拒絕別人的要求")
-    if not any(
-        any(marker in category for marker in ("主管", "升級", "書面", "留存", "紀錄"))
-        for category in categories
-    ):
-        issues.append("pain_categories 必須包含要求主管升級或書面留存")
-    return issues
+    return [rule["message"] for rule in get_topic_rules(topic).get("contract_categories", [])
+            if not any(matches_rule(category, rule) for category in categories)]
 
 
 def _topic_contract_text(pain_points) -> str:
@@ -779,8 +769,8 @@ def _apply_locked_blueprint_lines(item: dict, pain_points: list | None) -> dict:
         return item
     if not 1 <= purpose_id <= len(pain_points):
         return item
-    point = _normalize_pain_point(pain_points[purpose_id - 1])
-    if not point or not point.get("target_phrase"):
+    point = _exact_generation_point(pain_points[purpose_id - 1])
+    if not point:
         return item
     locked = dict(item)
     mismatched_fields = [
@@ -789,11 +779,12 @@ def _apply_locked_blueprint_lines(item: dict, pain_points: list | None) -> dict:
             ("word_en", point["target_phrase"]),
             ("sentence_en", point["target_sentence"]),
         )
-        if _spoken_line_key(item.get(field, "")) != _spoken_line_key(target)
+        if target and _spoken_line_key(item.get(field, "")) != _spoken_line_key(target)
     ]
     if mismatched_fields:
         locked["_locked_source_mismatch"] = ", ".join(mismatched_fields)
-    locked["word_en"] = point["target_phrase"]
+    if point["target_phrase"]:
+        locked["word_en"] = point["target_phrase"]
     locked["sentence_en"] = point["target_sentence"]
     return locked
 
@@ -837,27 +828,40 @@ def _correct_known_locked_pronunciations(item: dict, point) -> dict:
 def _ipa_token_bounds(english: str) -> tuple[int, int]:
     initialisms = {"ID", "ATM", "VIP", "TSA", "USA", "UK", "US", "EU", "ETA", "USB", "GPS", "SIM", "TV", "PC", "PDF", "CEO", "HR", "IT", "SMS"}
     components = re.findall(r"[A-Za-z0-9]+", english)
-    maximum = sum(len(word) if word in initialisms else len(word) + 1 if word.isdigit()
-                  else 2 if word == "IDs" else 1 for word in components)
+    maximum = 0
+    for index, word in enumerate(components):
+        clock = re.fullmatch(r"(\d+)(am|pm)", word, flags=re.I)
+        if clock:
+            maximum += len(clock.group(1)) + 3
+        elif word.lower() in {"am", "pm"} and index and components[index - 1].isdigit():
+            maximum += 2
+        else:
+            maximum += (len(word) if word in initialisms else len(word) + 1 if word.isdigit()
+                        else 2 if word == "IDs" else 1)
     return _english_word_count(english), maximum
 
 
 def _locked_item_issue(item: dict, point, *, max_word_en_words: int | None = None,
                        sentence_ipa_required: bool = True) -> str | None:
     """Validate exact locked English before trusting dependent IPA fields."""
-    normalized = _normalize_pain_point(point)
-    if not normalized or not normalized.get("target_phrase"):
+    normalized = _exact_generation_point(point)
+    if not normalized:
         return "痛點缺少鎖定英文"
     for field, target in (
         ("word_en", normalized["target_phrase"]),
         ("sentence_en", normalized["target_sentence"]),
     ):
-        if _spoken_line_key(item.get(field, "")) != _spoken_line_key(target):
+        if target and _spoken_line_key(item.get(field, "")) != _spoken_line_key(target):
             return f"{field} 未逐字使用鎖定英文"
     issues = _validation_issues(item, max_word_en_words=max_word_en_words,
                                 sentence_ipa_required=sentence_ipa_required)
     if issues:
         return ", ".join(issues)
+    return _pronunciation_and_translation_issue(item, sentence_ipa_required=sentence_ipa_required)
+
+
+def _pronunciation_and_translation_issue(item: dict, *, sentence_ipa_required: bool = True) -> str | None:
+    """Check lexical IPA and known mistranslations after the content gate."""
     for english_field, ipa_field in (
         ("word_en", "word_ipa"),
         ("sentence_en", "sentence_ipa"),
@@ -917,21 +921,21 @@ def _generate_locked_blueprint_items(
         assignments = [
             {
                 "purpose_id": purpose_id,
-                "target_phrase": _normalize_pain_point(point)["target_phrase"],
-                "target_sentence": _normalize_pain_point(point)["target_sentence"],
+                "target_phrase": _exact_generation_point(point)["target_phrase"],
+                "target_sentence": _exact_generation_point(point)["target_sentence"],
                 "task": _pain_point_task(point),
                 "previous_error": feedback.get(purpose_id, ""),
             }
             for purpose_id, point in missing
         ]
         prompt = f"""你是情境英語卡片編輯。主題是「{topic}」。
-以下英文已由總編鎖定，不可改寫、增減或補完。只為它們產生準確 IPA、繁體中文口語翻譯與極短實戰提示。
-word_en 必須逐字等於 target_phrase；sentence_en 必須逐字等於 target_sentence。
+sentence_en 必須逐字等於 target_sentence，不可改寫、增減或補完。
+若 target_phrase 非空，word_en 必須逐字等於 target_phrase；若為空，從 target_sentence 提煉2至6詞的實用詞塊，絕不可照抄完整句。
 word_ipa 只能對應 word_en，sentence_ipa 只能對應 sentence_en，不可加入英文中沒有的字。
 使用一致的美式 IPA，檢查子音字尾與動詞重音。中文必須自然、忠於各自英文：
 word_cn 不可補入只有 sentence_en 才有的條件。replaced parts 指拆下來的舊零件；
 second opinion 是另一位專家的意見；store credit 是店內購物金。
-tips 必須包含「委婉」「中立」或「強硬」及具體使用時機。
+tips 提供語感、情緒微調或文化背景，不用「當…時，請…」模板。
 若 previous_error 非空，必須修正該錯誤，不可原樣重交。
 輸出每個 purpose_id 各一張，並遵守以下欄位規格：
 {FIELD_SPEC}
@@ -941,7 +945,7 @@ tips 必須包含「委婉」「中立」或「強硬」及具體使用時機。
 只輸出 JSON，不要解釋。
 """
         kwargs = {
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": topic_messages(topic, prompt),
             "model": CARD_MODEL,
             "response_format": {"type": "json_object"},
         }
@@ -988,7 +992,6 @@ def _has_complete_locked_blueprint(pain_points: list | None) -> bool:
     return all(
         point
         and point.get("job_key")
-        and point.get("target_phrase")
         and point.get("target_sentence")
         for point in normalized
     )
@@ -1336,95 +1339,9 @@ def _topic_specific_plan_coverage_issues(
             ).casefold())
     deck_text = " ".join(searchable)
     learner_action_text = " ".join(learner_actions)
-    topic_key = topic.casefold()
-
-    coverage_groups: dict[str, tuple[str, ...]] = {}
-    if "phone call phobia" in topic_key:
-        coverage_groups = {
-            "接起或撥出時開口": (
-                "接起", "撥出", "開場", "answer the phone", "hello", "this is",
-                "calling about",
-            ),
-            "聽不懂時請求調整": (
-                "重複", "放慢", "拼字", "repeat", "say that again", "slower", "spell",
-            ),
-            "腦袋空白時爭取時間": (
-                "思考", "腦袋空白", "稍等", "think", "moment", "hold on",
-            ),
-            "確認姓名數字日期地址": (
-                "姓名", "名字", "數字", "號碼", "日期", "地址",
-                "name", "number", "date", "address",
-            ),
-            "聽不清斷線與回撥": (
-                "聽不清", "噪音", "斷線", "回撥", "can't hear", "cannot hear",
-                "noise", "disconnect", "call back",
-            ),
-            "轉接或留言": ("轉接", "留言", "transfer", "message"),
-            "禮貌結束": (
-                "結束", "收尾", "掛電話", "謝謝", "再聯絡", "goodbye",
-                "thank you", "thanks for", "talk to you", "speak to you",
-            ),
-        }
-    elif "polite complaints" in topic_key:
-        coverage_groups = {
-            "指出已發生的問題": (
-                "問題", "錯誤", "壞掉", "漏掉", "多收", "problem", "issue",
-                "wrong", "broken", "missing", "overcharg",
-            ),
-            "描述影響或證據": (
-                "影響", "導致", "收據", "照片", "證據", "紀錄", "impact",
-                "because", "receipt", "photo", "evidence", "record",
-            ),
-            "提出具體補救": (
-                "補救", "退款", "更換", "修復", "修正", "重做", "remedy",
-                "refund", "replace", "repair", "fix", "redo",
-            ),
-        }
-
-    issues = [
-        f"缺少必要痛點時刻：{label}"
-        for label, markers in coverage_groups.items()
-        if not any(marker in deck_text for marker in markers)
-    ]
-    if "polite complaints" in topic_key:
-        learner_requirements = {
-            "回應推託": (
-                "仍需要", "仍然需要", "但我仍", "我理解，但", "沒有解決",
-                "無法接受這個理由", "重新考慮",
-                "still need", "doesn't address", "does not address", "not resolve",
-                "can't accept that explanation", "reconsider", "i understand, but",
-                "however, i", "but i still",
-            ),
-            "要求主管升級": (
-                "請主管", "找主管", "和主管", "請經理", "找經理", "和經理", "升級處理",
-                "speak to a manager", "speak with a manager", "talk to a manager",
-                "supervisor", "escalate",
-            ),
-            "要求書面確認": (
-                "書面確認", "書面紀錄", "寄信確認", "確認郵件", "案件編號",
-                "in writing", "written confirmation", "confirmation email",
-                "reference number", "case number",
-            ),
-        }
-        issues.extend(
-            f"缺少使用者直接開口的必要痛點時刻：{label}"
-            for label, markers in learner_requirements.items()
-            if not any(marker in learner_action_text for marker in markers)
-        )
-        refusal_markers = (
-            "不能接受", "無法接受", "不夠", "不合理", "not acceptable",
-            "can't accept", "cannot accept", "not enough", "doesn't resolve",
-            "won't solve", "doesn't solve", "does not solve",
-        )
-        solution_markers = (
-            "方案", "補救", "退款", "更換", "折價券", "點數", "solution",
-            "remedy", "refund", "replacement", "voucher", "store credit", "offer",
-        )
-        if not (
-            any(marker in learner_action_text for marker in refusal_markers)
-            and any(marker in learner_action_text for marker in solution_markers)
-        ):
-            issues.append("缺少使用者直接拒絕不合理補救方案的原話")
+    texts = {"deck": deck_text, "learner": learner_action_text}
+    issues = [rule["message"] for rule in get_topic_rules(topic).get("coverage", [])
+              if not matches_rule(texts[rule.get("source", "deck")], rule)]
     for index, point in enumerate(pain_points, start=1):
         explicit_violation = _explicit_focus_exclusion_violation(topic, point)
         if explicit_violation:
@@ -1487,7 +1404,6 @@ def _review_rejection_conflicts_with_contract(
     reason: str,
 ) -> bool:
     """Ignore reviewer claims that contradict an explicit topic requirement."""
-    topic_key = topic.casefold()
     point_text = " ".join(
         str(_normalize_pain_point(point).get(key, ""))
         for key in (
@@ -1495,43 +1411,9 @@ def _review_rejection_conflicts_with_contract(
             "desired_outcome",
         )
     ).casefold()
-    reason_key = reason.casefold()
-    contract_contradiction_claims = (
-        "一般的禮貌", "一般禮貌", "一般性問題", "普通詢問",
-        "非特定於電話", "不直接針對因害怕英語電話",
-        "偏離核心痛點", "不符合焦點", "未能直接針對", "不夠具體",
-        "not specific to phone", "generic courtesy", "routine request",
-        "outside the core pain", "does not match the focus",
-    )
-    if not any(claim in reason_key for claim in contract_contradiction_claims):
-        return False
-
-    if "phone call phobia" in topic_key:
-        protected_phone_moments = (
-            "重複", "再說一次", "放慢", "說慢", "拼字", "拼寫", "回讀",
-            "姓名", "名字", "數字", "號碼", "日期", "地址", "時間", "地點",
-            "思考時間", "稍等", "斷線", "轉接", "留言", "回撥", "聽不清",
-            "repeat", "say that again", "slower", "slow down", "spell",
-            "name", "number", "date", "address", "time", "location",
-            "hold on", "moment", "disconnected", "transfer", "message",
-            "call me back", "call back", "hear you", "hear that",
-            "開場", "接起", "撥出", "結束", "收尾", "掛電話", "謝謝", "再聯絡",
-            "answer the phone", "calling about", "hello", "this is", "goodbye",
-            "thank you", "thanks for", "talk to you", "speak to you",
-        )
-        return any(marker in point_text for marker in protected_phone_moments)
-
-    if "polite complaints" in topic_key:
-        protected_complaint_moments = (
-            "問題", "影響", "證據", "補救", "推託", "不合理", "主管", "經理",
-            "書面", "退款", "更換", "修復", "道歉", "已發生", "錯", "壞", "漏",
-            "多收", "延誤", "problem", "issue", "impact", "evidence", "remedy",
-            "refund", "replace", "repair", "manager", "supervisor", "in writing",
-            "wrong", "broken", "missing", "overcharg", "delay",
-        )
-        return any(marker in point_text for marker in protected_complaint_moments)
-
-    return False
+    protection = get_topic_rules(topic).get("review_protection", {})
+    return (any(claim.casefold() in reason.casefold() for claim in protection.get("reason_markers", []))
+            and any(marker.casefold() in point_text for marker in protection.get("protected_markers", [])))
 
 
 def _ai_review_pain_point_plan(
@@ -1540,23 +1422,7 @@ def _ai_review_pain_point_plan(
     pain_points: list[dict],
 ) -> list[str]:
     """Review the blueprint against the title promise before cards are written."""
-    topic_key = topic.splitlines()[0].strip().casefold()
-    topic_specific_rules: list[str] = []
-    if any(marker in topic_key for marker in ("phone call phobia", "電話恐懼")):
-        topic_specific_rules.append(
-            "只因為可以透過電話完成，不代表符合 Phone Call Phobia；請對方重複或放慢、"
-            "拼字、回讀姓名／數字／日期／地址、爭取思考時間、處理斷線／轉接／留言／回撥，"
-            "才是直接降低通話失控與焦慮的核心技能。"
-        )
-    if any(marker in topic_key for marker in ("complaint", "抱怨", "客訴")):
-        topic_specific_rules.append(
-            "只因為用了 could/please，不代表符合 Polite Complaints；例行詢價、問 Wi-Fi、"
-            "問折扣等若沒有已發生的問題或補救需求，一律退回。委婉指出問題、描述影響與證據、"
-            "提出補救、回應推託、拒絕不合理方案、要求主管或留下書面紀錄才是核心。"
-        )
-    topic_specific_note = "\n".join(
-        f"{index}. {rule}" for index, rule in enumerate(topic_specific_rules, start=10)
-    )
+    topic_specific_note = topic_rule_text(topic, "plan_review")
     role_mix_rule = (
         "5. learner_only=true：每項都必須是 learner_line，禁止加入只是讓學習者聽懂的對方原話。"
         if _normalize_topic_contract(contract).get("learner_only")
@@ -1592,7 +1458,7 @@ def _ai_review_pain_point_plan(
 {json.dumps(pain_points, ensure_ascii=False)}
 """
     kwargs = {
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": topic_messages(topic, prompt),
         "model": PLAN_REVIEW_MODEL,
         "response_format": {"type": "json_object"},
     }
@@ -1633,59 +1499,20 @@ def _ai_review_pain_point_plan(
 
 def _topic_specific_plan_violation(topic: str, point: dict) -> str | None:
     """Reject known false-adjacency patterns before semantic review."""
-    topic_key = topic.casefold()
     text = " ".join(
         str(point.get(key, ""))
         for key in (
             "category", "scenario", "speaker", "intent", "task", "pain_trigger"
         )
     ).casefold()
-    if "phone call phobia" in topic_key:
-        off_topic = (
-            "訂單", "保險", "商品", "產品", "會議", "退貨", "餐廳", "健身",
-            "促銷", "優惠", "付款", "帳單", "配送", "技術支援", "財務部門", "kpi", "order", "insurance",
-            "product", "meeting", "return policy", "restaurant", "payment", "delivery",
-            "technical support", "finance department",
-        )
-        if any(marker in text for marker in off_topic):
-            return "只是一般電話業務，未直接處理通話焦慮"
-
-    if "polite complaints" in topic_key:
-        routine_markers = (
-            "wi-fi", "登機口", "課程時間", "會員權益", "熱量", "素食", "顏色",
-            "甜度", "食材", "價格", "折扣", "免費甜點", "購物清單", "price",
-            "discount", "calorie", "vegetarian", "ingredients", "shopping list",
-        )
-        complaint_markers = (
-            "錯", "壞", "漏", "多收", "不滿", "問題", "延誤", "拒絕", "推託",
-            "退款", "更換", "主管", "經理", "incorrect", "wrong", "broken",
-            "missing", "overcharg", "problem", "issue", "refund", "replace",
-            "manager", "not working", "disappoint", "bill", "charged",
-            "different price",
-        )
-        if (
-            any(marker in text for marker in routine_markers)
-            and not any(marker in text for marker in complaint_markers)
-        ):
-            return "只是例行禮貌詢問，沒有已發生的問題或補救需求"
+    for rule in get_topic_rules(topic).get("plan_rejections", []):
+        if rule.get("role_type") and point.get("role_type") != rule["role_type"]:
+            continue
         category = str(point.get("category", "")).casefold()
-        solution_markers = (
-            "方案", "補救", "退款", "更換", "賠償", "solution", "remedy",
-            "refund", "replacement", "compensation", "voucher", "store credit",
-        )
-        if "拒絕不合理" in category and not any(
-            marker in text for marker in solution_markers
-        ):
-            return "拒絕的是別人的要求，不是拒絕客訴中的不合理補救方案"
-        if point.get("role_type") == "counterpart_line":
-            customer_complaint_markers = (
-                "my order", "my room", "my luggage", "my service", "i received",
-                "i’m not satisfied", "i'm not satisfied", "this food doesn’t",
-                "this food doesn't", "i can’t complete", "i can't complete",
-                "affecting my", "causing me", "what i ordered",
-            )
-            if any(marker in text for marker in customer_complaint_markers):
-                return "counterpart_line 必須是店員處理客訴的回應，不可是另一位顧客在抱怨"
+        if rule.get("category_any") and not any(marker.casefold() in category for marker in rule["category_any"]):
+            continue
+        if matches_rule(text, rule):
+            return rule["message"]
     return None
 
 
@@ -1883,8 +1710,8 @@ def _reference_duplicate_reason(
     return None
 
 
-def _reference_prompt_note(reference_items: list[dict] | None) -> str:
-    """Build a bounded prior-deck summary for planning and generation prompts."""
+def _reference_prompt_note(reference_items: list[dict] | None, *, for_review: bool = False) -> str:
+    """Bound generation context, but include every distinct reference in Tier 3."""
     if not reference_items:
         return ""
 
@@ -1901,15 +1728,25 @@ def _reference_prompt_note(reference_items: list[dict] | None) -> str:
         pain_point = _pain_point_text(item.get("_pain_point"))
         purpose_note = f" | 策劃={pain_point}" if pain_point else ""
         lines.append(f"- [{source}] {word} | {sentence}{purpose_note}")
-        if len(lines) >= MAX_REFERENCE_CARDS_IN_PROMPT:
+        if not for_review and len(lines) >= MAX_REFERENCE_CARDS_IN_PROMPT:
             break
 
     if not lines:
         return ""
+    review_rule = (
+        "跨牌組意圖審查：逐張比對新卡與以下全部參考卡的說話角色、具體行動／資訊及實際結果。"
+        "即使字面完全不同，結果相同且可互換的同義改寫也必須退回；"
+        "不能因不同主題、分類、禮貌程度或難度而放行。"
+        "角色相反、肯定與否定、不同問題或不同結果不算重複。"
+        "參考牌組不可退回，只退回新卡；兩種說法的額度只適用當前牌組。"
+        "退件理由以「語意重複：」開頭，指出來源牌組、參考原句及相同的具體意圖。\n"
+        if for_review else ""
+    )
     return (
         "\n以下是上一集或指定參考牌組已教過的內容。"
         "不得重出相同短句、同義改寫，或說話角色、意圖、答案都相同的卡片；"
         "只有確實解決不同現場任務時才能沿用相關領域詞彙：\n"
+        + review_rule
         + "\n".join(lines)
         + "\n"
     )
@@ -1926,6 +1763,7 @@ def _local_review_deck(
     seen_items: list[dict] = []
     seen_purpose_ids: set[int] = set()
     topic_text = _similarity_text(topic)
+    counterpart_rule = get_topic_rules(topic).get("counterpart_validation", {})
     english_stopwords = {
         "a", "an", "and", "are", "be", "can", "could", "do", "does",
         "for", "get", "have", "how", "i", "if", "in", "is", "it",
@@ -2004,14 +1842,15 @@ def _local_review_deck(
                 marker in f"{assigned_point_task} {assigned_point_text}"
                 for marker in staff_question_markers
             ):
-                if (
-                    "?" not in item.get("word_en", "")
-                    or "?" not in item.get("sentence_en", "")
-                ):
-                    rejected[idx] = "指定為對方問句，但 word_en 與 sentence_en 未同時使用直接問句"
+                if "?" not in item.get("sentence_en", ""):
+                    rejected[idx] = "指定為對方問句，但 sentence_en 未使用直接問句"
                     continue
 
             normalized_point = _normalize_pain_point(assigned_point)
+            exact_point = _exact_generation_point(assigned_point)
+            if exact_point:
+                normalized_point.update(target_phrase=exact_point["target_phrase"],
+                                        target_sentence=exact_point["target_sentence"])
             if normalized_point and normalized_point.get("target_phrase"):
                 if item.get("word_en", "").strip() != normalized_point["target_phrase"]:
                     rejected[idx] = (
@@ -2019,6 +1858,7 @@ def _local_review_deck(
                         + normalized_point["target_phrase"]
                     )
                     continue
+            if normalized_point and normalized_point.get("target_sentence"):
                 if item.get("sentence_en", "").strip() != normalized_point["target_sentence"]:
                     rejected[idx] = (
                         "sentence_en 必須逐字使用鎖定情境原話："
@@ -2029,28 +1869,16 @@ def _local_review_deck(
                 normalized_point
                 and normalized_point.get("role_type") == "counterpart_line"
                 and not normalized_point.get("target_phrase")
-                and "polite complaints" in topic.casefold()
+                and counterpart_rule
             ):
-                staff_response_markers = (
-                    "i'm sorry", "i’m sorry", "we're sorry", "we’re sorry",
-                    "let me", "could you", "can you", "do you", "may i",
-                    "would you", "what ", "how ", "i understand", "i see",
-                    "i can", "we can", "we'll", "we’ll", "i'll", "i’ll",
-                    "for you", "you've", "you’ve", "your ",
-                )
-                customer_voice_markers = (
-                    " my ", " i received", " i need", " i can't", " i can’t",
-                    " help me", " for me", "affect my", "affects my",
-                    "prevents me",
-                )
-                is_staff_response = any(
-                    marker in combined for marker in staff_response_markers
+                is_staff_response = not counterpart_rule.get("required_any") or any(
+                    marker.casefold() in combined for marker in counterpart_rule.get("required_any", [])
                 )
                 uses_customer_voice = any(
-                    marker in f" {combined} " for marker in customer_voice_markers
+                    marker.casefold() in f" {combined} " for marker in counterpart_rule.get("forbidden_any", [])
                 )
                 impact_addresses_customer = (
-                    normalized_point.get("category") != "描述問題影響"
+                    normalized_point.get("category") not in counterpart_rule.get("address_customer_categories", [])
                     or " your " in f" {combined} "
                 )
                 if (
@@ -2058,10 +1886,7 @@ def _local_review_deck(
                     or uses_customer_voice
                     or not impact_addresses_customer
                 ):
-                    rejected[idx] = (
-                        "Polite Complaints 的 counterpart_line 必須是店員處理客訴的回應，"
-                        "不可寫成顧客再次抱怨"
-                    )
+                    rejected[idx] = counterpart_rule["message"]
                     continue
             alignment_issue = _pain_point_alignment_issue(item, assigned_point)
             if alignment_issue:
@@ -2105,25 +1930,7 @@ def _local_review_deck(
 
 
 def _request_topic_contract(topic: str, reference_note: str, retry_note: str = "") -> dict:
-    topic_key = topic.splitlines()[0].strip().casefold()
-    topic_specific_rules: list[str] = []
-    if any(marker in topic_key for marker in ("phone call phobia", "電話恐懼")):
-        topic_specific_rules.append(
-            "題名含 phobia、fear、anxiety、焦慮或恐懼，核心是焦慮觸發、聽不懂、"
-            "腦袋空白、怕失禮、資訊確認與失控補救；不是所有可透過該媒介完成的例行任務。"
-        )
-    if any(marker in topic_key for marker in ("complaint", "抱怨", "客訴")):
-        topic_specific_rules.append(
-            "題名含 complaint、抱怨或客訴，核心是指出已發生的問題、降低指責感、提出補救、"
-            "面對推託、拒絕不合理方案與升級；一般詢價、問 Wi-Fi、問折扣等例行禮貌詢問不是抱怨。"
-        )
-    if "polite complaints" in topic_key:
-        topic_specific_rules.append(
-            "Polite Complaints 的 pain_categories 必須逐字包含「拒絕不合理補救方案」以及"
-            "「要求主管升級與書面留存」；禁止寫成「拒絕不合理要求」，因為那會變成"
-            "拒絕加班、借錢等另一個主題。"
-        )
-    topic_specific_note = "\n".join(f"- {rule}" for rule in topic_specific_rules)
+    topic_specific_note = topic_rule_text(topic, "contract")
     prompt = f"""你是台灣成人情境英語課程的內容總編。主題是「{topic}」。
 先不要寫詞卡或痛點清單，只定義這個題名對學習者的內容承諾。
 {reference_note}
@@ -2149,7 +1956,7 @@ def _request_topic_contract(topic: str, reference_note: str, retry_note: str = "
 {retry_note}
 """
     kwargs = {
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": topic_messages(topic, prompt),
         "model": PLAN_MODEL,
         "response_format": {"type": "json_object"},
     }
@@ -2182,6 +1989,8 @@ def _request_pain_point_candidates(
     normalized_contract = _normalize_topic_contract(contract)
     pain_categories = normalized_contract["pain_categories"]
     learner_only = normalized_contract["learner_only"]
+    topic_rules = get_topic_rules(topic)
+    role_policy = topic_rules.get("candidate_roles", {})
     rounds = 0
     successful_batches = 0
     max_rounds = math.ceil(candidate_count / PLAN_GENERATE_BATCH) + len(pain_categories) + 4
@@ -2197,36 +2006,30 @@ def _request_pain_point_candidates(
             candidate_count - len(candidates),
         )
         category_focus = pain_categories[successful_batches % len(pain_categories)]
-        complaint_learner_category = (
-            "polite complaints" in topic.casefold()
-            and any(
-                marker in category_focus
-                for marker in ("推託", "不合理補救", "主管", "升級", "書面", "留存", "紀錄")
-            )
+        force_learner_category = any(
+            marker.casefold() in category_focus.casefold()
+            for marker in role_policy.get("learner_category_markers", [])
         )
         if learner_only:
             target_role = "learner_line"
-        elif "polite complaints" in topic.casefold():
+        elif role_policy:
             counterpart_candidates = sum(
                 point["role_type"] == "counterpart_line" for point in candidates
             )
             target_role = (
                 "learner_line"
-                if complaint_learner_category
+                if force_learner_category
                 else "counterpart_line"
-                if counterpart_candidates < math.ceil(candidate_count * 0.25)
+                if counterpart_candidates < math.ceil(candidate_count * role_policy.get("counterpart_share", 0.25))
                 else "learner_line"
             )
         else:
             target_role = (
                 "counterpart_line" if successful_batches % 3 == 1 else "learner_line"
             )
-        if target_role == "counterpart_line" and "polite complaints" in topic.casefold():
-            role_instruction = (
-                "本批全部是 counterpart_line：speaker 必須是正在處理客訴的店員、客服或主管；"
-                "task 必須逐字使用格式「聽懂對方原話：“[一個完整英文句子]”」，英文必須是店員的"
-                "釐清問題、承認影響、提出方案、推託或拒絕原話；禁止寫成另一位顧客在抱怨。"
-            )
+        counterpart_instruction = topic_rules.get("instructions", {}).get("counterpart_candidates", "")
+        if target_role == "counterpart_line" and counterpart_instruction:
+            role_instruction = counterpart_instruction
         elif target_role == "counterpart_line":
             role_instruction = (
                 "本批全部是 counterpart_line：speaker 必須是對話中的另一個人；task 必須逐字使用格式"
@@ -2245,29 +2048,9 @@ def _request_pain_point_candidates(
                     f"[{point['category']}] {point['task']}" for point in candidates
                 ) + "\n"
             )
-        category_action_instruction = ""
-        if "polite complaints" in topic.casefold():
-            if "推託" in category_focus:
-                category_action_instruction = (
-                    "本分類每個 task 都必須是使用者聽到推託後直接頂回去的原話，"
-                    "明確使用 I understand, but...、That doesn't address... 或 "
-                    "I still need... 等結構；禁止只描述挫折或只寫店家的推託。"
-                )
-            elif "不合理補救" in category_focus:
-                category_action_instruction = (
-                    "本分類每個 task 都必須點名店家已提出的補救（例如 partial refund、"
-                    "voucher、store credit、replacement），再直接說明為何不能接受；"
-                    "禁止改成拒絕加班、借錢、幫忙或別人的要求。"
-                )
-            elif any(
-                marker in category_focus
-                for marker in ("主管", "升級", "書面", "留存", "紀錄")
-            ):
-                category_action_instruction = (
-                    "本分類必須同時覆蓋兩種 learner_line：至少三項直接要求 manager 或 "
-                    "supervisor 升級處理，至少三項要求 written confirmation、confirmation "
-                    "email、case number 或 reference number；禁止只寫追蹤進度。"
-                )
+        category_action_instruction = next((rule["instruction"]
+            for rule in topic_rules.get("category_instructions", [])
+            if matches_rule(category_focus, rule)), "")
         prompt = f"""你是台灣成人情境英語課程的內容企劃。主題是「{topic}」。
 依照以下已核定題名契約，產生下一批剛好 {batch_count} 個溝通痛點，不要寫英文詞卡：
 {json.dumps(_normalize_topic_contract(contract), ensure_ascii=False)}
@@ -2293,7 +2076,7 @@ def _request_pain_point_candidates(
 {batch_retry_note}
 """
         kwargs = {
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": topic_messages(topic, prompt),
             "model": PLAN_MODEL,
             "response_format": {"type": "json_object"},
         }
@@ -2561,6 +2344,7 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
         )
     return f"""你是為台灣成人設計情境英語內容的資深編輯。這副牌的精確主題是：
 「{topic}」
+{topic_rule_text(topic)}
 {blueprint}
 
 整副牌預計 {count} 張。先在心中完成以下判斷，再生成內容，不要輸出分析過程：
@@ -2576,14 +2360,14 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 4. 約 20% 是臨場應對：聽不懂、要求重複、更改、缺貨、價格、限制、確認與補救。
 
 每一項都必須符合：
-1. word_en 優先使用可直接開口的短句、問句、回答或高頻搭配，不要用寬泛名詞湊數。
+1. word_en 必須是2至6詞的實用詞塊、動詞片語或慣用語，絕對不可是完整句、問句或回答。
 2. sentence_en 必須是該場景中真人會直接說出口的話。禁止第三人稱介紹、品牌宣傳、背景知識或教科書說明。
-3. sentence_en 通常要展示比 word_en 更完整的使用方式，不能只是原句後面加 please。若 word_en 本身已是完整、自然且可直接使用的問句或回答，sentence_en 可以相同。
+3. sentence_en 必須合理應用 word_en，允許大小寫、標點及輕微詞形變化，寫成有真實情境和情緒的完整口語句，不能與詞塊相同。
 4. 必須具體到真實選項、決策或操作；看到這張卡，使用者要立刻知道它解決哪個痛點。
 5. 優先選擇高頻、搜尋意圖高、最值得收藏的實戰內容，不追求冷門詞彙或表面多樣性。
 6. 若商品、規定或選項可能因地區而異，改寫成現場確認的自然問句，不可捏造一定存在的品項。
-7. tips 只寫一句極短實戰提醒：何時用、怎麼選、對方可能怎麼問，或台灣學習者常犯的錯。
-8. 所有中文使用台灣繁體中文日常口語；sentence_cn 要自然意譯，不要逐字硬翻。
+7. tips 提供語感、情緒微調或文化背景，不用「當…時，請…」模板。
+8. word_cn 只翻譯詞塊本身；sentence_cn 翻譯整句情境，兩者必须不同；中文使用台灣繁體中文口語。
 9. 必須為詞句生成精確完整的 IPA，並以斜線「/」包裹；絕對不能直接填英文拼寫。
 10. 每張卡必須提供不同的實用學習價值。按實際溝通目的做語意去重，不可只比較字面或 purpose_id；
     店員問句與顧客回答、肯定與否定、一般選擇與具體客製需求不是重複。
@@ -2595,7 +2379,7 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 11. word_en 最多 {MAX_WORD_EN_WORDS} 個英文單字；sentence_en 最多 {MAX_SENTENCE_EN_WORDS} 個英文單字。這是硬性上限，不得超過。
 12. 每張卡只處理一個溝通目的，最多帶兩個選擇或條件。完整流程必須拆成多張連續短卡，禁止塞成一個長句。
 13. tips 最多 {MAX_TIPS_CHARS} 個中文字元；sentence_cn 最多 {MAX_SENTENCE_CN_CHARS} 個字元，避免卡片爆版。
-14. 若 assigned pain point 是「聽懂店員／對方問句」，word_en 與 sentence_en 必須直接寫店員真的會說的原話；
+14. 若 assigned pain point 是「聽懂店員／對方問句」，sentence_en 寫店員原話，word_en 提煉其中連續詞塊；
     禁止寫 "I understand you asked..."、"Are you asking if..." 等學習旁白。
 
 禁止內容：
@@ -2606,12 +2390,13 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 - 寒暄、泛用道謝、詢問食材是否新鮮等低資訊句，除非它確實是該主題的主要痛點。
 - 一口氣列出尺寸、品項、配料、醬料、付款等多個步驟的超長總結句。
 {SEMANTIC_DUPLICATE_POLICY}
+{CONTENT_RULES}
 
 品質範例（只示範具體程度，不代表一定要生成餐飲內容）：
 - 差：word_en = "Honey mustard"；sentence_en = "I want honey mustard, please." 這只是在背品名。
-- 好：word_en = "Just a little honey mustard"；sentence_en = "Just a little honey mustard, please, and no mayo." 它解決醬料用量和排除另一種醬的需求。
+- 好：word_en = "just a little"；sentence_en = "Could you add just a little honey mustard?" 它解決醬料用量的需求。
 - 差：word_en = "Can I change it?"；沒有說要改什麼。
-- 好：word_en = "Could I switch to...?"；sentence_en = "Could I switch to wheat bread before you toast it?" 它包含修改內容和時機。
+- 好：word_en = "switch to wheat bread"；sentence_en = "Could I switch to wheat bread before you toast it?" 它包含修改內容和時機。
 
 輸出前逐項自我檢查：如果學習者不能在「{topic}」現場直接說、直接回答或立刻聽懂這一項，就刪掉並換成更實用的內容。
 """
@@ -2620,31 +2405,7 @@ def _build_prompt(topic: str, count: int, pain_points: list | None = None) -> st
 def _sales_communication_intent(item: dict) -> str:
     """Merge known sales-pressure paraphrases without depending on plan labels."""
     text = f"{item.get('word_en', '')} {item.get('sentence_en', '')}".casefold().replace("’", "'")
-    patterns = (
-        ("取得書面報價與費用明細", r"(?:can|could|may|need|want|please|put|give|send|provide).*\b(?:quote|estimate|cost breakdown|breakdown of (?:the |these )?(?:costs|charges))\b"),
-        ("要求已扣款退款", r"\b(?:want|request|like|need|give|issue)\b.*\brefund\b"),
-        ("取消未授權服務", r"\bcancel\b.*\b(?:unauthorized|didn't authorize|did not authorize)\b|\b(?:unauthorized|didn't authorize|did not authorize)\b.*\bcancel\b"),
-        ("確認是否曾授權", r"\bdid i\b.*\b(?:authorize|approve|agree)\b|\bconfirm if i\b.*\bauthorized\b"),
-        ("要求簡單解釋術語", r"\bwhat does\b.*\bmean\b|\b(?:explain|understand|clarify)\b.*\b(?:term|jargon)\b"),
-        ("確認是否存在額外費用", r"\b(?:are there|will there be|if there are|if there will be)\b.*\b(?:extra|additional|hidden)\b.*\b(?:fees|charges|costs)\b"),
-        ("了解不明收費原因", r"\b(?:explain|clarify|why)\b.*\b(?:charge|fee)\b"),
-        ("了解零件或設備用途", r"\b(?:what|tell|explain)\b.*\b(?:equipment|material|part)\b.*\b(?:do|does|for)\b"),
-        ("了解施工流程", r"\b(?:explain|what)\b.*\b(?:repair process|installation steps|steps in the repair)\b"),
-        ("確認額外項目是否必要", r"\b(?:necessary|really need|why.*need)\b.*\b(?:inspection|part|equipment|service)\b|\b(?:inspection|part|equipment|service)\b.*\bnecessary\b"),
-    )
-    for purpose, pattern in patterns:
-        if re.search(pattern, text):
-            # Conditional fees and discrepancies are different decisions, not generic inquiries.
-            if purpose in {"確認是否存在額外費用", "了解不明收費原因"} and re.search(
-                r"\b(?:than|compared|agreed|hourly|flat|waived|refundable|if i|unless|without repairs|no repair)\b", text
-            ):
-                continue
-            return purpose
-    if re.search(r"\bi (?:don't|do not) (?:want|need)\b|\bi(?:'m| am) not interested\b", text) and re.search(
-        r"\b(?:service|equipment|material|maintenance|inspection|part|plan|product)\b", text
-    ) and not re.search(r"\b(?:cancel|remove|delete|stop|leave|contact|call|consent|authorize|approve|replace.*with)\b", text):
-        return "拒絕不需要的推銷"
-    return ""
+    return configured_communication_intent(text)
 
 
 def _semantic_group_rejections(payload: dict, count: int, items: list[dict] | None = None) -> dict[int, str]:
@@ -2754,7 +2515,7 @@ def _replace_duplicate_pain_points(
 role_type、failure_mode、priority、frequency、friction、sequence、required_terms。
 只輸出 JSON，頂層 replacements 是包含完整欄位物件的陣列，不能省略欄位或使用省略號。
 """
-        kwargs = {"messages": [{"role": "user", "content": prompt}], "model": PLAN_MODEL,
+        kwargs = {"messages": topic_messages(topic, prompt), "model": PLAN_MODEL,
                   "response_format": {"type": "json_object"}}
         kwargs["max_completion_tokens" if PLAN_MODEL.startswith("gpt-5") else "max_tokens"] = 6000
         if not PLAN_MODEL.startswith("gpt-5"):
@@ -2790,7 +2551,7 @@ role_type、failure_mode、priority、frequency、friction、sequence、required
                 if repair_attempt == 2:
                     raise
                 _progress(f"替換任務未通過，要求重寫：{exc}")
-                kwargs["messages"] = [{"role": "user", "content": prompt + f"\n前次未通過：{exc}。請重新輸出本批全部新任務，不可只補一項。\n前次內容：{raw_content}"}]
+                kwargs["messages"] = topic_messages(topic, prompt + f"\n前次未通過：{exc}。請重新輸出本批全部新任務，不可只補一項。\n前次內容：{raw_content}")
         for purpose_id, point in pending.items():
             pain_points[purpose_id - 1] = point
 
@@ -2822,6 +2583,7 @@ def _ai_review_deck(
             "expected_speaker": assigned_point.get("speaker", "") if assigned_point else "",
             "assigned_pain_point": _pain_point_text(assigned_point) if assigned_point else "",
             "word_en": item.get("word_en", ""),
+            "word_cn": item.get("word_cn", ""),
             "tips": item.get("tips", ""),
             "sentence_en": item.get("sentence_en", ""),
             "sentence_cn": item.get("sentence_cn", ""),
@@ -2838,7 +2600,7 @@ def _ai_review_deck(
             "\n題名契約如下。即使卡片符合 assigned_pain_point，只要沒有直接服務"
             "核心痛點或落入禁止範圍，仍必須退回：\n" + contract_rule + "\n"
         )
-    reference_rule = _reference_prompt_note(reference_items)
+    reference_rule = _reference_prompt_note(reference_items, for_review=True)
     duplicate_review_rule = (
         "3. 按實際溝通目的分組，同一意思最多一種簡單說法與一種進階說法。"
         "purpose_id 不同或已通過藍圖審稿，不代表語意不同；仍須退回超額或沒有難度差異的同義句。"
@@ -2850,6 +2612,7 @@ def _ai_review_deck(
 {contract_rule}
 {reference_rule}
 {SEMANTIC_DUPLICATE_POLICY}
+{CONTENT_RULES}
 
 明顯不合格的定義：
 1. 套用主題的其他同名含義、偏離核心任務、擴張到主題描述未涵蓋的受眾或場合，或是泛用填充內容。
@@ -2858,7 +2621,7 @@ def _ai_review_deck(
 4. 一張卡塞入超過兩個選擇／條件，應拆成多張短卡。
 5. 明顯捏造品項、規定或事實；不確定的供應內容應使用詢問句。
 6. 為了湊數加入低資訊邊角需求，例如泛用道謝、餐巾、餐具、切麵包邊、兒童份量、聯絡取餐等；除非主題明確指定。
-7. 食品過敏卡直接要求「無某過敏原」或暗示店家能保證安全，而不是詢問成分及交叉接觸風險。
+7. {default_rule_text("card_review")}
 8. 具體商品、配料或服務未出現在主題提供的事實中，卻直接假設一定供應。若它是核心痛點，必須改成現場確認問句。
 9. 卡片沒有完成 assigned_pain_point 指定的任務，或用別的痛點內容佔位。
 10. 英文不合文法、不自然、指涉不清，或為了壓短而省略必要動詞，例如 "Is avocado available and extra charge?"。
@@ -2873,7 +2636,7 @@ def _ai_review_deck(
     肯定與否定、不同說話角色、數量或程度不同的要求，不可只因部分用字相同就退回。
     同義改寫只適用於不同必要任務，或同一目的的一簡單一進階配對；不能靠改寫保留第三句。
 
-不要審查字數、word_en 與 sentence_en 的關係或 IPA；這些由程式規則負責。
+字數及 IPA 的基本格式由程式檢查。你必須檢查詞塊完整性：sentence_en 是否合理應用 word_en，忽略大小寫與標點，允許時態、單複數等輕微詞形變化及合文法的可分離片語。不因 take 變 took 而退件；漏用詞塊或改變其核心意思則必須退件。仍須確認 word_en 不是完整句、sentence_en 是自然完整口語句，中文各自忠實翻譯，tips 確實提供語感、情緒微調或文化背景。
 
 請以高訊號為原則：寧可退回低價值卡讓系統補寫，也不要為了湊滿數量放行邊角內容。
 
@@ -2886,7 +2649,7 @@ def _ai_review_deck(
 """
     try:
         request_kwargs = {
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": topic_messages(topic, prompt),
             "model": REVIEW_MODEL,
             "response_format": {"type": "json_object"},
         }
@@ -2922,7 +2685,7 @@ reject 只用來退回與參考牌組重複的卡片；當前牌組上限由程�
 卡片：{json.dumps([{key: item[key] for key in ('id', 'word_en', 'sentence_en', 'sentence_cn')} for item in compact_items], ensure_ascii=False)}
 """
         duplicate_kwargs = {
-            "messages": [{"role": "user", "content": duplicate_prompt}],
+            "messages": topic_messages(topic, duplicate_prompt),
             "model": DUPLICATE_REVIEW_MODEL,
             "response_format": {"type": "json_object"},
         }
@@ -2935,18 +2698,18 @@ reject 只用來退回與參考牌組重複的卡片；當前牌組上限由程�
                 duplicate_payload = json.loads(raw_audit)
                 if not isinstance(duplicate_payload, dict) or not isinstance(duplicate_payload.get("reject"), list):
                     raise ValueError("語意去重審稿必須回傳 reject 陣列")
-                sales_items = items if any(marker in topic.casefold() for marker in ("推銷", "敲詐", "upsell")) else None
+                sales_items = items if get_topic_rules(topic).get("intent_rules") else None
                 group_rejected = _semantic_group_rejections(duplicate_payload, len(items), sales_items)
                 break
             except (ValueError, TypeError) as exc:
                 if audit_attempt == 2:
                     raise
                 _progress(f"語意審稿格式未通過，要求重審：{exc}")
-                duplicate_kwargs["messages"] = [{"role": "user", "content": (
+                duplicate_kwargs["messages"] = topic_messages(topic, (
                     duplicate_prompt + f"\n前次回傳未通過完整性校驗：{exc}。"
                     "請重新輸出完整全部分組，不可只補缺漏組，不能把缺漏卡片隨意獨立成組。"
                     f"\n前次分組供修正：{raw_audit}"
-                )}]
+                ))
         _progress(
             f"語意分組檢查：{len(items)} 張／{len(duplicate_payload['groups'])} 個目的；"
             f"退回 {len(group_rejected)} 張超額或無難度差異的同義句"
@@ -2982,7 +2745,7 @@ reject 只用來退回與參考牌組重複的卡片；當前牌組上限由程�
         if 0 <= idx < len(items):
             reason = str(entry.get("reason", "未通過內容審查")).strip()
             if entry.get("kind") == "semantic_duplicate":
-                reason = "語意重複：" + reason
+                reason = "語意重複：" + reason.removeprefix("語意重複：")
             rejected[idx] = reason
     return rejected
 
@@ -3348,22 +3111,8 @@ def generate(
                 "Never write the counterpart's line. Learner questions are allowed when the assigned "
                 "task asks the learner to request, clarify, interrupt, or respond.\n"
             )
-        elif pain_points and "polite complaints" in topic.casefold():
-            role_note = (
-                "\nROLE IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en:\n"
-                "- counterpart_line means a store employee, customer-service agent, or manager "
-                "is speaking TO the complaining learner. Write the staff response, clarification, "
-                "acknowledgement, policy response, or remedy offer. Address the learner as you/your. "
-                "Do not use I/my/me to restate the customer's problem or loss.\n"
-                "- learner_line means the complaining learner is speaking to staff.\n"
-                "Never switch speaker perspective between word_en and sentence_en.\n"
-            )
-        elif pain_points and "phone call phobia" in topic.casefold():
-            role_note = (
-                "\nROLE IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en: "
-                "counterpart_line is what the person on the other end says and the learner must "
-                "understand; learner_line is what the anxious learner says. Never switch speakers.\n"
-            )
+        elif pain_points and get_topic_rules(topic).get("instructions", {}).get("card_roles"):
+            role_note = "\n" + get_topic_rules(topic)["instructions"]["card_roles"] + "\n"
         elif pain_points:
             role_note = (
                 "\nROLE IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en:\n"
@@ -3399,7 +3148,7 @@ def generate(
         )
         try:
             request_kwargs = {
-                "messages": [{"role": "user", "content": full_prompt}],
+                "messages": topic_messages(topic, full_prompt),
                 "model": CARD_MODEL,
                 "response_format": {"type": "json_object"},
             }
@@ -3667,7 +3416,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--topic",
-        help="牌組名稱，也是預設輸出檔名（不含 .xlsx）",
+        help="牌組名稱，也是預設輸出檔名（不含 .xlsx）；主題規則自動讀取 topic_rules.json",
     )
     parser.add_argument(
         "--description",

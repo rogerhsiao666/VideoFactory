@@ -42,7 +42,8 @@ class OutputLayoutTests(unittest.TestCase):
         spec.loader.exec_module(builder)
         before = hashlib.sha256(self.target.read_bytes()).hexdigest()
         with patch.object(sys, "argv", [str(SUPPORT / "build_reviewed_edition.py")]):
-            with patch.object(builder.cards, "write_xlsx") as export:
+            with patch.object(builder.cards, "write_xlsx") as export, \
+                    patch.object(builder.editor, "validate_deck"):
                 with self.assertRaisesRegex(ValueError, "\u4fee\u8a02\u7248\u5df2\u5b58\u5728"):
                     builder.main()
                 export.assert_not_called()

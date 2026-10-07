@@ -51,6 +51,7 @@ from dotenv import load_dotenv
 import openpyxl
 from openpyxl.styles import Font as XlFont, PatternFill, Alignment
 from artifact_paths import VIDEO_HEADERS, cached_artifact
+from card_contract import CONTENT_RULES, content_issues
 
 load_dotenv()
 
@@ -372,13 +373,13 @@ def generate_content(topic: str, count: int, context: str = "") -> list:
     # 欄位規格：下游卡片繪製與 Firestore 匯出均依賴此命名，請勿更動
     field_spec = """Return a JSON object with a single key "items" whose value is an array of objects.
 Each object MUST have exactly these keys:
-- "word_en"     : the English word or common phrase
+- "word_en"     : a practical 2-6 word lexical chunk, verb phrase or idiom; NEVER a complete sentence; hard maximum 8 words
 - "word_ipa"    : IPA pronunciation of the word/phrase
-- "word_cn"     : Traditional Chinese translation
-- "tips"        : 提供記憶法、字根拆解或常見搭配詞（嚴格限制 20 字以內，不可換行）。禁止重複中文解釋。範例：'over(超過)+haul(拉)=徹底翻修' 或 '常搭配 undergo（經歷）'
-- "sentence_en" : an English example sentence
+- "word_cn"     : Traditional Chinese translation of the chunk itself, not the whole sentence
+- "tips"        : 36 字元內的語感、情緒微調或文化背景，不換行、不用「當…時，請…」模板，不重複翻譯
+- "sentence_en" : a complete natural spoken contextual sentence applying word_en naturally, allowing case/punctuation differences and mild inflections, maximum 14 words
 - "sentence_ipa": full IPA pronunciation of the example sentence
-- "sentence_cn" : Traditional Chinese translation of the example sentence"""
+- "sentence_cn" : Traditional Chinese contextual translation of the WHOLE example, different from word_cn""" + "\n" + CONTENT_RULES
 
     if context:
         # ════════════════════════════════════════════════════
@@ -404,15 +405,15 @@ STRICT RULE: Every vocabulary item and example sentence MUST be grounded in the 
 """
         else:
             prompt += f"""
-STRICT RULE: No specific source text is provided. You MUST brainstorm highly relevant, industry-specific, or advanced expressions related to the topic "{topic}". The example sentences MUST sound like they are from a professional news report, tech blog, or business analysis.
+STRICT RULE: No specific source text is provided. Brainstorm highly relevant, industry-specific expressions related to "{topic}", applied in natural spoken workplace conversations.
 """
         prompt += f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STRICT SELECTION RULES:
-✅ PRIORITIZE: Multi-word collocations, industry jargon, and precise single words.
+✅ PRIORITIZE: Practical 2-6 word collocations, verb phrases and idioms, never single words or full sentences.
 ❌ FORBIDDEN: Basic vocabulary (launch, new, use, make, show, say, oops, cringe, bad, sad), generic filler phrases.
 
-SENTENCE RULE: Each "sentence_en" MUST contain a concrete detail and sound like professional journalism.
+SENTENCE RULE: Each "sentence_en" MUST contain its exact word_en chunk and a concrete detail, expressed as a complete natural spoken conversation, not journalism.
 
 CONTEXT FIT RULE: Every word/phrase MUST be naturally and logically appropriate for the topic "{topic}". If a word feels forced or unnatural in this context, either adjust the example sentence to a scenario where the word fits naturally, or replace the word with a more contextually fitting alternative. NEVER force an example sentence to justify an out-of-context word.
 
@@ -481,6 +482,13 @@ FREQUENCY RULE: Prioritize vocabulary that is HIGH-FREQUENCY in real daily life.
 
         result = []
         for item in raw:
+            if not isinstance(item, dict) or any(not isinstance(item.get(field), str) or not item[field].strip()
+                                                for field in VIDEO_HEADERS if field != "id"):
+                continue
+            issues = content_issues(item)
+            if issues:
+                print("      [Chunk 退回] " + "; ".join(issues))
+                continue
             # 標點符號正規化："word." 和 "word" 視為同一詞
             key = item.get("word_en", "").lower().strip().strip(".,!?")
             if key and key not in exclude:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,12 +23,15 @@ from curated_blueprints import get_curated_blueprint
 
 
 def _item(word_en: str, sentence_en: str, purpose_id: int = 1) -> dict:
+    # Legacy scenario fixtures supplied sentence wrappers around their chunks.
+    word_en = re.sub(r"^(?:(?:Could|Can|Would|Will|Do|May) (?:you|I|we) |Please |I (?:need|want|prefer) |I['’](?:ll|m|d) |I )", "", word_en, flags=re.I)
+    word_en = word_en.strip(".,!? ")
     return {
         "_purpose_id": purpose_id,
         "word_en": word_en,
         "word_ipa": "/tɛst/",
         "word_cn": "測試",
-        "tips": "現場直接使用。",
+        "tips": "語氣中立，直接釐清資訊而不帶責備。",
         "sentence_en": sentence_en,
         "sentence_ipa": "/tɛst/",
         "sentence_cn": "測試句。",
@@ -97,6 +101,19 @@ class OpenAIProgressTests(unittest.TestCase):
         self.assertEqual(budget.requests, 1)
         self.assertEqual(len(self.clients), 1)
 
+    def test_200_request_budget_allows_121st_and_blocks_201st(self):
+        budget = cards.APIBudget(200, 450000)
+        budget.requests = 120
+        messages = [{"role": "user", "content": "test"}]
+        budget.reserve(messages, {"max_tokens": 1})
+        self.assertEqual(budget.requests, 121)
+        for _ in range(79):
+            budget.reserve(messages, {"max_tokens": 1})
+        self.assertEqual(budget.requests, 200)
+        with self.assertRaises(cards.APIBudgetError):
+            budget.reserve(messages, {"max_tokens": 1})
+        self.assertEqual(budget.requests, 200)
+
     def test_failed_transport_retry_consumes_the_same_request_budget(self):
         budget = self.budget(requests=1)
         self.mock_transport(lambda request: httpx.Response(500, json={
@@ -115,6 +132,18 @@ class OpenAIProgressTests(unittest.TestCase):
                                max_tokens=500, response_format={"type": "json_object"})
         self.assertEqual(budget.requests, 0)
         self.assertEqual(len(self.clients), 0)
+
+    def test_450k_budget_allows_previous_stop_but_preserves_cap(self):
+        budget = cards.APIBudget(80, 450000)
+        budget.tokens = 267943
+        messages = [{"role": "user", "content": "test"}]
+        budget.reserve(messages, {"max_tokens": 45737})
+        self.assertEqual(budget.requests, 1)
+        self.assertGreater(budget.tokens, 300000)
+        self.assertLess(budget.tokens, 450000)
+        with self.assertRaises(cards.APIBudgetError):
+            budget.reserve(messages, {"max_tokens": 450000})
+        self.assertEqual(budget.requests, 1)
 
     def test_success_usage_refunds_unused_reservation_and_keeps_output_capped(self):
         budget = self.budget(tokens=5000)
@@ -507,7 +536,7 @@ class SentenceDiversityTests(unittest.TestCase):
     def test_single_noun_substitution_is_rejected_by_local_review(self):
         items = [
             _item("Change the bread.", "Could I change the bread?"),
-            _item("Different sauce.", "Could I change the sauce?"),
+            _item("change the sauce", "Could I change the sauce?"),
         ]
         rejected = cards._local_review_deck("更換餐點", items)
         self.assertEqual(set(rejected), {1})
@@ -564,7 +593,7 @@ class SentenceDiversityTests(unittest.TestCase):
     def test_ai_mode_still_runs_deterministic_sentence_pattern_check(self):
         items = [
             _item("Change the bread.", "Could I change the bread?"),
-            _item("Different sauce.", "Could I change the sauce?"),
+            _item("change the sauce", "Could I change the sauce?"),
         ]
         with patch.object(cards, "REVIEW_MODE", "ai"), patch.object(cards, "_ai_review_deck") as ai_review:
             rejected = cards._review_deck("更換餐點", items)
@@ -574,7 +603,7 @@ class SentenceDiversityTests(unittest.TestCase):
     def test_generate_refills_with_different_structure_and_preserves_purpose(self):
         points = [_pain_point("更換麵包", "餐點", 1), _pain_point("更換醬料", "餐點", 2)]
         first = dict(_item("Change the bread.", "Could I change the bread?", 1), purpose_id=1)
-        similar = dict(_item("Different sauce.", "Could I change the sauce?", 2), purpose_id=2)
+        similar = dict(_item("change the sauce", "Could I change the sauce?", 2), purpose_id=2)
         rewritten = dict(_item("I'd prefer a different sauce.", "I'd prefer a different sauce.", 2), purpose_id=2)
         responses = [
             SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
@@ -600,10 +629,10 @@ class SentenceDiversityTests(unittest.TestCase):
     def test_locked_sentence_conflict_fails_without_silent_rephrasing(self):
         items = [
             _item("Change the bread.", "Could I change the bread?", 1),
-            _item("Different sauce.", "Could I change the sauce?", 2),
+            _item("change the sauce", "Could I change the sauce?", 2),
         ]
         items[0].update(word_ipa="/tʃeɪndʒ ðə brɛd/", sentence_ipa="/kʊd aɪ tʃeɪndʒ ðə brɛd/")
-        items[1].update(word_ipa="/ˈdɪfərənt sɔs/", sentence_ipa="/kʊd aɪ tʃeɪndʒ ðə sɔs/")
+        items[1].update(word_ipa="/tʃeɪndʒ ðə sɔs/", sentence_ipa="/kʊd aɪ tʃeɪndʒ ðə sɔs/")
         points = []
         for i, item in enumerate(items):
             point = _pain_point(("更換麵包", "更換醬料")[i], f"餐點{i}", i + 1)
@@ -623,7 +652,7 @@ class SentenceDiversityTests(unittest.TestCase):
     def test_excel_write_blocks_single_slot_templates(self):
         items = [
             dict(_item("Change the bread.", "Could I change the bread?"), id="01"),
-            dict(_item("Different sauce.", "Could I change the sauce?"), id="02"),
+            dict(_item("change the sauce", "Could I change the sauce?"), id="02"),
         ]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "test.xlsx"
@@ -652,7 +681,7 @@ class ContentGateTests(unittest.TestCase):
 
     def test_stylist_pain_point_requires_both_fields_to_be_questions(self):
         item = _item(
-            "How much would you like off?",
+            "take off five centimeters",
             "Please take off five centimeters.",
         )
 
@@ -798,7 +827,7 @@ class ContentGateTests(unittest.TestCase):
         rejected = cards._local_review_deck("插話藝術", [item], [point])
 
         self.assertIn(0, rejected)
-        self.assertIn("逐字使用對方原話", rejected[0])
+        self.assertIn("逐字使用鎖定情境原話", rejected[0])
 
     def test_generic_counterpart_word_must_come_from_the_same_quote(self):
         item = _item(
@@ -815,7 +844,7 @@ class ContentGateTests(unittest.TestCase):
         rejected = cards._local_review_deck("插話藝術", [item], [point])
 
         self.assertIn(0, rejected)
-        self.assertIn("同一段對方原話", rejected[0])
+        self.assertIn("word_en 必須取自同一段對方原話", rejected[0])
 
     def test_generated_youtube_title_removes_rayo_flashcard_suffix(self):
         response = SimpleNamespace(
@@ -959,7 +988,7 @@ class ContentGateTests(unittest.TestCase):
         )
 
         self.assertIn(0, rejected)
-        self.assertIn("必須是店員處理客訴的回應", rejected[0])
+        self.assertIn("逐字使用鎖定情境原話", rejected[0])
 
     def test_polite_counterpart_rejects_mixed_staff_and_customer_voice(self):
         item = _item(
@@ -978,7 +1007,7 @@ class ContentGateTests(unittest.TestCase):
         )
 
         self.assertIn(0, rejected)
-        self.assertIn("必須是店員處理客訴的回應", rejected[0])
+        self.assertIn("逐字使用鎖定情境原話", rejected[0])
 
     def test_polite_impact_counterpart_must_address_customer_with_your(self):
         item = _item(
@@ -997,7 +1026,7 @@ class ContentGateTests(unittest.TestCase):
         )
 
         self.assertIn(0, rejected)
-        self.assertIn("必須是店員處理客訴的回應", rejected[0])
+        self.assertIn("逐字使用鎖定情境原話", rejected[0])
 
     def test_locked_blueprint_rejects_keyword_swap_or_paraphrase(self):
         item = _item(
@@ -1008,7 +1037,7 @@ class ContentGateTests(unittest.TestCase):
         point = _pain_point("重聽斷掉的最後一段", "理解失速", 1)
         point.update({
             "job_key": "只重聽斷掉的最後一段",
-            "target_phrase": "Could you repeat the last part?",
+            "target_phrase": "repeat the last part",
             "target_sentence": "The line cut out. Could you repeat the last part?",
         })
 
@@ -1025,13 +1054,13 @@ class ContentGateTests(unittest.TestCase):
         point = _pain_point("處理斷線", "通訊失控", 1)
         point.update({
             "job_key": "只重聽斷掉的最後一段",
-            "target_phrase": "Could you repeat the last part?",
+            "target_phrase": "repeat the last part",
             "target_sentence": "The line cut out. Could you repeat the last part?",
         })
 
         result = cards._apply_locked_blueprint_lines(item, [point])
 
-        self.assertEqual(result["word_en"], "Could you repeat the last part?")
+        self.assertEqual(result["word_en"], "repeat the last part")
         self.assertEqual(
             result["sentence_en"],
             "The line cut out. Could you repeat the last part?",
@@ -1050,7 +1079,7 @@ class ContentGateTests(unittest.TestCase):
         point = _pain_point("處理斷線", "通訊失控", 1)
         point.update({
             "job_key": "只重聽斷掉的最後一段",
-            "target_phrase": "Could you repeat the last part?",
+            "target_phrase": "repeat the last part",
             "target_sentence": "The line cut out. Could you repeat the last part?",
         })
 
@@ -1062,7 +1091,7 @@ class ContentGateTests(unittest.TestCase):
         point = _pain_point("處理斷線", "通訊失控", 1)
         point.update({
             "job_key": "只重聽斷掉的最後一段",
-            "target_phrase": "Could you repeat the last part?",
+            "target_phrase": "repeat the last part",
             "target_sentence": "The line cut out. Could you repeat the last part?",
         })
         stale = dict(
@@ -1073,7 +1102,7 @@ class ContentGateTests(unittest.TestCase):
             purpose_id=1,
         )
         valid = dict(stale)
-        valid["word_ipa"] = "/kʊd ju rɪˈpit ðə læst pɑrt/"
+        valid["word_ipa"] = "/rɪˈpit ðə læst pɑrt/"
         valid["sentence_ipa"] = "/ðə laɪn kʌt aʊt kʊd ju rɪˈpit ðə læst pɑrt/"
         responses = [
             SimpleNamespace(
@@ -1095,7 +1124,8 @@ class ContentGateTests(unittest.TestCase):
 
         self.assertEqual(call.call_count, 2)
         self.assertEqual(result[0]["word_ipa"], valid["word_ipa"])
-        retry_prompt = call.call_args.kwargs["messages"][0]["content"]
+        retry_prompt = next(message["content"] for message in call.call_args.kwargs["messages"]
+                            if message["role"] == "user")
         self.assertIn("previous_error", retry_prompt)
         self.assertIn("詞數", retry_prompt)
 
@@ -1115,10 +1145,10 @@ class ContentGateTests(unittest.TestCase):
                 point = dict(_pain_point("測試", "測試", 1),
                              target_phrase=english, target_sentence=english)
                 item = _item(english, english)
-                item.update(word_ipa=bad, sentence_ipa=bad)
-                self.assertIsNotNone(cards._locked_item_issue(item, point))
+                item.update(word_en=english, word_ipa=bad, sentence_ipa=bad)
+                self.assertIsNotNone(cards._pronunciation_and_translation_issue(item))
                 item.update(word_ipa=good, sentence_ipa=good)
-                self.assertIsNone(cards._locked_item_issue(item, point))
+                self.assertIsNone(cards._pronunciation_and_translation_issue(item))
 
     def test_locked_ipa_does_not_apply_verb_stress_to_refund_noun(self):
         english = "The refund arrived."
@@ -1126,7 +1156,7 @@ class ContentGateTests(unittest.TestCase):
                      target_phrase=english, target_sentence=english)
         item = _item(english, english)
         item.update(word_ipa="/ðə ˈriːfʌnd əˈraɪvd/", sentence_ipa="/ðə ˈriːfʌnd əˈraɪvd/")
-        self.assertIsNone(cards._locked_item_issue(item, point))
+        self.assertIsNone(cards._pronunciation_and_translation_issue(item))
 
     def test_locked_translation_rejects_literal_store_credit(self):
         english = "Not as store credit."
@@ -1135,9 +1165,9 @@ class ContentGateTests(unittest.TestCase):
         item = _item(english, english)
         item.update(word_ipa="/nɑt æz stɔr ˈkrɛdɪt/", sentence_ipa="/nɑt æz stɔr ˈkrɛdɪt/",
                     sentence_cn="不是商店信用。")
-        self.assertIn("店內購物金", cards._locked_item_issue(item, point))
+        self.assertIn("店內購物金", cards._pronunciation_and_translation_issue(item))
         item["sentence_cn"] = "不要退成店內購物金。"
-        self.assertIsNone(cards._locked_item_issue(item, point))
+        self.assertIsNone(cards._pronunciation_and_translation_issue(item))
 
     def test_known_ipa_correction_preserves_punctuation_and_refund_noun(self):
         english = "Refund the charge, not the quote."
@@ -1179,7 +1209,7 @@ class ContentGateTests(unittest.TestCase):
         point = _pain_point("重聽斷掉的最後一段", "理解失速", 1)
         point.update({
             "job_key": "只重聽斷掉的最後一段",
-            "target_phrase": "Could you repeat the last part?",
+            "target_phrase": "repeat the last part",
             "target_sentence": "The line cut out. Could you repeat the last part?",
         })
 
@@ -1264,7 +1294,8 @@ class SemanticDuplicateTests(unittest.TestCase):
         self.assertEqual(set(rejected), {2})
         self.assertIn("語意重複", rejected[2])
         self.assertEqual(call.call_count, 2)
-        prompt = call.call_args.kwargs["messages"][0]["content"]
+        prompt = next(message["content"] for message in call.call_args.kwargs["messages"]
+                      if message["role"] == "user")
         self.assertIn("先建立跨分類、跨 purpose_id 的語意群組", prompt)
         self.assertIn("每組第三張起一律退回", prompt)
         self.assertIn("written estimate", prompt)
@@ -1276,7 +1307,8 @@ class SemanticDuplicateTests(unittest.TestCase):
             rejected = cards._ai_review_deck("推銷", self.quote_items()[:2])
         self.assertEqual(rejected, {})
         self.assertEqual(call.call_count, 2)
-        self.assertIn("沒有明顯難度差異則只保留一張", call.call_args.kwargs["messages"][0]["content"])
+        self.assertIn("沒有明顯難度差異則只保留一張", next(message["content"]
+            for message in call.call_args.kwargs["messages"] if message["role"] == "user"))
 
     def test_cross_deck_paraphrases_are_still_excluded(self):
         reference = dict(self.quote_items()[0], _source_deck="上一集")
@@ -1285,7 +1317,34 @@ class SemanticDuplicateTests(unittest.TestCase):
         ]) as call:
             rejected = cards._ai_review_deck("推銷_02", [self.quote_items()[1]], reference_items=[reference])
         self.assertIn(0, rejected)
-        self.assertIn("兩句上限只適用於當前牌組", call.call_args.kwargs["messages"][0]["content"])
+        self.assertIn("兩句上限只適用於當前牌組", next(message["content"]
+            for message in call.call_args.kwargs["messages"] if message["role"] == "user"))
+
+    def test_tier_three_receives_references_beyond_generation_prompt_cap(self):
+        references = [dict(_item(f"reference task {i}", f"Please handle reference task {i}."),
+                           _source_deck=f"Deck {i}") for i in range(cards.MAX_REFERENCE_CARDS_IN_PROMPT + 1)]
+        last = references[-1]
+        self.assertNotIn(last["sentence_en"], cards._reference_prompt_note(references))
+        with patch.object(cards, "_call_openai", return_value=self.response([], count=1)) as api:
+            cards._ai_review_deck("Second deck", self.quote_items()[:1], reference_items=references)
+        self.assertEqual(api.call_count, 2)
+        for call in api.call_args_list:
+            prompt = next(message["content"] for message in call.kwargs["messages"] if message["role"] == "user")
+            self.assertIn(last["sentence_en"], prompt)
+            self.assertIn(f"[{last['_source_deck']}]", prompt)
+            self.assertIn("即使字面完全不同", prompt)
+
+    def test_tier_three_rejects_unapplied_chunk_instead_of_local_substring_gate(self):
+        item = _item("take charge", "Nobody stepped up yesterday.")
+        self.assertEqual(cards._validation_issues(item), [])
+        with patch.object(cards, "_call_openai", side_effect=[
+            self.response([{"id": "01", "kind": "content", "reason": "例句漏用 take charge 的核心意思"}], count=1),
+            self.response([], count=1),
+        ]) as api:
+            rejected = cards._ai_review_deck("Leadership", [item])
+        self.assertIn("漏用 take charge", rejected[0])
+        prompt = next(message["content"] for message in api.call_args_list[0].kwargs["messages"] if message["role"] == "user")
+        self.assertIn("不因 take 變 took 而退件", prompt)
 
     def test_invalid_semantic_review_response_fails_closed(self):
         invalid = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
@@ -1299,7 +1358,7 @@ class SemanticDuplicateTests(unittest.TestCase):
         points = [_pain_point("索取書面報價", "報價", 1)]
         item = self.quote_items()[0]
         replacement = _pain_point("限定本次授權金額", "報價", 1)
-        new_item = dict(_item("My limit is fifty dollars.", "Do not spend more than fifty dollars.", 1), purpose_id=1)
+        new_item = dict(_item("more than fifty dollars", "Do not spend more than fifty dollars.", 1), purpose_id=1)
 
         def repair(topic, plan, items, rejected, references):
             plan[0] = replacement
@@ -1318,7 +1377,7 @@ class SemanticDuplicateTests(unittest.TestCase):
         call.assert_called_once()
         save.assert_called_once()
         self.assertEqual(result[0]["_pain_point"]["task"], replacement["task"])
-        self.assertEqual(result[0]["word_en"], new_item["word_en"])
+        self.assertEqual(result[0]["word_en"].casefold(), new_item["word_en"].casefold())
 
     def test_invalid_semantic_rejection_ids_fail_closed(self):
         for rejected_id in (None, "bad", "00", "04"):
@@ -1388,7 +1447,7 @@ class SemanticDuplicateTests(unittest.TestCase):
     def test_resume_preserves_missing_purpose_ids_and_completed_jobs(self):
         points = [_pain_point("控制授權金額", "金額", 1), _pain_point("保留更換零件", "證據", 2)]
         second = _item("Keep the old part.", "Please keep the old part for me.", 2)
-        first = dict(_item("My limit is fifty dollars.", "Do not spend more than fifty dollars.", 1), purpose_id=1)
+        first = dict(_item("more than fifty dollars", "Do not spend more than fifty dollars.", 1), purpose_id=1)
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "deck.draft.json"
             checkpoint.write_text(json.dumps({
@@ -1553,7 +1612,7 @@ class PainPointPlanningTests(unittest.TestCase):
 
         issues = cards._plan_quality_issues(plan, 5)
         question_item = _item(
-            "What do you think?",
+            "get back to work",
             "I need to get back to work now.",
         )
         question_item["_purpose_id"] = 1
@@ -1663,7 +1722,7 @@ class PainPointPlanningTests(unittest.TestCase):
         )
         self.assertEqual(
             exact["target_phrase"],
-            "Think we should focus on the budget first.",
+            "",
         )
         self.assertLessEqual(
             cards._english_word_count(exact["target_phrase"]),
@@ -1716,7 +1775,7 @@ class PainPointPlanningTests(unittest.TestCase):
             for purpose_id in range(1, 6)
         ]
         first_item = dict(
-            _item("Purpose one", "Use the first purpose now."),
+            _item("first purpose", "Use the first purpose now."),
             purpose_id=1,
         )
         refill_items = [
@@ -1794,7 +1853,7 @@ class PainPointPlanningTests(unittest.TestCase):
         ):
             result = cards.generate("捍衛權益", 1, pain_points=[point])
 
-        self.assertEqual(result[0]["word_en"], "Please refund my deposit.")
+        self.assertEqual(result[0]["word_en"].casefold(), "refund my deposit")
         prompt = call.call_args.kwargs["messages"][0]["content"]
         self.assertIn("硬性英文關鍵詞=refund my deposit", prompt)
 
@@ -1806,14 +1865,14 @@ class PainPointPlanningTests(unittest.TestCase):
         generated = [
             dict(
                 _item(
-                    "Take a few, please.",
+                    "take a few",
                     "Could you take a few so we have options?",
                 ),
                 purpose_id=1,
             ),
             dict(
                 _item(
-                    "Could you retake it?",
+                    "take it again",
                     "This one is blurry; could you take it again?",
                 ),
                 purpose_id=2,
@@ -1853,12 +1912,12 @@ class PainPointPlanningTests(unittest.TestCase):
         point["role_type"] = "counterpart_line"
         generated = dict(
             _item(
-                "What do you do for fun?",
+                "do for fun",
                 "What do you do for fun?",
             ),
             purpose_id=1,
         )
-        generated["word_ipa"] = "/wʌt du ju du fɔr fʌn/"
+        generated["word_ipa"] = "/du fɔr fʌn/"
         generated["sentence_ipa"] = "/wʌt du ju du fɔr fʌn/"
         response = SimpleNamespace(
             choices=[
@@ -1898,12 +1957,12 @@ class PainPointPlanningTests(unittest.TestCase):
         )
         valid = dict(
             _item(
-                "Let’s move on to the next point.",
+                "move on to the next point",
                 "Let’s move on to the next point.",
             ),
             purpose_id=1,
         )
-        valid["word_ipa"] = "/lɛts muv ɑn tə ðə nɛkst pɔɪnt/"
+        valid["word_ipa"] = "/muv ɑn tə ðə nɛkst pɔɪnt/"
         valid["sentence_ipa"] = "/lɛts muv ɑn tə ðə nɛkst pɔɪnt/"
         response = SimpleNamespace(
             choices=[
@@ -1927,7 +1986,7 @@ class PainPointPlanningTests(unittest.TestCase):
 
         self.assertEqual(
             result[0]["word_en"],
-            "Let’s move on to the next point.",
+            "move on to the next point",
         )
         self.assertEqual(
             result[0]["sentence_en"],
@@ -2140,7 +2199,10 @@ class PainPointPlanningTests(unittest.TestCase):
                 "Phone Call Phobia", points.contract, points
             )
 
-        prompt = call.call_args.kwargs["messages"][0]["content"]
+        messages = call.call_args.kwargs["messages"]
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("asking for spelling", messages[0]["content"])
+        prompt = next(message["content"] for message in messages if message["role"] == "user")
         self.assertEqual(issues, [])
         self.assertIn("只因為可以透過電話完成", prompt)
         self.assertNotIn("不代表符合 Polite Complaints", prompt)
@@ -2419,7 +2481,7 @@ class PainPointPlanningTests(unittest.TestCase):
                 )
 
     def test_reference_deck_loads_matching_plan_sidecar(self):
-        card = _item("Could you retake it?", "Could we try that one more time?")
+        card = _item("try that one more time", "Could we try that one more time?")
         card["id"] = "01"
         point = _pain_point("照片失敗時請對方重拍", "失敗補救", 1)
         with tempfile.TemporaryDirectory() as directory:

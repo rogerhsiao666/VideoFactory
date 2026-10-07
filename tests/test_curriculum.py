@@ -19,12 +19,26 @@ def fixture(topic="Airport check-in", count=10):
     original = json.loads(SOURCE.read_text(encoding="utf-8"))["items"]
     pools = {"basic": [item for item in original if item["tier"] == "basic"],
              "advanced": [item for item in original if item["tier"] == "advanced"][6:]}
+    chunks = {
+        "What does that mean?": ("in simple English", "用簡單英文", "/ɪn ˈsɪmpəl ˈɪŋɡlɪʃ/"),
+        "What does this part do?": ("during normal use", "正常使用期間", "/ˈdʊrɪŋ ˈnɔrməl jus/"),
+        "What's wrong with this part?": ("wrong with this part", "這個零件的問題", "/rɔŋ wɪð ðɪs pɑrt/"),
+        "What will you do, step by step?": ("step by step", "一步一步", "/stɛp baɪ stɛp/"),
+        "I need a written quote.": ("a written quote", "書面報價", "/ə ˈrɪtən koʊt/"),
+        "Why do I need this repair?": ("need this repair", "需要這項維修", "/nid ðɪs rɪˈpɛr/"),
+        "Could you clarify what this charge covers?": ("clarify what this charge covers", "釐清這筆費用的範圍", "/ˈklærəfaɪ wʌt ðɪs tʃɑrdʒ ˈkʌvərz/"),
+        "Could you confirm the final amount?": ("confirm the final amount", "確認最後總額", "/kənˈfɜrm ðə ˈfaɪnəl əˈmaʊnt/"),
+        "I won't approve repairs without written evidence.": ("without written evidence", "沒有書面證據", "/wɪˈðaʊt ˈrɪtən ˈɛvɪdəns/"),
+        "I'd like an independent inspection report.": ("an independent inspection report", "獨立檢查報告", "/ən ˌɪndɪˈpɛndənt ɪnˈspɛkʃən rɪˈpɔrt/"),
+    }
     scenarios = [topic + " arrival", topic + " request", topic + " decision"]
     slots = curriculum.slots_for(count, scenarios)
     jobs, items = [], []
     for slot in slots:
         item = copy.deepcopy(pools[slot["tier"]].pop(0))
-        item["tips"] = "當對方說明不清時，先問清楚再決定。"
+        chunk, translation, ipa = chunks[item["word_en"]]
+        item.update(word_en=chunk, word_cn=translation, word_ipa=ipa,
+                    tips="語氣中立，直接釐清資訊而不帶責備。")
         item.update(slot, core="purpose-" + slot["id"])
         item["_semantic_group"] = item["core"]
         item["_semantic_level"] = item["tier"]
@@ -40,7 +54,7 @@ class CurriculumContractTests(unittest.TestCase):
         fidelity = patch.object(curriculum, "review_task_fidelity", return_value={})
         fidelity.start()
         self.addCleanup(fidelity.stop)
-        confirmation = patch.object(curriculum, "confirm_equivalent_pairs", side_effect=lambda targets, checks:
+        confirmation = patch.object(curriculum, "confirm_equivalent_pairs", side_effect=lambda targets, checks, **kwargs:
                                     {key: dict(check, _confirmed=True) for key, check in checks.items()})
         confirmation.start()
         self.addCleanup(confirmation.stop)
@@ -62,28 +76,30 @@ class CurriculumContractTests(unittest.TestCase):
                         self.assertEqual(basic, count * 3 // 5)
 
     def test_concise_tips_do_not_require_a_duplicate_tone_label(self):
-        item = dict(self.items[0], tips="當被問薪水時，停兩秒再反問。")
+        item = dict(self.items[0], tips="語氣平靜，保留隱私又不顯得生硬。")
         curriculum.validate_item(item, self.plan["jobs"][0])
         item["tips"] += "不要補充額外細節。" * 3
         with self.assertRaisesRegex(curriculum.FieldValidationError, "精簡"):
             curriculum.validate_item(item, self.plan["jobs"][0])
 
-    def test_existing_reviewed_long_tips_remain_readable(self):
+    def test_existing_reviewed_long_tips_are_not_accepted_as_new_content(self):
         item = dict(self.items[0], tips="中立：當同事把私人問題混進工作聊天時，說完這句就停下，不補充私事細節。")
-        curriculum.validate_item(item, self.plan["jobs"][0])
+        with self.assertRaises(ValueError):
+            curriculum.validate_item(item, self.plan["jobs"][0])
 
     def test_generated_tips_strip_tone_and_schema_limits_length(self):
         job, source = self.plan["jobs"][0], self.items[0]
-        source = dict(source, tips="中立：當被問薪水時，停兩秒再反問。")
+        source = dict(source, tips="中立：語氣平靜，保留隱私又不顯得生硬。")
         with patch.object(curriculum, "request_json", return_value={"items": [source]}):
             result = curriculum.generate_batch(self.plan, [job], [])
-        self.assertEqual(result[0]["tips"], "當被問薪水時，停兩秒再反問。")
+        self.assertEqual(result[0]["tips"], "語氣平靜，保留隱私又不顯得生硬。")
         from types import SimpleNamespace
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"items": {}}'))])
         with patch.object(cards, "_call_openai", return_value=response) as api:
             curriculum.request_json("Generate", "教材生成 01-01", "gpt-4o-mini", job_ids=[job["id"]])
         fields = api.call_args.kwargs["response_format"]["json_schema"]["schema"]["properties"]["items"]["properties"][job["id"]]["properties"]
-        self.assertEqual(fields["tips"]["maxLength"], 30)
+        self.assertEqual(fields["tips"]["maxLength"], 36)
+        self.assertNotIn("pattern", fields["tips"])
 
     def test_planning_separates_lesson_activities_from_spoken_tasks(self):
         plan = copy.deepcopy(self.plan)
@@ -163,13 +179,13 @@ class CurriculumContractTests(unittest.TestCase):
                      "I want to show you my carry-on bag now.",
                      "Am I required to recheck in again?"):
             item = dict(self.items[0], sentence_en=line)
-            with self.subTest(line=line), self.assertRaisesRegex(ValueError, "直接說出|check in again"):
+            with self.subTest(line=line), self.assertRaisesRegex(ValueError, "直接說出|check in again|exact contiguous"):
                 curriculum.validate_item(item, self.plan["jobs"][0])
 
     def test_staff_reply_cannot_be_a_learner_request_example(self):
         item = dict(self.items[0], word_en="Could you walk me through filing a complaint?",
                     sentence_en="Yes, I can walk you through filing a complaint.")
-        with self.assertRaisesRegex(ValueError, "原說話者"):
+        with self.assertRaisesRegex(ValueError, "原說話者|complete sentence|exact contiguous"):
             curriculum.validate_item(item, self.plan["jobs"][0])
 
     def test_simplified_chinese_is_normalized_without_changing_english_or_source(self):
@@ -216,7 +232,7 @@ class CurriculumContractTests(unittest.TestCase):
         self.assertEqual(keyed["properties"]["01"]["properties"]["word_en"]["enum"], [phrase])
         self.assertNotIn("pattern", keyed["properties"]["01"]["properties"]["sentence_en"])
         self.assertIn("enum", keyed["properties"]["01"]["properties"]["word_ipa"])
-        self.assertIn("pattern", keyed["properties"]["01"]["properties"]["tips"])
+        self.assertNotIn("pattern", keyed["properties"]["01"]["properties"]["tips"])
         self.assertEqual(result["items"][0]["id"], "01")
 
     def test_incomplete_empty_or_refused_api_response_is_not_parsed_as_curriculum(self):
@@ -262,9 +278,9 @@ class CurriculumContractTests(unittest.TestCase):
         correct = "/aɪ hæv ˌsuːvəˈnɪrz tu dɪˈklɛr/"
         item = dict(self.items[0], word_en=english, sentence_en=english, word_ipa=correct, sentence_ipa=correct, tips="現場提示")
         point = {"target_phrase": english, "target_sentence": english, "task": english, "category": "customs"}
-        self.assertIsNone(cards._locked_item_issue(item, point))
+        self.assertIsNone(cards._pronunciation_and_translation_issue(item))
         item["word_ipa"] = "/aɪ hæv ˌsuːˈvɪnɚz tu dɪˈklɛr/"
-        self.assertIn("souvenir", cards._locked_item_issue(item, point))
+        self.assertIn("souvenir", cards._pronunciation_and_translation_issue(item))
 
     def test_attested_airport_ipa_errors_are_rejected_and_corrected(self):
         cases = (("Could my seat be upgraded?", "/kʊd maɪ sit bi ˈʌɡreɪdɪd/", "ʌpˈɡreɪdɪd"),
@@ -273,10 +289,10 @@ class CurriculumContractTests(unittest.TestCase):
             item = dict(self.items[0], word_en=line, sentence_en=line, word_ipa=wrong, sentence_ipa=wrong, tips="現場提示")
             point = {"target_phrase": line, "target_sentence": line, "task": line, "category": "airport"}
             with self.subTest(line=line):
-                self.assertIsNotNone(cards._locked_item_issue(item, point))
+                self.assertIsNotNone(cards._pronunciation_and_translation_issue(item))
                 fixed = cards._correct_known_locked_pronunciations(item, point)
                 self.assertIn(correct, fixed["word_ipa"])
-                self.assertIsNone(cards._locked_item_issue(fixed, point))
+                self.assertIsNone(cards._pronunciation_and_translation_issue(fixed))
                 self.assertEqual(item["word_ipa"], wrong)
 
     def test_attested_product_british_vowel_is_corrected_with_exact_alignment(self):
@@ -320,11 +336,216 @@ class CurriculumContractTests(unittest.TestCase):
     def test_basic_examples_cannot_acquire_known_advanced_grammar_during_generation(self):
         job = self.plan["jobs"][0]
         item = copy.deepcopy(self.items[0])
-        item.update(word_en="Do I need to show my ID?", word_ipa="/du aɪ nid tu ʃoʊ maɪ aɪ di/",
+        item.update(word_en="show my ID", word_ipa="/ʃoʊ maɪ aɪ di/",
                     sentence_en="Am I required to show my ID?", sentence_ipa="/æm aɪ rɪˈkwaɪərd tu ʃoʊ maɪ aɪ di/",
                     vocab=[{"en": "show", "cn": "出示"}], Core_Vocab="show 出示")
         with self.assertRaisesRegex(ValueError, "sentence_en.*基礎難度"):
             curriculum.validate_item(item, job)
+
+    def test_real_lexical_and_grammar_evidence_is_not_rejected_for_formal_tone(self):
+        for reason in (
+            "Contains the nontrivial phrase first-come, first-served basis and a formal construction.",
+            "Uses imperative and the formal construction It is imperative that...",
+            "Uses coordinate and potential conflicts; lexical complexity beyond politeness.",
+        ):
+            with self.subTest(reason=reason):
+                curriculum.validate_progression(reason)
+
+    def test_truncated_review_splits_ids_and_merges_complete_checks(self):
+        def respond(prompt, stage, model, **options):
+            ids = options["job_ids"]
+            if len(ids) > 1:
+                raise curriculum.TruncatedResponseError("length")
+            self.assertIn("Output ONLY these IDs", prompt)
+            return {"checks": [{"id": ids[0], "valid": True}]}
+        with patch.object(curriculum, "_request_json", side_effect=respond):
+            result = curriculum.request_json("Check", "教材退回複核", "gpt-5-nano", job_ids=["01", "02"])
+        self.assertEqual([row["id"] for row in result["checks"]], ["01", "02"])
+
+    def test_truncated_single_request_increases_completion_limit_once(self):
+        with patch.object(curriculum, "_request_json", side_effect=[
+                curriculum.TruncatedResponseError("length"), {"checks": []}]) as api:
+            curriculum.request_json("Check", "教材難度複核", "gpt-5-nano", job_ids=["01"])
+        self.assertEqual(api.call_count, 2)
+        self.assertEqual(api.call_args.kwargs["completion_floor"], 20000)
+
+    def test_truncated_single_card_switches_to_repair_model(self):
+        with patch.object(curriculum, "_request_json", side_effect=[
+                curriculum.TruncatedResponseError("length"), {"items": []}]) as api:
+            curriculum.request_json("Generate", "教材生成 01-01", curriculum.AUTHOR_MODEL,
+                                    job_ids=["01"], anchors={"01": {"word_en": "Stay quiet."}})
+        self.assertEqual([call.args[2] for call in api.call_args_list],
+                         [curriculum.AUTHOR_MODEL, curriculum.REPAIR_MODEL])
+        self.assertEqual(api.call_args.kwargs["anchors"], {"01": {"word_en": "Stay quiet."}})
+
+    def test_content_truncation_uses_repair_for_later_batches(self):
+        jobs = [job for job in self.plan["jobs"] if job["tier"] == "basic"][:2]
+        items = [next(item for item in self.items if item["id"] == job["id"]) for job in jobs]
+        token = curriculum._truncated_content_models.set(set())
+        self.addCleanup(curriculum._truncated_content_models.reset, token)
+        def respond(prompt, stage, model, **options):
+            if model == curriculum.AUTHOR_MODEL:
+                raise curriculum.TruncatedResponseError("length")
+            return {"items": [next(item for item in items if item["id"] == options["job_ids"][0])]}
+        with patch.object(curriculum, "_request_json", side_effect=respond) as api:
+            first = curriculum.generate_batch(self.plan, jobs[:1], [])
+            curriculum.generate_batch(self.plan, jobs[1:], first)
+        self.assertEqual([call.args[2] for call in api.call_args_list],
+                         [curriculum.AUTHOR_MODEL, curriculum.REPAIR_MODEL, curriculum.REPAIR_MODEL])
+
+    def test_content_model_fallback_is_reset_between_runs(self):
+        previous = {"previous-run"}
+        token = curriculum._truncated_content_models.set(previous)
+        self.addCleanup(curriculum._truncated_content_models.reset, token)
+        def run(*args):
+            self.assertEqual(curriculum._truncated_content_models.get(), set())
+            curriculum._truncated_content_models.get().add(curriculum.AUTHOR_MODEL)
+        with patch.object(curriculum, "_run", side_effect=run):
+            curriculum.run(None, None, True)
+            curriculum.run(None, None, True)
+        self.assertIs(curriculum._truncated_content_models.get(), previous)
+
+    def test_truncated_repair_card_has_only_one_larger_budget_retry(self):
+        with patch.object(curriculum, "_request_json", side_effect=[
+                curriculum.TruncatedResponseError("length")] * 2) as api, \
+                self.assertRaises(curriculum.TruncatedResponseError):
+            curriculum.request_json("Generate", "教材生成 01-01", curriculum.REPAIR_MODEL,
+                                    job_ids=["01"])
+        self.assertEqual(api.call_count, 2)
+        self.assertGreater(api.call_args.kwargs["completion_floor"], 10000)
+
+    def test_difficulty_cache_keys_actual_text_not_arbitrary_field_ids(self):
+        token = curriculum._difficulty_checks.set({})
+        self.addCleanup(curriculum._difficulty_checks.reset, token)
+        check = {"id": "F001", "level": "basic", "progression": "Simple daily words"}
+        with patch.object(curriculum, "request_json", return_value={"checks": [check]}) as api:
+            curriculum.confirm_difficulty([{"id": "F001", "line_en": "Can you help?"}])
+            result = curriculum.confirm_difficulty([{"id": "F007", "line_en": "Can you help?"}])
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(result[0]["id"], "F007")
+
+    def test_difficulty_uses_exact_feature_evidence_not_reason_keywords(self):
+        target = {"id": "F001", "line_en": "Please inform me before inviting overnight guests."}
+        check = {"id": "F001", "level": "advanced", "feature_en": "inform",
+                 "progression": "Uses a formal directive with inform, a higher-register verb."}
+        with patch.object(curriculum, "request_json", return_value={"checks": [check]}) as api:
+            self.assertEqual(curriculum.confirm_difficulty([target])[0], check)
+        self.assertEqual(api.call_count, 1)
+
+    def test_difficulty_rejects_invented_or_politeness_only_evidence(self):
+        target = {"id": "F001", "line_en": "Could you help me, please?"}
+        for feature in ("", "could", "please", "refrain from"):
+            check = {"id": "F001", "level": "advanced", "feature_en": feature,
+                     "progression": "Uses sophisticated grammar."}
+            with self.subTest(feature=feature), patch.object(curriculum, "request_json",
+                    return_value={"checks": [check]}):
+                self.assertFalse(curriculum.confirm_difficulty([target])[0]["_valid"])
+
+    def test_author_can_cite_non_whitelisted_actual_lexical_feature(self):
+        curriculum.validate_progression("Uses 'implement' as a formal verb.", "We should implement a cleaning rota.")
+        with self.assertRaises(ValueError):
+            curriculum.validate_progression("Uses 'confirm' as a formal verb.", "Please confirm the schedule.")
+
+    def test_generation_cannot_resubmit_a_known_wrong_difficulty_line(self):
+        item = copy.deepcopy(self.items[0])
+        key = cards._spoken_line_key(item["word_en"])
+        token = curriculum._difficulty_checks.set({key: {"level": "advanced", "progression": "Known richer wording"}})
+        self.addCleanup(curriculum._difficulty_checks.reset, token)
+        with self.assertRaisesRegex(ValueError, "不能重交"):
+            curriculum.validate_item(item, self.plan["jobs"][0])
+
+    def test_language_audit_rechecks_changed_card_but_keeps_global_context(self):
+        token = curriculum._language_audits.set({})
+        self.addCleanup(curriculum._language_audits.reset, token)
+        def audit(plan, items, references, context=None):
+            if context:
+                self.assertEqual(len(context), len(self.items) - 1)
+            return {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
+                                      "progression": "Actual feature"} for item in items], "reject": [],
+                    "groups": [{"ids": [self.items[0]["id"], self.items[1]["id"]], "purpose": "same requested action"}]}
+        modified = copy.deepcopy(self.items)
+        modified[0]["word_cn"] += "請注意。"
+        with patch.object(curriculum, "_audit_curriculum", side_effect=audit) as api:
+            curriculum.curriculum_audit(self.plan, self.items, [])
+            result = curriculum.curriculum_audit(self.plan, modified, [])
+            curriculum.curriculum_audit(self.plan, modified, [])
+        self.assertEqual(api.call_count, 2)
+        self.assertEqual([item["id"] for item in api.call_args.args[1]], [modified[0]["id"]])
+        self.assertEqual(len(result["assignments"]), len(self.items))
+        self.assertEqual(len(result["groups"]), 1)
+
+    def test_review_upgrade_invalidates_old_audits_and_semantic_groups(self):
+        with patch.object(curriculum, "SEMANTIC_REVIEW_VERSION", 12):
+            old_key = curriculum.audit_key(self.plan, self.items[0], [])
+        cache = {old_key: {"assignment": {"id": "01", "purpose": "old result", "level": "basic"}, "reject": None},
+                 "_groups": [{"ids": ["01", "02"], "purpose": "old equivalence"}], "_groups_review_version": 12}
+        token = curriculum._language_audits.set(cache)
+        self.addCleanup(curriculum._language_audits.reset, token)
+        fresh = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
+                                 "progression": item["progression"]} for item in self.items], "reject": [], "groups": []}
+        with patch.object(curriculum, "_audit_curriculum", return_value=fresh) as audit:
+            result = curriculum.curriculum_audit(self.plan, self.items, [])
+            curriculum.curriculum_audit(self.plan, self.items, [])
+        audit.assert_called_once()
+        self.assertEqual(len(audit.call_args.args[1]), len(self.items))
+        self.assertEqual(result["groups"], [])
+        self.assertEqual(cache["_groups_review_version"], curriculum.SEMANTIC_REVIEW_VERSION)
+
+    def test_cached_audit_invalidates_changed_task_and_references(self):
+        original = curriculum.audit_key(self.plan, self.items[0], [])
+        plan = copy.deepcopy(self.plan)
+        plan["jobs"][0]["task"] += " by Friday"
+        self.assertNotEqual(original, curriculum.audit_key(plan, self.items[0], []))
+        self.assertNotEqual(original, curriculum.audit_key(self.plan, self.items[0], [{"word_en": "Old phrase"}]))
+
+    def test_incremental_audit_schema_can_group_changed_and_unchanged_ids(self):
+        from types import SimpleNamespace
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content='{"assignments":[],"reject":[],"groups":[]}'))])
+        with patch.object(cards, "_call_openai", return_value=response) as api:
+            curriculum.request_json("Audit", "教材綜合審查", "gpt-5-nano", job_ids=["01"],
+                                    anchors={"01": {}, "02": {}})
+        schema = api.call_args.kwargs["response_format"]["json_schema"]["schema"]["properties"]
+        self.assertEqual(schema["assignments"]["items"]["properties"]["id"]["enum"], ["01"])
+        self.assertEqual(schema["groups"]["items"]["properties"]["ids"]["items"]["enum"], ["01", "02"])
+
+    def test_truncated_generation_saves_left_half_before_right_timeout(self):
+        jobs = self.plan["jobs"][:2]
+        item = self.items[0]
+        updates = []
+        with patch.object(curriculum, "request_json", side_effect=[
+                curriculum.TruncatedResponseError("length"), {"items": [item]},
+                cards.GenerationTimeoutError("timeout")]) as api, self.assertRaises(cards.GenerationTimeoutError):
+            curriculum.generate_batch(self.plan, jobs, [],
+                on_progress=lambda items, repairs, anchors: updates.append(copy.deepcopy(items)))
+        self.assertIn([item["id"]], [[row["id"] for row in batch] for batch in updates])
+        self.assertEqual([call.args[2] for call in api.call_args_list],
+                         [curriculum.AUTHOR_MODEL, curriculum.REPAIR_MODEL, curriculum.REPAIR_MODEL])
+
+    def test_truncated_author_rescue_can_use_repair_for_content(self):
+        jobs = self.plan["jobs"][:2]
+        with patch.object(curriculum, "request_json", side_effect=[
+                curriculum.TruncatedResponseError("length"),
+                {"items": self.items[:1]}, {"items": self.items[1:2]}]) as api:
+            result = curriculum.generate_batch(self.plan, jobs, [], author_first=True)
+        self.assertEqual([item["id"] for item in result], [job["id"] for job in jobs])
+        self.assertEqual([call.args[2] for call in api.call_args_list],
+                         [curriculum.AUTHOR_MODEL, curriculum.REPAIR_MODEL, curriculum.REPAIR_MODEL])
+
+    @patch.object(curriculum, "review_field_difficulty", return_value={})
+    def test_advanced_retries_keep_all_failed_lines_and_escalate_model(self, _review):
+        job = next(job for job in self.plan["jobs"] if job["tier"] == "advanced")
+        item = copy.deepcopy(next(item for item in self.items if item["id"] == job["id"]))
+        line = {key: item[key] for key in ("id", "word_en", "sentence_en", "progression")}
+        first = dict(line, word_en="One " * 13)
+        second = dict(line, word_en="Two " * 13)
+        with patch.object(curriculum, "request_json", side_effect=[
+                {"lines": [first]}, {"lines": [second]}, {"lines": [line]}, {"items": [item]}]) as api:
+            curriculum.generate_batch(self.plan, [job], [])
+        prompt = api.call_args_list[2].args[0]
+        self.assertIn(first["word_en"], prompt)
+        self.assertIn(second["word_en"], prompt)
+        self.assertEqual(api.call_args_list[2].args[2], curriculum.AUTHOR_MODEL)
 
     def test_explicit_advanced_features_are_actual_language_not_politeness(self):
         for line in ("Would you mind sending up extra towels?", "Could extra towels be delivered?",
@@ -337,6 +558,30 @@ class CurriculumContractTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(curriculum.explicit_advanced_features(line), [])
 
+    def test_roommate_lexical_features_do_not_flip_with_reviewer_wording(self):
+        lines = (
+            "It's imperative that we respect shared spaces.",
+            "Please adhere to our agreed standards.",
+            "Let's implement a first-come, first-served laundry schedule.",
+            "Please coordinate kitchen usage to prevent conflicts.",
+            "We should assess our progress weekly.",
+            "We may need to reconsider our living arrangements.",
+        )
+        with patch.object(curriculum, "confirm_difficulty", side_effect=AssertionError("Known features are deterministic")):
+            for index, line in enumerate(lines):
+                with self.subTest(line=line):
+                    item = {"id": str(index), "tier": "advanced", "word_en": line, "sentence_en": line}
+                    self.assertEqual(curriculum.review_field_difficulty([item]), {})
+                    item["tier"] = "basic"
+                    self.assertIn(item["id"], curriculum.review_field_difficulty([item]))
+
+    def test_boundary_features_accept_inflections_and_hyphens(self):
+        for line in ("I draw the line here.", "I've drawn a line in the sand.",
+                     "I'm drawing a firm line.", "We'll draw a hard line.", "I drew a line there."):
+            with self.subTest(line=line):
+                self.assertIn("draw the line", curriculum.explicit_advanced_features(line))
+        self.assertIn("non-negotiable", curriculum.explicit_advanced_features("This boundary is non-negotiable."))
+
     def test_subject_to_does_not_match_changing_the_subject(self):
         for line in ("Can we change the subject to something lighter?", "Change our subject to rent."):
             self.assertNotIn("subject to", curriculum.explicit_advanced_features(line))
@@ -345,14 +590,37 @@ class CurriculumContractTests(unittest.TestCase):
 
     def test_spelled_initialisms_and_room_numbers_allow_complete_ipa(self):
         cases = (("Do I need to show my ID?", "/du aɪ nid tu ʃoʊ maɪ aɪ di/"),
-                 ("I need room 204.", "/aɪ nid rum tu oʊ fɔr/"))
+                 ("I need room 204.", "/aɪ nid rum tu oʊ fɔr/"),
+                 ("Stop by 5pm.", "/stɑp baɪ faɪv pi ɛm/"),
+                 ("Stop by 5 pm.", "/stɑp baɪ faɪv pi ɛm/"),
+                 ("Stop by 11AM.", "/stɑp baɪ ɪˈlɛvən eɪ ɛm/"),
+                 ("Stop by 5:30pm.", "/stɑp baɪ faɪv ˈθərti pi ɛm/"))
         for line, ipa in cases:
             item = dict(self.items[0], word_en=line, sentence_en=line, word_ipa=ipa, sentence_ipa=ipa, tips="現場提示")
             point = {"target_phrase": line, "target_sentence": line, "task": line, "category": "hotel"}
             with self.subTest(line=line):
-                self.assertIsNone(cards._locked_item_issue(item, point))
+                self.assertIsNone(cards._pronunciation_and_translation_issue(item))
                 item["word_ipa"] = "/du aɪ/"
-                self.assertIsNotNone(cards._locked_item_issue(item, point))
+                self.assertIsNotNone(cards._pronunciation_and_translation_issue(item))
+
+    def test_clock_ipa_bounds_do_not_expand_ordinary_am(self):
+        self.assertEqual(cards._ipa_token_bounds("I am ready."), (3, 3))
+        lower, upper = cards._ipa_token_bounds("Stop by 5pm.")
+        self.assertLessEqual(lower, 5)
+        self.assertGreaterEqual(upper, 5)
+        self.assertLess(upper, 10)
+
+    def test_clock_ipa_field_repair_uses_repair_model_even_in_author_rescue(self):
+        job = self.plan["jobs"][0]
+        item = dict(self.items[0], word_en="stop by 5pm", sentence_en="Stop by 5pm today.",
+                    word_ipa="/stɑp/", word_cn="五點前停止。", sentence_cn="今天五點前停止。")
+        repair = {job["id"]: {"item": item, "fields": ["word_ipa"], "reason": "Incomplete IPA"}}
+        with patch.object(curriculum, "request_json", return_value={"items": [
+                {"id": job["id"], "word_ipa": "/stɑp baɪ faɪv pi ɛm/"}]}) as api:
+            result = curriculum.generate_batch(self.plan, [job], [], repairs=repair, author_first=True)
+        self.assertEqual(api.call_args.args[2], curriculum.REPAIR_MODEL)
+        self.assertEqual(result[0]["word_en"], item["word_en"])
+        self.assertEqual(result[0]["word_ipa"], "/stɑp baɪ faɪv pi ɛm/")
 
     def test_lexical_candidates_cannot_hide_synonyms_under_different_labels(self):
         plan = {"jobs": [{"id": "01", "core": "bring an item"}, {"id": "02", "core": "carry liquids"}]}
@@ -457,6 +725,84 @@ class CurriculumContractTests(unittest.TestCase):
             self.assertEqual(curriculum.review_deck(self.plan, self.items, []), {})
         self.assertIn("What/When/Where question is NOT mandatory", api.call_args_list[0].args[0])
         self.assertIn("Do NOT require What/When/Where", api.call_args_list[1].args[0])
+
+    @patch.object(curriculum, "review_field_difficulty", return_value={})
+    def test_cross_deck_intent_duplicates_are_checked_in_audit_and_confirmation(self, _field_review):
+        reference = {"word_en": "break it down", "sentence_en": "Explain that in plain words, please.",
+                     "_source_deck": "Phone Call Phobia"}
+        self.assertIsNone(cards._reference_duplicate_reason(self.items[0], [reference]))
+        references = [{"word_en": f"reference task {i}", "sentence_en": f"Handle task {i}, please.",
+                       "_source_deck": "Earlier deck"} for i in range(cards.MAX_REFERENCE_CARDS_IN_PROMPT)] + [reference]
+        semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
+                                     "progression": item["progression"]} for item in self.items], "groups": [],
+                    "reject": [{"id": "01", "reason": "語意重複：Phone Call Phobia 已教過要求用簡單話解釋"}]}
+        reason = "語意重複：Phone Call Phobia 的 Explain that in plain words, please. 同樣要求簡單解釋"
+        with patch.object(curriculum, "request_json", side_effect=[
+            semantic, {"checks": [{"id": "01", "valid": False, "reason": reason}]}]) as api:
+            rejected = curriculum.review_deck(self.plan, self.items, references)
+        self.assertEqual(rejected, {"01": reason})
+        self.assertEqual(api.call_count, 2)
+        for call in api.call_args_list:
+            self.assertIn(reference["sentence_en"], call.args[0])
+            self.assertIn("[Phone Call Phobia]", call.args[0])
+            self.assertIn("即使字面完全不同", call.args[0])
+        self.assertIn("valid=true requires BOTH correct language and a distinct outcome", api.call_args.args[0])
+
+    @patch.object(curriculum, "review_field_difficulty", return_value={})
+    def test_lexical_reference_duplicate_cannot_be_cleared_by_ai(self, _field_review):
+        semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
+                                     "progression": item["progression"]} for item in self.items], "groups": [], "reject": []}
+        reference = dict(self.items[0], _source_deck="Earlier deck")
+        with patch.object(curriculum, "request_json", return_value=semantic):
+            rejected = curriculum.review_deck(self.plan, self.items, [reference])
+        self.assertTrue(rejected["01"].startswith("語意重複："))
+        self.assertIn("Earlier deck", rejected["01"])
+
+    @patch.object(curriculum, "review_field_difficulty", return_value={})
+    def test_chunk_application_errors_require_tier_three_confirmation(self, _field_review):
+        self.items[0].update(word_en="take charge", sentence_en="Nobody stepped up yesterday.")
+        semantic = {"assignments": [{"id": item["id"], "purpose": item["core"], "level": item["tier"],
+                                     "progression": item["progression"]} for item in self.items], "groups": [],
+                    "reject": [{"id": "01", "reason": "例句沒有應用 take charge"}]}
+        with patch.object(curriculum, "request_json", side_effect=[
+            semantic, {"checks": [{"id": "01", "valid": False, "reason": "例句沒有應用 take charge"}]}]) as api:
+            rejected = curriculum.review_deck(self.plan, self.items, [])
+        self.assertEqual(rejected["01"], "例句沒有應用 take charge")
+        for call in api.call_args_list:
+            self.assertIn("take charge → took charge", call.args[0])
+
+    @patch.object(curriculum, "review_field_difficulty", return_value={})
+    def test_normal_inflection_does_not_trigger_generation_retry(self, _field_review):
+        item = dict(self.items[0], word_en="take my bag", word_ipa="/teɪk maɪ bæɡ/",
+                    word_cn="拿我的袋子", sentence_en="Someone took my bag while I was waiting.",
+                    sentence_cn="我等候的時候有人拿走了我的袋子。")
+        with patch.object(curriculum, "request_json", return_value={"items": [item]}) as api:
+            result = curriculum.generate_batch(self.plan, self.plan["jobs"][:1], [])
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(result[0]["word_en"], "take my bag")
+        self.assertIn("took my bag", result[0]["sentence_en"])
+
+    def test_old_review_checkpoint_resumes_inflected_cards_without_redrafting(self):
+        self.items[0].update(word_en="take my bag", word_ipa="/teɪk maɪ bæɡ/",
+                             word_cn="拿我的袋子", sentence_en="Someone took my bag while I was waiting.",
+                             sentence_cn="我等候的時候有人拿走了我的袋子。")
+        references = [{"word_en": "check the gate", "sentence_en": "Can you check the gate for me?"}]
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "checkpoint.json"
+            curriculum.save_json(checkpoint, {"version": curriculum.VERSION,
+                "fingerprint": curriculum.fingerprint_for(self.plan, references), "plan": self.plan,
+                "items": self.items, "review_passed": False, "review_version": 12,
+                "pending_review_rejections_version": 12,
+                "pending_review_rejections": {"01": "exact contiguous word_en required"}})
+            with patch.object(curriculum, "generate_batch") as generate, \
+                    patch.object(curriculum, "review_deck", return_value={}) as review:
+                state = curriculum.generate_deck(self.plan, checkpoint, references, resume=True)
+        generate.assert_not_called()
+        review.assert_called_once()
+        self.assertEqual(review.call_args.args[2], references)
+        self.assertEqual(len(state["items"]), 10)
+        self.assertTrue(state["review_passed"])
+        self.assertEqual(state["review_version"], curriculum.SEMANTIC_REVIEW_VERSION)
 
     def test_missing_confirmation_cannot_silently_clear_language_rejection(self):
         with patch.object(curriculum, "request_json", side_effect=[
@@ -578,7 +924,7 @@ class CurriculumContractTests(unittest.TestCase):
                 patch.object(curriculum, "request_json", return_value=dict(semantic, groups=[])):
             self.assertIn("sentence_en is too basic", curriculum.review_deck(self.plan, self.items, [])["03"])
 
-    def test_only_new_curriculum_allows_natural_main_lines_over_eight_words(self):
+    def test_curriculum_never_allows_main_lines_over_eight_words(self):
         job = next(job for job in self.plan["jobs"] if job["tier"] == "advanced")
         item = next(item for item in self.items if item["id"] == job["id"])
         line = "Would you mind putting all of these details in writing?"
@@ -586,12 +932,13 @@ class CurriculumContractTests(unittest.TestCase):
         item.update(word_en=line, sentence_en=line, word_ipa=ipa, sentence_ipa=ipa,
             vocab=[{"en": "in writing", "cn": "書面"}], Core_Vocab="in writing 書面",
             progression="mind + -ing request")
-        curriculum.validate_deck(self.items, self.plan, reviewed=True)
+        with self.assertRaisesRegex(ValueError, "word_en has"):
+            curriculum.validate_deck(self.items, self.plan, reviewed=True)
         self.assertTrue(any(issue.startswith("word_en has ") for issue in cards._validation_issues(item)))
         with tempfile.TemporaryDirectory() as directory:
             target = str(Path(directory) / "cards.xlsx")
-            cards.write_xlsx(self.items, target, curriculum_plan=self.plan)
-            self.assertEqual(cards.load_xlsx_items(target)[int(job["id"]) - 1]["word_en"], line)
+            with self.assertRaisesRegex(ValueError, "word_en has"):
+                cards.write_xlsx(self.items, target, curriculum_plan=self.plan)
 
     def test_equivalence_group_merges_are_transitive_and_validate_ids(self):
         semantic = {"assignments": [{"id": job["id"], "purpose": job["core"]} for job in self.plan["jobs"]]}
@@ -691,8 +1038,7 @@ class CurriculumContractTests(unittest.TestCase):
         self.assertEqual(result[0]["id"], "01")
 
     def test_final_review_can_succeed_after_three_repaired_rounds(self):
-        corrected = [dict(self.items[0], word_en="What does this mean?"),
-                     dict(self.items[0], word_en="What does it mean?"), self.items[0]]
+        corrected = [self.items[0], self.items[0], self.items[0]]
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "checkpoint.json"
             with patch.object(curriculum, "generate_batch", side_effect=[self.items[:8], self.items[8:]]
@@ -834,7 +1180,6 @@ class CurriculumContractTests(unittest.TestCase):
     def test_advanced_line_is_drafted_separately_and_cannot_be_simplified(self, _field_review):
         job = next(job for job in self.plan["jobs"] if job["tier"] == "advanced")
         item = copy.deepcopy(next(item for item in self.items if item["id"] == job["id"]))
-        item.update(sentence_en=item["word_en"], sentence_ipa=item["word_ipa"], sentence_cn=item["word_cn"])
         simplified = dict(item, word_en="Can you help?")
         draft = {"lines": [{"id": job["id"], "word_en": item["word_en"], "sentence_en": item["sentence_en"], "progression": item["progression"]}]}
         with patch.object(curriculum, "request_json", side_effect=[draft, {"items": [simplified]}, {"items": [item]}]) as request:
@@ -843,7 +1188,7 @@ class CurriculumContractTests(unittest.TestCase):
         self.assertEqual(result[0]["word_en"], item["word_en"])
 
     @patch.object(curriculum, "review_field_difficulty", return_value={})
-    def test_advanced_example_may_paraphrase_without_exact_word_order(self, _field_review):
+    def test_advanced_example_preserves_exact_chunk_word_order(self, _field_review):
         job = next(job for job in self.plan["jobs"] if job["tier"] == "advanced")
         item = copy.deepcopy(next(item for item in self.items if item["id"] == job["id"]))
         draft = {"lines": [{"id": job["id"], "word_en": item["word_en"], "sentence_en": item["sentence_en"], "progression": item["progression"]}]}
@@ -899,8 +1244,8 @@ class CurriculumContractTests(unittest.TestCase):
 
     def test_explicit_draft_features_repair_inaccurate_progression(self):
         job = next(job for job in self.plan["jobs"] if job["tier"] == "advanced")
-        line = {"id": job["id"], "word_en": "Could my boarding pass be issued?",
-                "sentence_en": "Could my onward boarding pass be issued here?", "progression": "Could is polite"}
+        line = {"id": job["id"], "word_en": "be issued",
+                "sentence_en": "Could my onward boarding pass be issued here?", "progression": "Uses be issued passive voice"}
         with patch.object(curriculum, "request_json", side_effect=[{"lines": [line]}]
                 + [ValueError("stop")] * (curriculum.STALLED_RETRY_LIMIT + 1)) as request, self.assertRaises(curriculum.BatchGenerationError):
             curriculum.generate_batch(self.plan, [job], [])
@@ -941,6 +1286,56 @@ class CurriculumContractTests(unittest.TestCase):
             self.assertIn("01", generate.call_args_list[0].kwargs["repairs"])
             self.assertEqual([job["id"] for job in generate.call_args_list[0].args[1]], ["01"])
             self.assertEqual(state["pending_field_repairs"], {})
+
+    def test_deck_rescues_only_unfinished_cards_with_author_model(self):
+        first = self.items[:1]
+        failure = curriculum.BatchGenerationError(first, "02 failed to shorten")
+        def generate(plan, jobs, accepted, feedback, **options):
+            if not options.get("author_first") and jobs[0]["id"] == "01":
+                raise failure
+            if options.get("author_first"):
+                self.assertNotIn("01", {job["id"] for job in jobs})
+                self.assertIn("01", {item["id"] for item in accepted})
+                self.assertEqual(feedback, failure.feedback)
+            return [item for item in self.items if item["id"] in {job["id"] for job in jobs}]
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(curriculum, "generate_batch", side_effect=generate) as api, \
+                patch.object(curriculum, "review_deck", return_value={}):
+            state = curriculum.generate_deck(self.plan, Path(directory) / "checkpoint.json", [])
+        self.assertTrue(state["review_passed"])
+        self.assertEqual(len(state["items"]), len(self.items))
+        self.assertTrue(api.call_args_list[1].kwargs["author_first"])
+
+    def test_author_first_rescue_uses_author_for_advanced_drafts(self):
+        job = next(job for job in self.plan["jobs"] if job["tier"] == "advanced")
+        item = copy.deepcopy(next(item for item in self.items if item["id"] == job["id"]))
+        line = {key: item[key] for key in ("id", "word_en", "sentence_en", "progression")}
+        with patch.object(curriculum, "review_field_difficulty", return_value={}), \
+                patch.object(curriculum, "request_json", side_effect=[{"lines": [line]}, {"items": [item]}]) as api:
+            curriculum.generate_batch(self.plan, [job], [], author_first=True)
+        self.assertEqual([call.args[2] for call in api.call_args_list], [curriculum.AUTHOR_MODEL] * 2)
+
+    def test_difficulty_checks_survive_review_timeout_and_resume(self):
+        token = curriculum._difficulty_checks.set({})
+        self.addCleanup(curriculum._difficulty_checks.reset, token)
+        target = {"id": "F001", "line_en": "Can you help?"}
+        check = {"id": "F001", "level": "basic", "progression": "Simple daily words"}
+        def interrupted_review(*args):
+            curriculum.confirm_difficulty([target])
+            raise cards.GenerationTimeoutError("timeout")
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "checkpoint.json"
+            with patch.object(curriculum, "generate_batch", side_effect=[self.items[:8], self.items[8:]]), \
+                    patch.object(curriculum, "request_json", return_value={"checks": [check]}), \
+                    patch.object(curriculum, "review_deck", side_effect=interrupted_review), \
+                    self.assertRaises(cards.GenerationTimeoutError):
+                curriculum.generate_deck(self.plan, checkpoint, [])
+            self.assertEqual(len(json.loads(checkpoint.read_text())["difficulty_checks"]), 1)
+            curriculum._difficulty_checks.get().clear()
+            with patch.object(curriculum, "review_deck", return_value={}), \
+                    patch.object(curriculum, "request_json", side_effect=AssertionError("Cached line must not be rechecked")):
+                curriculum.generate_deck(self.plan, checkpoint, [], resume=True)
+                self.assertEqual(curriculum.confirm_difficulty([target])[0], check)
 
     @patch.object(curriculum, "review_field_difficulty", return_value={})
     def test_advanced_anchors_survive_timeout_before_dependent_fields(self, _field_review):
@@ -1228,7 +1623,7 @@ class PlanningRecoveryTests(unittest.TestCase):
         offline = patch.object(cards, "_call_openai", side_effect=AssertionError("Unexpected real API call"))
         offline.start()
         self.addCleanup(offline.stop)
-        confirmation = patch.object(curriculum, "confirm_equivalent_pairs", side_effect=lambda targets, checks:
+        confirmation = patch.object(curriculum, "confirm_equivalent_pairs", side_effect=lambda targets, checks, **kwargs:
                                     {key: dict(check, _confirmed=True) for key, check in checks.items()})
         confirmation.start()
         self.addCleanup(confirmation.stop)
@@ -1241,7 +1636,8 @@ class PlanningRecoveryTests(unittest.TestCase):
         return [{"scenarios": self.plan["scenarios"]}, {"jobs": self.plan["jobs"]}, self.audit()]
 
     def dense_candidates(self, count=50):
-        slots = curriculum.slots_for(count, ["a", "b", "c", "d"])
+        scenarios = [f"scene-{index}" for index in range(curriculum.scenario_count_for(count))]
+        slots = curriculum.slots_for(count, scenarios)
         plan = {"topic": "Privacy boundaries", "jobs": [
             dict(slot, core="boundary", task="具體任務" + slot["id"]) for slot in slots]}
         items = [{"id": job["id"], "word_en": job["task"], "sentence_en": job["task"]}
@@ -1274,13 +1670,16 @@ class PlanningRecoveryTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_review_version_upgrade_reuses_completed_planning(self):
-        with patch.object(curriculum, "SEMANTIC_REVIEW_VERSION", 11), \
-                patch.object(curriculum, "request_json", side_effect=self.responses()):
-            curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint)
-        with patch.object(curriculum, "request_json") as api:
-            plan = curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=self.checkpoint, resume=True)
-        api.assert_not_called()
-        curriculum.validate_plan(plan, self.plan["topic"], 10)
+        for old_version in (11, 12):
+            checkpoint = self.checkpoint.with_name(f"planning-{old_version}.json")
+            with self.subTest(old_version=old_version), \
+                    patch.object(curriculum, "SEMANTIC_REVIEW_VERSION", old_version), \
+                    patch.object(curriculum, "request_json", side_effect=self.responses()):
+                curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=checkpoint)
+            with patch.object(curriculum, "request_json") as api:
+                plan = curriculum.plan_curriculum(self.plan["topic"], 10, [], checkpoint=checkpoint, resume=True)
+            api.assert_not_called()
+            curriculum.validate_plan(plan, self.plan["topic"], 10)
 
     def test_duplicate_planning_repairs_only_surplus_id_and_reuses_other_audits(self):
         duplicate = copy.deepcopy(self.plan)
@@ -1389,7 +1788,8 @@ class PlanningRecoveryTests(unittest.TestCase):
 
     def test_fifty_duplicate_tasks_stop_repeated_failed_repairs_and_never_export(self):
         plan, _, _ = self.dense_candidates()
-        plan.update(version=curriculum.VERSION, count=50, scenarios=["a", "b", "c", "d"])
+        plan.update(version=curriculum.VERSION, count=50,
+                    scenarios=list(dict.fromkeys(job["Scenario"] for job in plan["jobs"])))
         for job in plan["jobs"]:
             job.update(role="learner", speaker="neighbor")
         stages = []
@@ -1401,7 +1801,7 @@ class PlanningRecoveryTests(unittest.TestCase):
             if stage == "逐句教材策劃":
                 return {"jobs": plan["jobs"]}
             if stage == "教材策劃獨立審查":
-                return self.audit(plan)
+                return self.audit(dict(plan, jobs=[job for job in plan["jobs"] if job["id"] in kwargs["job_ids"]]))
             if stage == "替換重複教材目的":
                 return {"jobs": [job for job in plan["jobs"] if job["id"] in kwargs["job_ids"]]}
             if stage == "教材退回複核":

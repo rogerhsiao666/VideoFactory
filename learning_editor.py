@@ -12,13 +12,13 @@ from pathlib import Path
 import cards
 
 
-VERSION = 4
+VERSION = 5
 SCENARIOS = ("聽懂說明與了解故障", "核對報價與維修必要性", "核實證據與控制施工", "拒絕加購與保留決定權")
 LEARNING_HEADERS = ["id", "Scenario", "Level", "Tone", "word_en", "word_ipa",
                     "word_cn", "Core_Vocab", "tips", "sentence_en", "sentence_ipa", "sentence_cn"]
 LEVELS = {"basic": "⭐", "advanced": "⭐⭐"}
 TONES = ("委婉", "中立", "強硬")
-MAX_LEARNING_TIPS_CHARS = 30
+MAX_LEARNING_TIPS_CHARS = cards.MAX_TIPS_CHARS
 
 
 def strip_tip_tone(tip: str) -> str:
@@ -26,8 +26,7 @@ def strip_tip_tone(tip: str) -> str:
 
 
 def tip_length_limit(tip: str) -> int:
-    # Existing reviewed checkpoints used longer tips with a redundant tone prefix.
-    return 90 if strip_tip_tone(tip) != tip.strip() else MAX_LEARNING_TIPS_CHARS
+    return MAX_LEARNING_TIPS_CHARS
 
 
 def request_json(prompt: str, stage: str) -> dict:
@@ -201,11 +200,6 @@ def validate_pair(group: dict, pair: list[dict]) -> None:
         tip = item["tips"]
         if len(tip) > tip_length_limit(tip):
             raise ValueError(f"Tips 須精簡至 {MAX_LEARNING_TIPS_CHARS} 字內，語氣只放在 Tone 欄位")
-        action = tip.split("時", 1)[-1] if "時" in tip else tip
-        if not re.search(r"(?:當|對方|看到|聽到|發現|遇到|準備)", tip) or not re.search(
-            r"(?:先|請|要求|反問|指|拿|停|不要|別|確認|核對|拒絕|看|問|說|讀)", action
-        ):
-            raise ValueError("Tips 必須包含現場觸發情況與具體動作，不可只寫適用時機")
         vocab = item.get("vocab")
         if not isinstance(vocab, list) or not 1 <= len(vocab) <= 2:
             raise ValueError("每句須有1-2個核心單字或短語")
@@ -223,7 +217,6 @@ def validate_pair(group: dict, pair: list[dict]) -> None:
             raise ValueError("進階句須說明實際詞彙或句法差異")
         point = {"target_phrase": item["word_en"], "target_sentence": item["sentence_en"],
                  "task": item["sentence_en"], "category": group["scenario"]}
-        # The learning edition intentionally permits longer, vivid action tips.
         compact_item = dict(item, tips="現場提示")
         issue = cards._locked_item_issue(compact_item, point)
         if issue:
@@ -241,18 +234,16 @@ def generate_pair(topic: str, group: dict, source: list[dict], feedback: str = "
 Basic 最簡單直白，國中常見單字；advanced 用真實自然的進階詞彙或句法，
 不能只是加 please、理由、商品名稱或變得強硬。進階也要短、現場能說。
 英文短句 word_en 不超過8字，例句 sentence_en 不超過14字；兩者完成同一核心概念。
-word_en必須是顧客當場能說的完整要求或問句，不只是名詞或教學指令。
-例句只補現場條件，不能改說話角色。兩句都要實際完成指定目的。
+word_en 必須是2至6詞的實用詞塊，不可是完整句子或問句；sentence_en 必須是包含該詞塊的完整口語句。
+例句增加真實情境及語氣，不改說話角色與指定目的。
 書面報價必須說written或in writing；獨立檢查必須說another expert或independent。
 移除訂單必須明確要求take off/remove/exclude，不用not interested代替。
 原始中文與例句也可能有錯，請按實際目的重新編寫，不機械照抄。
 兩句語氣須一致；不要短句中立、例句卻改成Could you的委婉請求。
 中文自然、台灣繁體中文口語。word_cn 只翻譯 word_en，不补入例句條件。
 美式 IPA 逐字對應英文，斜線包裹。原句是待修訂素材，不沿用錯誤音標。
-Tips 只寫一句現場提示，最多{MAX_LEARNING_TIPS_CHARS}字。不加語氣前綴，語氣只放在Tone欄位。
-不能只說「當你想...時使用」或「要堅定」。必須有看得見的現場觸發及動作，例如：
-「對方說零件壞了時，先問具體功能。」
-只保留最關鍵的觸發及一個動作，避免重複通用提醒或再解釋句意。
+Tips 提供語感、情緒微調或文化背景，最多{MAX_LEARNING_TIPS_CHARS}字，不用「當…時，請…」模板。
+{cards.CONTENT_RULES}
 勿因需要報價就要求簽字、先付費；勿捏造法律或暗示單字永遠足以表達否定或授權。
 每張 vocab 提煉1-2個英文中實際出現的單字或短語及其中文意思，保留必要片語如 not interested。
 不要一整句當核心單字。Core_Vocab由程式填入。
@@ -387,11 +378,11 @@ def edit_deck(topic: str, source: list[dict], checkpoint_path: Path, resume=Fals
         rejected = review_edition(topic, state["items"])
         if not rejected:
             # Independent complete semantic partition, not trusting our core labels.
-            compact_tips = [dict(item, tips=item["Tone"] + "，確認現場要求。") for item in state["items"]]
-            semantic_rejects = cards._ai_review_deck(topic, compact_tips)
+            review_items = [dict(item) for item in state["items"]]
+            semantic_rejects = cards._ai_review_deck(topic, review_items)
             if semantic_rejects:
                 raise RuntimeError("教材未通過整副語意審查：" + json.dumps(semantic_rejects, ensure_ascii=False))
-            for item, reviewed in zip(state["items"], compact_tips):
+            for item, reviewed in zip(state["items"], review_items):
                 item["_semantic_group"] = reviewed["_semantic_group"]
                 item["_semantic_level"] = reviewed["_semantic_level"]
             state["review_passed"] = True

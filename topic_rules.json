@@ -1,0 +1,119 @@
+{
+  "_defaults": {
+    "instructions": {
+      "card_review": "食品過敏卡直接要求「無某過敏原」或暗示店家能保證安全，而不是詢問成分及交叉接觸風險。",
+      "generation_review": "Do not invent allergy safety guarantees."
+    },
+    "content_rejections": [
+      {
+        "patterns_all": ["\\b(?:allergen|allergy|peanut|sesame|gluten)[ -]free\\b"],
+        "message": "unsafe allergy-free guarantee; ask about ingredients and cross-contact instead"
+      }
+    ]
+  },
+  "Phone Call Phobia": {
+    "aliases": ["電話恐懼"],
+    "must_include": [
+      "接起或撥出時開口",
+      "聽不懂時請求重複、放慢或拼字 (asking for spelling)",
+      "腦袋空白時爭取思考時間",
+      "回讀確認姓名、數字、日期與地址 (repeating numbers)",
+      "處理聽不清、斷線與回撥 (handling disconnections)",
+      "轉接與留言",
+      "禮貌結束通話"
+    ],
+    "forbidden": ["只是可透過電話完成、但沒有處理通話焦慮的例行業務"],
+    "instructions": {
+      "contract": "題名含 phobia、fear、anxiety、焦慮或恐懼，核心是焦慮觸發、聽不懂、腦袋空白、怕失禮、資訊確認與失控補救；不是所有可透過該媒介完成的例行任務。",
+      "plan_review": "只因為可以透過電話完成，不代表符合 Phone Call Phobia；請對方重複或放慢、拼字、回讀姓名／數字／日期／地址、爭取思考時間、處理斷線／轉接／留言／回撥，才是直接降低通話失控與焦慮的核心技能。",
+      "card_roles": "ROLE IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en: counterpart_line is what the person on the other end says and the learner must understand; learner_line is what the anxious learner says. Never switch speakers."
+    },
+    "coverage": [
+      {"any": ["接起", "撥出", "開場", "answer the phone", "hello", "this is", "calling about"], "message": "缺少必要痛點時刻：接起或撥出時開口"},
+      {"any": ["重複", "放慢", "拼字", "repeat", "say that again", "slower", "spell"], "message": "缺少必要痛點時刻：聽不懂時請求調整"},
+      {"any": ["思考", "腦袋空白", "稍等", "think", "moment", "hold on"], "message": "缺少必要痛點時刻：腦袋空白時爭取時間"},
+      {"any": ["姓名", "名字", "數字", "號碼", "日期", "地址", "name", "number", "date", "address"], "message": "缺少必要痛點時刻：確認姓名數字日期地址"},
+      {"any": ["聽不清", "噪音", "斷線", "回撥", "can't hear", "cannot hear", "noise", "disconnect", "call back"], "message": "缺少必要痛點時刻：聽不清斷線與回撥"},
+      {"any": ["轉接", "留言", "transfer", "message"], "message": "缺少必要痛點時刻：轉接或留言"},
+      {"any": ["結束", "收尾", "掛電話", "謝謝", "再聯絡", "goodbye", "thank you", "thanks for", "talk to you", "speak to you"], "message": "缺少必要痛點時刻：禮貌結束"}
+    ],
+    "plan_rejections": [
+      {
+        "any": ["訂單", "保險", "商品", "產品", "會議", "退貨", "餐廳", "健身", "促銷", "優惠", "付款", "帳單", "配送", "技術支援", "財務部門", "kpi", "order", "insurance", "product", "meeting", "return policy", "restaurant", "payment", "delivery", "technical support", "finance department"],
+        "message": "只是一般電話業務，未直接處理通話焦慮"
+      }
+    ],
+    "review_protection": {
+      "reason_markers": ["一般的禮貌", "一般禮貌", "一般性問題", "普通詢問", "非特定於電話", "不直接針對因害怕英語電話", "偏離核心痛點", "不符合焦點", "未能直接針對", "不夠具體", "not specific to phone", "generic courtesy", "routine request", "outside the core pain", "does not match the focus"],
+      "protected_markers": ["重複", "再說一次", "放慢", "說慢", "拼字", "拼寫", "回讀", "姓名", "名字", "數字", "號碼", "日期", "地址", "時間", "地點", "思考時間", "稍等", "斷線", "轉接", "留言", "回撥", "聽不清", "repeat", "say that again", "slower", "slow down", "spell", "name", "number", "date", "address", "time", "location", "hold on", "moment", "disconnected", "transfer", "message", "call me back", "call back", "hear you", "hear that", "開場", "接起", "撥出", "結束", "收尾", "掛電話", "謝謝", "再聯絡", "answer the phone", "calling about", "hello", "this is", "goodbye", "thank you", "thanks for", "talk to you", "speak to you"]
+    }
+  },
+  "Polite Complaints": {
+    "aliases": ["complaint", "complaints", "抱怨", "客訴"],
+    "must_include": ["委婉指出已發生的問題", "描述影響與證據", "提出具體補救", "回應推託", "拒絕不合理補救方案", "要求主管升級與書面留存"],
+    "forbidden": ["沒有已發生問題或補救需求的例行詢價、問 Wi-Fi、問折扣", "把拒絕補救方案寫成拒絕加班、借錢等他人要求", "把 counterpart_line 寫成另一位顧客的抱怨"],
+    "instructions": {
+      "contract": "題名含 complaint、抱怨或客訴，核心是指出已發生的問題、降低指責感、提出補救、面對推託、拒絕不合理方案與升級；一般詢價、問 Wi-Fi、問折扣等例行禮貌詢問不是抱怨。Polite Complaints 的 pain_categories 必須逐字包含「拒絕不合理補救方案」以及「要求主管升級與書面留存」；禁止寫成「拒絕不合理要求」，因為那會變成拒絕加班、借錢等另一個主題。",
+      "plan_review": "只因為用了 could/please，不代表符合 Polite Complaints；例行詢價、問 Wi-Fi、問折扣等若沒有已發生的問題或補救需求，一律退回。委婉指出問題、描述影響與證據、提出補救、回應推託、拒絕不合理方案、要求主管或留下書面紀錄才是核心。",
+      "counterpart_candidates": "本批全部是 counterpart_line：speaker 必須是正在處理客訴的店員、客服或主管；task 必須逐字使用格式「聽懂對方原話：“[一個完整英文句子]”」，英文必須是店員的釐清問題、承認影響、提出方案、推託或拒絕原話；禁止寫成另一位顧客在抱怨。",
+      "card_roles": "ROLE IS A HARD CONSTRAINT FOR BOTH word_en AND sentence_en:\n- counterpart_line means a store employee, customer-service agent, or manager is speaking TO the complaining learner. Write the staff response, clarification, acknowledgement, policy response, or remedy offer. Address the learner as you/your. Do not use I/my/me to restate the customer's problem or loss.\n- learner_line means the complaining learner is speaking to staff.\nNever switch speaker perspective between word_en and sentence_en."
+    },
+    "contract_categories": [
+      {"all": [["不合理"], ["方案", "補救", "解決"]], "message": "pain_categories 必須包含拒絕不合理補救方案，不可寫成拒絕別人的要求"},
+      {"any": ["主管", "升級", "書面", "留存", "紀錄"], "message": "pain_categories 必須包含要求主管升級或書面留存"}
+    ],
+    "coverage": [
+      {"any": ["問題", "錯誤", "壞掉", "漏掉", "多收", "problem", "issue", "wrong", "broken", "missing", "overcharg"], "message": "缺少必要痛點時刻：指出已發生的問題"},
+      {"any": ["影響", "導致", "收據", "照片", "證據", "紀錄", "impact", "because", "receipt", "photo", "evidence", "record"], "message": "缺少必要痛點時刻：描述影響或證據"},
+      {"any": ["補救", "退款", "更換", "修復", "修正", "重做", "remedy", "refund", "replace", "repair", "fix", "redo"], "message": "缺少必要痛點時刻：提出具體補救"},
+      {"source": "learner", "any": ["仍需要", "仍然需要", "但我仍", "我理解，但", "沒有解決", "無法接受這個理由", "重新考慮", "still need", "doesn't address", "does not address", "not resolve", "can't accept that explanation", "reconsider", "i understand, but", "however, i", "but i still"], "message": "缺少使用者直接開口的必要痛點時刻：回應推託"},
+      {"source": "learner", "any": ["請主管", "找主管", "和主管", "請經理", "找經理", "和經理", "升級處理", "speak to a manager", "speak with a manager", "talk to a manager", "supervisor", "escalate"], "message": "缺少使用者直接開口的必要痛點時刻：要求主管升級"},
+      {"source": "learner", "any": ["書面確認", "書面紀錄", "寄信確認", "確認郵件", "案件編號", "in writing", "written confirmation", "confirmation email", "reference number", "case number"], "message": "缺少使用者直接開口的必要痛點時刻：要求書面確認"},
+      {"source": "learner", "all": [["不能接受", "無法接受", "不夠", "不合理", "not acceptable", "can't accept", "cannot accept", "not enough", "doesn't resolve", "won't solve", "doesn't solve", "does not solve"], ["方案", "補救", "退款", "更換", "折價券", "點數", "solution", "remedy", "refund", "replacement", "voucher", "store credit", "offer"]], "message": "缺少使用者直接拒絕不合理補救方案的原話"}
+    ],
+    "plan_rejections": [
+      {"any": ["wi-fi", "登機口", "課程時間", "會員權益", "熱量", "素食", "顏色", "甜度", "食材", "價格", "折扣", "免費甜點", "購物清單", "price", "discount", "calorie", "vegetarian", "ingredients", "shopping list"], "unless_any": ["錯", "壞", "漏", "多收", "不滿", "問題", "延誤", "拒絕", "推託", "退款", "更換", "主管", "經理", "incorrect", "wrong", "broken", "missing", "overcharg", "problem", "issue", "refund", "replace", "manager", "not working", "disappoint", "bill", "charged", "different price"], "message": "只是例行禮貌詢問，沒有已發生的問題或補救需求"},
+      {"category_any": ["拒絕不合理"], "unless_any": ["方案", "補救", "退款", "更換", "賠償", "solution", "remedy", "refund", "replacement", "compensation", "voucher", "store credit"], "message": "拒絕的是別人的要求，不是拒絕客訴中的不合理補救方案"},
+      {"role_type": "counterpart_line", "any": ["my order", "my room", "my luggage", "my service", "i received", "i’m not satisfied", "i'm not satisfied", "this food doesn’t", "this food doesn't", "i can’t complete", "i can't complete", "affecting my", "causing me", "what i ordered"], "message": "counterpart_line 必須是店員處理客訴的回應，不可是另一位顧客在抱怨"}
+    ],
+    "review_protection": {
+      "reason_markers": ["一般的禮貌", "一般禮貌", "一般性問題", "普通詢問", "非特定於電話", "不直接針對因害怕英語電話", "偏離核心痛點", "不符合焦點", "未能直接針對", "不夠具體", "not specific to phone", "generic courtesy", "routine request", "outside the core pain", "does not match the focus"],
+      "protected_markers": ["問題", "影響", "證據", "補救", "推託", "不合理", "主管", "經理", "書面", "退款", "更換", "修復", "道歉", "已發生", "錯", "壞", "漏", "多收", "延誤", "problem", "issue", "impact", "evidence", "remedy", "refund", "replace", "repair", "manager", "supervisor", "in writing", "wrong", "broken", "missing", "overcharg", "delay"]
+    },
+    "candidate_roles": {"learner_category_markers": ["推託", "不合理補救", "主管", "升級", "書面", "留存", "紀錄"], "counterpart_share": 0.25},
+    "category_instructions": [
+      {"any": ["推託"], "instruction": "本分類每個 task 都必須是使用者聽到推託後直接頂回去的原話，明確使用 I understand, but...、That doesn't address... 或 I still need... 等結構；禁止只描述挫折或只寫店家的推託。"},
+      {"any": ["不合理補救"], "instruction": "本分類每個 task 都必須點名店家已提出的補救（例如 partial refund、voucher、store credit、replacement），再直接說明為何不能接受；禁止改成拒絕加班、借錢、幫忙或別人的要求。"},
+      {"any": ["主管", "升級", "書面", "留存", "紀錄"], "instruction": "本分類必須同時覆蓋兩種 learner_line：至少三項直接要求 manager 或 supervisor 升級處理，至少三項要求 written confirmation、confirmation email、case number 或 reference number；禁止只寫追蹤進度。"}
+    ],
+    "counterpart_validation": {
+      "required_any": ["i'm sorry", "i’m sorry", "we're sorry", "we’re sorry", "let me", "could you", "can you", "do you", "may i", "would you", "what ", "how ", "i understand", "i see", "i can", "we can", "we'll", "we’ll", "i'll", "i’ll", "for you", "you've", "you’ve", "your "],
+      "forbidden_any": [" my ", " i received", " i need", " i can't", " i can’t", " help me", " for me", "affect my", "affects my", "prevents me"],
+      "address_customer_categories": ["描述問題影響"],
+      "message": "Polite Complaints 的 counterpart_line 必須是店員處理客訴的回應，不可寫成顧客再次抱怨"
+    }
+  },
+  "Allergy Safety": {
+    "aliases": ["allergy", "食品過敏", "食物過敏"],
+    "must_include": ["asking about ingredients", "cross-contact", "詢問製作流程與共用器具的風險"],
+    "forbidden": ["allergy-free guarantees", "暗示店家能保證不存在任何過敏風險"]
+  },
+  "Sales Pressure": {
+    "aliases": ["推銷", "敲詐", "upsell", "upselling"],
+    "must_include": ["確認價格與授權", "拒絕不需要的加購或服務", "取得可追溯的書面承諾"],
+    "forbidden": ["用更換商品或文件名稱製造同義卡片"],
+    "intent_rules": [
+      {"purpose": "取得書面報價與費用明細", "patterns_all": ["(?:can|could|may|need|want|please|put|give|send|provide).*\\b(?:quote|estimate|cost breakdown|breakdown of (?:the |these )?(?:costs|charges))\\b"]},
+      {"purpose": "要求已扣款退款", "patterns_all": ["\\b(?:want|request|like|need|give|issue)\\b.*\\brefund\\b"]},
+      {"purpose": "取消未授權服務", "patterns_all": ["\\bcancel\\b.*\\b(?:unauthorized|didn't authorize|did not authorize)\\b|\\b(?:unauthorized|didn't authorize|did not authorize)\\b.*\\bcancel\\b"]},
+      {"purpose": "確認是否曾授權", "patterns_all": ["\\bdid i\\b.*\\b(?:authorize|approve|agree)\\b|\\bconfirm if i\\b.*\\bauthorized\\b"]},
+      {"purpose": "要求簡單解釋術語", "patterns_all": ["\\bwhat does\\b.*\\bmean\\b|\\b(?:explain|understand|clarify)\\b.*\\b(?:term|jargon)\\b"]},
+      {"purpose": "確認是否存在額外費用", "patterns_all": ["\\b(?:are there|will there be|if there are|if there will be)\\b.*\\b(?:extra|additional|hidden)\\b.*\\b(?:fees|charges|costs)\\b"], "unless_pattern": "\\b(?:than|compared|agreed|hourly|flat|waived|refundable|if i|unless|without repairs|no repair)\\b"},
+      {"purpose": "了解不明收費原因", "patterns_all": ["\\b(?:explain|clarify|why)\\b.*\\b(?:charge|fee)\\b"], "unless_pattern": "\\b(?:than|compared|agreed|hourly|flat|waived|refundable|if i|unless|without repairs|no repair)\\b"},
+      {"purpose": "了解零件或設備用途", "patterns_all": ["\\b(?:what|tell|explain)\\b.*\\b(?:equipment|material|part)\\b.*\\b(?:do|does|for)\\b"]},
+      {"purpose": "了解施工流程", "patterns_all": ["\\b(?:explain|what)\\b.*\\b(?:repair process|installation steps|steps in the repair)\\b"]},
+      {"purpose": "確認額外項目是否必要", "patterns_all": ["\\b(?:necessary|really need|why.*need)\\b.*\\b(?:inspection|part|equipment|service)\\b|\\b(?:inspection|part|equipment|service)\\b.*\\bnecessary\\b"]},
+      {"purpose": "拒絕不需要的推銷", "patterns_all": ["\\bi (?:don't|do not) (?:want|need)\\b|\\bi(?:'m| am) not interested\\b", "\\b(?:service|equipment|material|maintenance|inspection|part|plan|product)\\b"], "unless_pattern": "\\b(?:cancel|remove|delete|stop|leave|contact|call|consent|authorize|approve|replace.*with)\\b"}
+    ]
+  }
+}
